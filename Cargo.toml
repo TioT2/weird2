@@ -1,0 +1,9 @@
+[package]
+name = "weird"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+glu-sys = "0.1.4"
+itertools = "0.13.0"
+sdl2 = "0.37.0"

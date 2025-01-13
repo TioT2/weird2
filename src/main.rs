@@ -1,22 +1,26 @@
+
 use std::collections::HashMap;
 
 use brush::Brush;
 use geom::{Plane, PointRelation};
-use math::{Mat4, Mat4f, Vec3f};
+use math::{Mat4f, Vec3f};
 use sdl2::{event::Event, keyboard::Scancode};
 
-struct Map {
-    pub points: Vec<Vec3f>,
-    pub sides: Vec<(u32, u32)>,
-    pub polygons: Vec<Vec<u32>>,
-}
-
+/// Basic math utility
 #[macro_use]
 pub mod math;
+
+/// Binary space partition implementation
 pub mod bsp;
+
+/// Brush builder
 pub mod brush;
+
+/// Basic geometry
 pub mod geom;
-pub mod csg;
+
+/// New BSP implementation
+pub mod map_bsp;
 
 #[derive(Copy, Clone)]
 pub struct Xorshift32 {
@@ -221,22 +225,8 @@ fn parse_map(map: &str) -> Option<Vec<Vec<Plane>>> {
 }
 
 fn main() {
-    // let mut cube = csg::Brush::cube();
-    // cube
-    //     .scale(Vec3f::new(2.0, 2.0, 2.0))
-    //     .translate(Vec3f::new(-1.0, -1.0, -1.0))
-    //     .scale(Vec3f::new(2.0, 2.0, 2.0));
-
-    let map = parse_map(include_str!("../res/maps/e1m1.map")).unwrap();
-
-    // for pvec in &mut map {
-    //     for plane in pvec {
-    //         std::mem::swap(
-    //             &mut plane.normal.y,
-    //             &mut plane.normal.z,
-    //         );
-    //     }
-    // }
+    // yay, this code will not compile on non-local builds)))
+    let map = parse_map(include_str!("../temp/e1m1.map")).unwrap();
 
     let brushes = map
         .into_iter()
@@ -244,15 +234,7 @@ fn main() {
         .collect::<Vec<_>>()
     ;
 
-    let polygons = brush::get_map_polygons(&brushes);
-
-    // let polygons = brushes
-    //     .into_iter()
-    //     .fold(Vec::new(), |mut vec, brush| {
-    //         vec.extend_from_slice(&brush.polygons);
-    //         vec
-    //     })
-    // ;
+    let polygons = brush::get_map_polygons(&brushes, false);
 
     let sdl = sdl2::init().unwrap();
     let video = sdl.video().unwrap();
@@ -272,47 +254,7 @@ fn main() {
     let mut input = Input::new();
     let mut camera = Camera::new();
 
-    // let polygons = vec![
-    //     Polygon::from_cw(vec![
-    //         vec3f!(0.0, 0.0, 0.0),
-    //         vec3f!(0.0, 2.0, 0.0),
-    //         vec3f!(0.0, 2.0, 1.0),
-    //         vec3f!(0.0, 0.0, 1.0),
-    //     ]),
-    //     Polygon::from_cw(vec![
-    //         vec3f!(0.0, 2.0, 0.0),
-    //         vec3f!(1.0, 2.0, 0.0),
-    //         vec3f!(1.0, 2.0, 1.0),
-    //         vec3f!(0.0, 2.0, 1.0),
-    //     ]),
-    //     Polygon::from_cw(vec![
-    //         vec3f!(1.0, 2.0, 0.0),
-    //         vec3f!(1.0, 1.0, 0.0),
-    //         vec3f!(1.0, 1.0, 1.0),
-    //         vec3f!(1.0, 2.0, 1.0),
-    //     ]),
-    //     Polygon::from_cw(vec![
-    //         vec3f!(1.0, 1.0, 0.0),
-    //         vec3f!(3.0, 1.0, 0.0),
-    //         vec3f!(3.0, 1.0, 1.0),
-    //         vec3f!(1.0, 1.0, 1.0),
-    //     ]),
-    //     Polygon::from_cw(vec![
-    //         vec3f!(3.0, 1.0, 0.0),
-    //         vec3f!(3.0, 0.0, 0.0),
-    //         vec3f!(3.0, 0.0, 1.0),
-    //         vec3f!(3.0, 1.0, 1.0),
-    //     ]),
-    //     Polygon::from_cw(vec![
-    //         vec3f!(3.0, 0.0, 0.0),
-    //         vec3f!(0.0, 0.0, 0.0),
-    //         vec3f!(0.0, 0.0, 1.0),
-    //         vec3f!(3.0, 0.0, 1.0),
-    //     ]),
-    // ];
-
     let bsp = bsp::Bsp::build(&polygons);
-    let bsp_polygon_count = bsp.polygon_count();
 
     'main_loop: loop {
         input.release_changed();
@@ -340,47 +282,43 @@ fn main() {
         camera.response(&timer, &input);
 
         unsafe {
-            glu_sys::glEnable(glu_sys::GL_DEPTH_TEST);
+            glu_sys::glDisable(glu_sys::GL_DEPTH_TEST);
 
-            glu_sys::glClear(glu_sys::GL_COLOR_BUFFER_BIT | glu_sys::GL_DEPTH_BUFFER_BIT);
+            glu_sys::glClear(glu_sys::GL_COLOR_BUFFER_BIT);
             glu_sys::glClearColor(0.30, 0.47, 0.80, 0.0);
 
             glu_sys::glLoadIdentity();
-            // glu_sys::gluPerspective(30.0, 8.0 / 6.0, 0.01, 8192.0);
+            glu_sys::gluPerspective(60.0, 8.0 / 6.0, 0.01, 8192.0);
 
-            // glu_sys::gluLookAt(
-            //     camera.location.x as f64,
-            //     camera.location.y as f64,
-            //     camera.location.z as f64,
-            //     camera.location.x as f64 + camera.direction.x as f64,
-            //     camera.location.y as f64 + camera.direction.y as f64,
-            //     camera.location.z as f64 + camera.direction.z as f64,
-            //     0.0,
-            //     0.0,
-            //     1.0
+            glu_sys::gluLookAt(
+                camera.location.x as f64,
+                camera.location.y as f64,
+                camera.location.z as f64,
+                camera.location.x as f64 + camera.direction.x as f64,
+                camera.location.y as f64 + camera.direction.y as f64,
+                camera.location.z as f64 + camera.direction.z as f64,
+                0.0,
+                0.0,
+                1.0
+            );
+
+            // let view_matrix = Mat4::view(
+            //     camera.location,
+            //     camera.location + camera.direction,
+            //     Vec3f::new(0.0, 0.0, 1.0)
             // );
-
-            let view_matrix = Mat4::view(
-                camera.location,
-                camera.location + camera.direction,
-                Vec3f::new(0.0, 0.0, 1.0)
-            );
-            let projection_matrix = Mat4::projection_frustum(
-                -0.01,
-                0.01,
-                -0.01,
-                0.01,
-                0.01,
-                1024.0
-            );
-            let view_projection_matrix = view_matrix * projection_matrix;
+            // let projection_matrix = Mat4::projection_frustum(
+            //     -0.01,
+            //     0.01,
+            //     -0.01,
+            //     0.01,
+            //     0.01,
+            //     1024.0
+            // );
+            // let view_projection_matrix = view_matrix * projection_matrix;
 
             struct VisitContext {
-                polygon_index: u32,
-                polygon_count: u32,
                 location: Vec3f,
-                vp: Mat4f,
-                projection_buffer: Vec<Vec3f>,
             }
 
             impl VisitContext {
@@ -407,18 +345,6 @@ fn main() {
                                     continue 'polygon_loop;
                                 }
 
-                                // build projection buffer
-                                self.projection_buffer.clear();
-                                for point in &polygon.points {
-                                    let projected = self.vp.transform_4x4(*point);
-
-                                    // if projected.z < 0.0 || projected.z > 1.0 {
-                                    //     continue 'polygon_loop;
-                                    // }
-
-                                    self.projection_buffer.push(projected);
-                                }
-
                                 let color = [
                                     ((polygon.plane.normal.x + 1.0) / 2.0 * 255.0) as u8,
                                     ((polygon.plane.normal.y + 1.0) / 2.0 * 255.0) as u8,
@@ -427,12 +353,9 @@ fn main() {
 
                                 glu_sys::glColor3ub(color[0], color[1], color[2]);
 
-                                let depth: f32 = 1.0 - self.polygon_index as f32 / self.polygon_count as f32;
-                                self.polygon_index += 1;
-
                                 glu_sys::glBegin(glu_sys::GL_POLYGON);
-                                for point in &self.projection_buffer {
-                                    glu_sys::glVertex3f(point.x, point.y, depth);
+                                for point in &polygon.points {
+                                    glu_sys::glVertex3f(point.x, point.y, point.z);
                                 }
                                 glu_sys::glEnd();
                             }
@@ -442,11 +365,7 @@ fn main() {
             }
 
             VisitContext {
-                polygon_index: 10,
-                polygon_count: bsp_polygon_count as u32 + 20,
                 location: camera.location,
-                vp: view_projection_matrix,
-                projection_buffer: Vec::with_capacity(32),
             }
                 .visit(&bsp);
         }

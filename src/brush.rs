@@ -117,7 +117,7 @@ impl Brush {
 
         let mut bound_box = BoundBox::zero();
         for polygon in &polygons {
-            bound_box = bound_box.total(&BoundBox::for_points(&polygon.points));
+            bound_box = bound_box.total(&BoundBox::for_points(polygon.points.iter().copied()));
         }
         Some(Brush {
             polygons,
@@ -126,35 +126,45 @@ impl Brush {
     }
 }
 
-pub fn get_map_polygons(brushes: &[Brush]) -> Vec<Polygon> {
-    let mut result = Vec::new();
+pub fn get_map_polygons(brushes: &[Brush], filter: bool) -> Vec<Polygon> {
+    
+    if filter {
+        let mut result = Vec::new();
 
-    for brush in brushes {
-        'polygon_loop: for polygon in &brush.polygons {
-            let polygon_bbox = BoundBox::for_points(&polygon.points);
-
-            'second_loop: for second_brush in brushes {
-                if false
-                    || std::ptr::eq(brush, second_brush)
-                    || !polygon_bbox.is_intersecting(&second_brush.bound_box)
-                {
-                    continue;
-                }
-
-                for second_polygon in &second_brush.polygons {
-                    if second_polygon.plane.get_polygon_relation(polygon) != PolygonRelation::Back {
-                        continue 'second_loop;
+        for brush in brushes {
+            'polygon_loop: for polygon in &brush.polygons {
+                let polygon_bbox = BoundBox::for_points(polygon.points.iter().copied());
+    
+                'second_loop: for second_brush in brushes {
+                    if false
+                        || std::ptr::eq(brush, second_brush)
+                        || !polygon_bbox.is_intersecting(&second_brush.bound_box)
+                    {
+                        continue;
                     }
+    
+                    for second_polygon in &second_brush.polygons {
+                        if second_polygon.plane.get_polygon_relation(polygon) != PolygonRelation::Back {
+                            continue 'second_loop;
+                        }
+                    }
+    
+                    continue 'polygon_loop;
                 }
-
-                continue 'polygon_loop;
+    
+                result.push(polygon.clone());
             }
-
-            result.push(polygon.clone());
         }
+    
+        result
+    } else {
+        brushes
+            .iter()
+            .map(|brush| brush.polygons.iter())
+            .flat_map(|v| v)
+            .cloned()
+            .collect::<Vec<_>>()
     }
-
-    result
 
     // return brushes
     //     .iter()

@@ -1,5 +1,15 @@
 use std::ops::{Add, AddAssign, BitXor, Div, DivAssign, Mul, MulAssign, Neg, Range, Rem, RemAssign, Sub, SubAssign};
 
+/// CPU-dependent 3/4-component vector implementation
+#[cfg(target_feature = "sse")]
+pub mod fvec_x86;
+
+#[cfg(target_feature = "sse")]
+pub mod fmat4_x86;
+
+/// Generic 3-component vector implementation module
+pub mod vec3_generic;
+
 pub mod numeric_traits {
     pub trait Sqrt {
         fn sqrt(self) -> Self;
@@ -53,6 +63,12 @@ macro_rules! impl_vecn_base {
             pub fn into_tuple(self) -> ( $( consume_ident!($value_type, $x) ),* ) {
                 self.into()
             }
+
+            $(
+                pub fn $x(self) -> $value_type {
+                    self.$x
+                }
+            )*
         }
 
         impl<$template_type> Into<( $( consume_ident!($value_type, $x) ),* )> for $struct_name<$template_type> {
@@ -552,13 +568,14 @@ impl Mat4<f32>
     /// Determinant getting function
     /// * Returns determinant of this matrix
     pub fn determinant(&self) -> f32 {
-        self.data[0][0]
-            * (self.data[1][1] * self.data[2][2] * self.data[3][3]
-                + self.data[1][2] * self.data[2][3] * self.data[3][1]
-                + self.data[1][3] * self.data[2][1] * self.data[3][2]
-                - self.data[1][1] * self.data[2][3] * self.data[3][2]
-                - self.data[1][2] * self.data[2][1] * self.data[3][3]
-                - self.data[1][3] * self.data[2][2] * self.data[3][1])
+        0.0
+            + self.data[0][0]
+                * (self.data[1][1] * self.data[2][2] * self.data[3][3]
+                    + self.data[1][2] * self.data[2][3] * self.data[3][1]
+                    + self.data[1][3] * self.data[2][1] * self.data[3][2]
+                    - self.data[1][1] * self.data[2][3] * self.data[3][2]
+                    - self.data[1][2] * self.data[2][1] * self.data[3][3]
+                    - self.data[1][3] * self.data[2][2] * self.data[3][1])
             - self.data[0][1]
                 * (self.data[0][1] * self.data[2][2] * self.data[3][3]
                     + self.data[0][2] * self.data[2][3] * self.data[3][1]

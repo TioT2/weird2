@@ -86,7 +86,7 @@ impl Bsp {
                     back_polygons.push(polygon);
                 }
                 PolygonSplitResult::OnPlane => {
-                    polygon.plane_is_splitter = false;
+                    polygon.plane_is_splitter = true;
                     front_polygons.push(polygon);
                 }
                 PolygonSplitResult::Intersects { front, back } => {

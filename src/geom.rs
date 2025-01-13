@@ -18,17 +18,33 @@ pub const GEOM_EPSILON: f32 = 0.001;
 /// 
 #[derive(Debug, Copy, Clone)]
 pub struct Plane {
+    /// plane normal
     pub normal: Vec3f,
+
+    /// number to multiply normal to to get basic point
     pub distance: f32,
 }
 
+/// Bounding box
 #[derive(Copy, Clone)]
 pub struct BoundBox {
+    /// minimal vector
     min: Vec3f,
+
+    /// maximal vector
     max: Vec3f,
 }
 
 impl BoundBox {
+    /// Build boundbox from min/max vectors
+    /// 
+    /// # Safety
+    /// It's safe to call this function only if for all t min.t <= max.t
+    pub unsafe fn from_minmax(min: Vec3f, max: Vec3f) -> Self {
+        Self { min, max }
+    }
+
+    /// 'Empty' bounding box
     pub fn zero() -> Self {
         Self {
             min: Vec3f::new(f32::INFINITY, f32::INFINITY, f32::INFINITY),
@@ -65,6 +81,13 @@ impl BoundBox {
         }
     }
 
+    pub fn extend(self, delta: Vec3f) -> Self {
+        Self {
+            min: self.min - delta,
+            max: self.max + delta,
+        }
+    }
+
     pub fn total(&self, rhs: &BoundBox) -> Self {
         Self {
             min: Vec3f::new(
@@ -80,11 +103,11 @@ impl BoundBox {
         }
     }
 
-    pub fn for_points(points: &[Vec3f]) -> Self {
+    pub fn for_points(iter: impl Iterator<Item = Vec3f>) -> Self {
         let mut min = Vec3f::new(f32::INFINITY, f32::INFINITY, f32::INFINITY);
         let mut max = Vec3f::new(f32::NEG_INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY);
 
-        for point in points {
+        for point in iter {
             min.x = f32::min(min.x, point.x);
             min.y = f32::min(min.y, point.y);
             min.z = f32::min(min.z, point.z);
@@ -167,7 +190,10 @@ impl Plane {
     pub fn intersect_plane(self, rhs: &Plane) -> Line {
         let direction = (self.normal % rhs.normal).normalized();
 
-        let npvec = Vec2f::new(-self.distance, -rhs.distance);
+        let npvec = Vec2f::new(
+            -self.distance,
+            -rhs.distance
+        );
         
         let res;
 
@@ -314,14 +340,18 @@ impl Plane {
 }
 
 /// Polygon representation structure
-/// TODO: build convexity-save polygon.
+/// TODO: build convexity-safe polygon.
 #[derive(Debug, Clone)]
 pub struct Polygon {
+    /// Polygon points
     pub points: Vec<Vec3f>,
+
+    /// Plane
     pub plane: Plane,
 }
 
 impl Polygon {
+    /// Build polygon from clockwise-going points
     pub fn from_cw(points: Vec<Vec3f>) -> Self {
         assert!(points.len() >= 3);
 

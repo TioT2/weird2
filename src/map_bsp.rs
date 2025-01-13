@@ -171,7 +171,8 @@ impl Location {
 
     
     /// Determine which (unit) volume point is locacted in
-    pub fn get_point_volume(&self, point: Vec3f) -> Option<VolumeId> {
+    pub fn get_point_volume(&self, _point: Vec3f) -> Option<VolumeId> {
+
         unimplemented!()
     } // get_point_volume
 }

@@ -3,7 +3,7 @@ use std::collections::HashMap;
 
 use brush::Brush;
 use geom::{Plane, PointRelation};
-use math::{Mat4f, Vec3f};
+use math::Vec3f;
 use sdl2::{event::Event, keyboard::Scancode};
 
 /// Basic math utility
@@ -149,7 +149,7 @@ impl Camera {
         );
 
         movement *= timer.get_delta_time() * 256.0;
-        rotation *= timer.get_delta_time() * 1.0;
+        rotation *= timer.get_delta_time() * 1.5;
 
         let dir = self.direction;
         let right = (dir % vec3f!(0.0, 0.0, 1.0)).normalized();

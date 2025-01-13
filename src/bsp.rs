@@ -25,6 +25,7 @@ pub enum Bsp {
 
 impl Bsp {
     fn from_internal(polygons: Vec<BspPolygon>) -> Bsp {
+        // the best rate is 0, actually
         let mut best_rate = i32::MAX;
         let mut best_splitter_index = Option::<usize>::None;
 
@@ -48,17 +49,34 @@ impl Bsp {
                 match relation {
                     PolygonRelation::Front | PolygonRelation::OnPlane => front_count += 1,
                     PolygonRelation::Back => back_count += 1,
-                    PolygonRelation::Intersects => split_count += 1,
+                    PolygonRelation::Intersects => {
+                        split_count += 1;
+                        front_count += 1;
+                        back_count  += 1;
+                    }
                 }
             }
 
-            let rate = (front_count - back_count).abs();
-            _ = split_count;
+            // OLD
+            // Note: changing rating to 'abs(front - back) - split' breaks renderer.
+            // That's not good
+
+            // The actual reason was false-negative check of splitter being splitter.
+            // (front_count and back_count wasn't incremented in PolygonRelation::Intersects case)
+            // In that case, set of planes was accounted as a set without splitter (e.g. convex),
+            // but it actually wasn't
+
+            // try to make front and back parts merely equal, add little penalty for splits
+            let rate = (front_count - back_count).abs() + split_count / 3;
 
             // check if splitter is actually splitting anything
-            if front_count != 0 && back_count != 0 && rate < best_rate {
-                best_rate = rate;
-                best_splitter_index = Some(splitter_index);
+            if front_count != 0 && back_count != 0 {
+
+                // check if this splitter is the best one
+                if rate < best_rate {
+                    best_rate = rate;
+                    best_splitter_index = Some(splitter_index);
+                }
             }
         }
 

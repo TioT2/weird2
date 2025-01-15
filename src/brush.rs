@@ -127,7 +127,6 @@ impl Brush {
 }
 
 pub fn get_map_polygons(brushes: &[Brush], filter: bool) -> Vec<Polygon> {
-    
     if filter {
         let mut result = Vec::new();
 

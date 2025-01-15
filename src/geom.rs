@@ -67,6 +67,14 @@ impl BoundBox {
         }
     }
 
+    pub fn max(self) -> Vec3f {
+        self.max
+    }
+
+    pub fn min(self) -> Vec3f {
+        self.min
+    }
+
     pub fn translate(self, distance: Vec3f) -> Self {
         Self {
             min: self.min + distance,

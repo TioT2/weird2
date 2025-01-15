@@ -10,6 +10,9 @@ use sdl2::{event::Event, keyboard::Scancode};
 #[macro_use]
 pub mod math;
 
+/// Random number generator
+pub mod rand;
+
 /// Binary space partition implementation
 pub mod bsp;
 
@@ -19,8 +22,8 @@ pub mod brush;
 /// Basic geometry
 pub mod geom;
 
-/// New BSP implementation
-pub mod map_bsp;
+/// New map implementation
+pub mod map;
 
 #[derive(Copy, Clone)]
 pub struct Xorshift32 {
@@ -213,11 +216,9 @@ fn parse_map(map: &str) -> Option<Vec<Vec<Plane>>> {
             let p3 = parse_vec3()?;
 
             let normal = -((p3 - p2).normalized() % (p1 - p2).normalized()).normalized();
+            let distance = p2 ^ normal;
 
-            current.push(Plane {
-                normal,
-                distance: p2 ^ normal,
-            });
+            current.push(Plane { normal, distance });
         }
     }
 

@@ -1,11 +1,8 @@
-/*
-Location building process
-1. Build BSP polyhedrons from plane sets
-2. Calculate hull volume
-3. 
- */
-
 use crate::{geom, math::Vec3f};
+
+/// Declare actual map builder module
+mod builder;
+
 
 /// Volume identifier
 #[derive(Copy, Clone, PartialEq, Eq)]
@@ -101,78 +98,15 @@ pub struct Location {
     /// Set of location volumes
     volumes: Vec<Volume>,
 }
-
-pub struct BuilderHullPolygon {
-    /// Polygon itself
-    pub polygon: geom::Polygon,
-
-    /// Do polygon belong to set of polygons of initial hull
-    pub is_external: bool,
-
-    /// Was polygon plane already used as splitter
-    pub is_splitter: bool,
-}
-pub struct BuilderHullVolume {
-    /// Polygons
-    pub hull_polygons: Vec<BuilderHullPolygon>,
-
-    pub internal_polygons: Vec<BuilderHullPolygon>,
-}
-
-
-/// Portal polygon resolution step
-pub struct FinalPolygonFaceId {
-    pub volume_id: VolumeId,
-    pub portal_face_id: u32,
-}
-
-/// Set of 
-pub struct PortalResolvePromise {
-    /// Common polygon of all portals
-    pub common_polygon: geom::Polygon,
-
-    /// Filter polygons 
-    pub resolution_id: u32,
-}
-
-impl BuilderHullVolume {
-    /// Build hull volume from boundbox
-    pub fn from_bound_box(boundbox: geom::BoundBox) -> BuilderHullVolume {
-
-        todo!()
-    }
-}
-
-pub struct Builder {
-    volumes: Vec<BuilderHullVolume>,
-}
-
 impl Location {
-    pub fn build(polygons: Vec<geom::Polygon>) -> Location {
-        // Calculate boundbox for
-        let global_bound_box = polygons
-            .iter()
-            .fold(geom::BoundBox::zero(), |bb, polygon| {
-                let polygon_bound_box = geom::BoundBox::for_points(
-                    polygon.points.iter().copied()
-                );
 
-                bb.total(&polygon_bound_box)
-            });
-
-        let _first_volume = BuilderHullVolume::from_bound_box(
-            global_bound_box.extend(Vec3f::new(30.0, 30.0, 30.0))
-        );
-        // Build initial volume from global bound box
-
-
-        todo!()
+    pub fn build(brushes: Vec<crate::Brush>) -> Location {
+        builder::build(brushes)
     }
 
     
     /// Determine which (unit) volume point is locacted in
     pub fn get_point_volume(&self, _point: Vec3f) -> Option<VolumeId> {
-
         unimplemented!()
     } // get_point_volume
 }

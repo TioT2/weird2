@@ -1,3 +1,5 @@
+/// Standard analytic geometry primitive module
+
 use std::ops::{Add, AddAssign, BitXor, Div, DivAssign, Mul, MulAssign, Neg, Range, Rem, RemAssign, Sub, SubAssign};
 
 /// CPU-dependent 3/4-component vector implementation
@@ -986,3 +988,5 @@ impl Mat4<f32> {
         }
     } // fn transform_4x4
 } // impl Mat4x4
+
+// mod.rs

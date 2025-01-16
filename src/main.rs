@@ -107,6 +107,12 @@ impl Input {
         self.get_key_state(key).pressed
     }
 
+    pub fn is_key_clicked(&self, key: Scancode) -> bool {
+        let key = self.get_key_state(key);
+
+        key.pressed && key.changed
+    }
+
     pub fn on_state_changed(&mut self, key: Scancode, pressed: bool) {
         if let Some(state) = self.states.get_mut(&key) {
             state.changed = state.pressed != pressed;
@@ -127,6 +133,7 @@ impl Input {
 
 }
 
+#[derive(Copy, Clone)]
 pub struct Camera {
     pub location: Vec3f,
     pub direction: Vec3f,
@@ -226,62 +233,6 @@ fn parse_map(map: &str) -> Option<Vec<Vec<Plane>>> {
     Some(result)
 }
 
-pub unsafe fn render_bsp(bsp: &bsp::Bsp, camera_location: Vec3f) {
-    struct VisitContext {
-        location: Vec3f,
-    }
-
-    impl VisitContext {
-        pub unsafe fn visit(&mut self, node: &bsp::Bsp) {
-            match node {
-                bsp::Bsp::Element { splitter, front, back } => {
-                    match splitter.get_point_relation(self.location) {
-                        PointRelation::Front => {
-                            self.visit(back);
-                            self.visit(front);
-                        }
-                        _ => {
-                            self.visit(front);
-                            self.visit(back);
-                        }
-                    }
-                }
-                bsp::Bsp::Leaf { polygons } => {
-                    
-                    'polygon_loop: for polygon in polygons {
-
-                        // let point_normal = Vec3f::cross(
-                        //     (polygon.points[2] - polygon.points[1]).normalized(),
-                        //     (polygon.points[0] - polygon.points[1]).normalized(),
-                        // ).normalized();
-
-                        // backface culling
-                        if (polygon.plane.normal ^ self.location) - polygon.plane.distance <= 0.0 {
-                            continue 'polygon_loop;
-                        }
-
-                        let color = [
-                            ((polygon.plane.normal.x + 1.0) / 2.0 * 255.0) as u8,
-                            ((polygon.plane.normal.y + 1.0) / 2.0 * 255.0) as u8,
-                            ((polygon.plane.normal.z + 1.0) / 2.0 * 255.0) as u8
-                        ];
-
-                        glu_sys::glColor3ub(color[0], color[1], color[2]);
-
-                        glu_sys::glBegin(glu_sys::GL_POLYGON);
-                        for point in &polygon.points {
-                            glu_sys::glVertex3f(point.x, point.y, point.z);
-                        }
-                        glu_sys::glEnd();
-                    }
-                }
-            }
-        }
-    }
-
-    VisitContext { location: camera_location, }.visit(&bsp);
-}
-
 pub unsafe fn render_brushes(brushes: &[Brush], camera_location: Vec3f) {
     for brush in brushes {
         'polygon_loop: for polygon in &brush.polygons {
@@ -322,8 +273,6 @@ fn main() {
         .collect::<Vec<_>>()
     ;
 
-    let polygons = brush::get_map_polygons(&brushes, false);
-
     let sdl = sdl2::init().unwrap();
     let video = sdl.video().unwrap();
     let mut event_pump = sdl.event_pump().unwrap();
@@ -342,7 +291,23 @@ fn main() {
     let mut input = Input::new();
     let mut camera = Camera::new();
 
-    let bsp = bsp::Bsp::build(&polygons);
+    // let bsp = {
+    //     let polygons = brush::get_map_polygons(&brushes, false);
+    //     bsp::Bsp::build(&polygons)
+    // };
+
+    let volumes = {
+        let mut builder = map::builder::Builder::new();
+        builder.start_build_volumes(&brushes);
+        builder.volumes
+    };
+
+    let mut do_sync_logical_camera = true;
+    let mut do_enable_depth_test = true;
+
+    println!("count: {}", volumes.len());
+    // return;
+    // let mut logical_camera = camera;
 
     'main_loop: loop {
         input.release_changed();
@@ -369,10 +334,31 @@ fn main() {
         timer.response();
         camera.response(&timer, &input);
 
-        unsafe {
-            glu_sys::glDisable(glu_sys::GL_DEPTH_TEST);
+        // Synchronize logical camera with physical one
+        if input.is_key_clicked(Scancode::Backslash) {
+            do_sync_logical_camera = !do_sync_logical_camera;
+        }
 
-            glu_sys::glClear(glu_sys::GL_COLOR_BUFFER_BIT);
+        if input.is_key_clicked(Scancode::Num0) {
+            do_enable_depth_test = !do_enable_depth_test;
+        }
+
+        // if do_sync_logical_camera {
+        //     logical_camera = camera;
+        // }
+
+        unsafe {
+            if do_enable_depth_test {
+                glu_sys::glEnable(glu_sys::GL_DEPTH_TEST);
+            } else {
+                glu_sys::glDisable(glu_sys::GL_DEPTH_TEST);
+            }
+
+            if do_enable_depth_test {
+                glu_sys::glClear(glu_sys::GL_COLOR_BUFFER_BIT | glu_sys::GL_DEPTH_BUFFER_BIT);
+            } else {
+                glu_sys::glClear(glu_sys::GL_COLOR_BUFFER_BIT);
+            }
             glu_sys::glClearColor(0.30, 0.47, 0.80, 0.0);
 
             glu_sys::glLoadIdentity();
@@ -390,8 +376,133 @@ fn main() {
                 1.0
             );
 
-            render_bsp(&bsp, camera.location);
-            // render_brushes(&brushes, camera.location);
+            // println!("camera: <{}, {}, {}>", camera.location.x, camera.location.y, camera.location.z);
+
+            // Render hull volumes
+            // #[cfg(not)]
+            {
+                let render_hull_volume = |hull_volume: &map::builder::HullVolume| {
+                    for hull_polygon in &hull_volume.polygons {
+                        let polygon = &hull_polygon.polygon;
+
+                        // backface culling
+                        // if (polygon.plane.normal ^ camera_location) - polygon.plane.distance <= 0.0 {
+                        //     continue 'face_polygon_loop;
+                        // }
+
+                        let color = [
+                            ((polygon.plane.normal.x + 1.0) / 2.0 * 255.0) as u8,
+                            ((polygon.plane.normal.y + 1.0) / 2.0 * 255.0) as u8,
+                            ((polygon.plane.normal.z + 1.0) / 2.0 * 255.0) as u8
+                        ];
+
+                        glu_sys::glColor3ub(color[0], color[1], color[2]);
+
+                        glu_sys::glBegin(glu_sys::GL_LINE_LOOP);
+                        for point in &polygon.points {
+                            glu_sys::glVertex3f(point.x, point.y, point.z);
+                        }
+                        glu_sys::glEnd();
+
+                        for physical_polygon in &hull_polygon.physical_polygons {
+                            let polygon = &physical_polygon.polygon;
+
+                            let color = [
+                                ((polygon.plane.normal.x + 1.0) / 2.0 * 255.0) as u8,
+                                ((polygon.plane.normal.y + 1.0) / 2.0 * 255.0) as u8,
+                                ((polygon.plane.normal.z + 1.0) / 2.0 * 255.0) as u8
+                            ];
+    
+                            glu_sys::glColor3ub(color[0], color[1], color[2]);
+    
+                            glu_sys::glBegin(glu_sys::GL_POLYGON);
+                            for point in &polygon.points {
+                                glu_sys::glVertex3f(point.x, point.y, point.z);
+                            }
+                            glu_sys::glEnd();
+                        }
+                    }
+                };
+
+                // static mut tact: u32 = 0;
+                // tact += 1;
+                // render_hull_volume(&volumes[tact as usize % volumes.len()]);
+                for hull_volume in &volumes {
+                    render_hull_volume(hull_volume);
+                }
+            }
+
+            // Render BSP
+            #[cfg(not)]
+            {
+                struct VisitContext {
+                    location: Vec3f,
+                    // debug_plane: Plane,
+                }
+                impl VisitContext {
+                    pub unsafe fn visit(&mut self, node: &bsp::Bsp) {
+                        match node {
+                            bsp::Bsp::Element { splitter, front, back } => {
+                                match splitter.get_point_relation(self.location) {
+                                    PointRelation::Front => {
+                                        self.visit(back);
+                                        self.visit(front);
+                                    }
+                                    _ => {
+                                        self.visit(front);
+                                        self.visit(back);
+                                    }
+                                }
+                            }
+                            bsp::Bsp::Leaf { polygons } => {
+                                
+                                'polygon_loop: for polygon in polygons {
+                                    // backface culling
+                                    if (polygon.plane.normal ^ self.location) - polygon.plane.distance <= 0.0 {
+                                        continue 'polygon_loop;
+                                    }
+                                    
+                                    let color = [
+                                        ((polygon.plane.normal.x + 1.0) / 2.0 * 255.0) as u8,
+                                        ((polygon.plane.normal.y + 1.0) / 2.0 * 255.0) as u8,
+                                        ((polygon.plane.normal.z + 1.0) / 2.0 * 255.0) as u8
+                                    ];
+            
+                                    glu_sys::glColor3ub(color[0], color[1], color[2]);
+            
+                                    glu_sys::glBegin(glu_sys::GL_POLYGON);
+                                    for point in &polygon.points {
+                                        glu_sys::glVertex3f(point.x, point.y, point.z);
+                                    }
+                                    glu_sys::glEnd();
+    
+                                    // draw intersection line
+                                    // let intr = self.debug_plane.intersect_polygon(polygon);
+                                    // if let Some((begin, end)) = intr {
+                                    //     glu_sys::glColor3ub(0xFF, 0x00, 0x00);
+                                    //     glu_sys::glBegin(glu_sys::GL_LINE_STRIP);
+                                    //     glu_sys::glVertex3f(begin.x, begin.y, begin.z);
+                                    //     glu_sys::glVertex3f(end.x, end.y, end.z);
+                                    //     glu_sys::glEnd();
+                                    // }
+    
+                                }
+                            }
+                        }
+                    }
+                }
+            
+                let mut vcontext = VisitContext {
+                    location: logical_camera.location,
+                    // debug_plane: Plane::from_point_normal(
+                    //     Vec3f::new(-200.0, 2000.0, -50.0),
+                    //     Vec3f::new(1.0, 2.0, 0.0)
+                    // )
+                };
+    
+                vcontext.visit(&bsp);
+            }
+                    // render_brushes(&brushes, camera.location);
         }
 
         window.gl_swap_window();

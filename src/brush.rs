@@ -1,61 +1,13 @@
-use core::f32;
-
-use crate::{geom::{BoundBox, Plane, PointRelation, Polygon, PolygonRelation, GEOM_EPSILON}, math::{Mat3f, Vec3f}};
+use crate::{geom, math::{Mat3f, Vec3f}};
 
 pub struct Brush {
-    pub polygons: Vec<Polygon>,
-    pub bound_box: BoundBox,
-}
-
-/// Points from some plane sorting function
-fn sort_plane_points(mut points: Vec<Vec3f>, plane: &Plane) -> Vec<Vec3f> {
-    let center = points
-        .iter()
-        .copied()
-        .fold(Vec3f::zero(), std::ops::Add::add)
-        / (points.len() as f32)
-    ;
-
-    let mut sorted = vec![points.pop().unwrap()];
-
-    while !points.is_empty() {
-        let last = *sorted.last().unwrap() - center;
-
-        let smallest_cotan_opt = points
-            .iter()
-            .copied()
-            .enumerate()
-            .filter_map(|(index, p)| {
-                let v = p - center;
-                let cross_normal_dot = (last % v) ^ plane.normal;
-
-                // check for direction and calculate cotangent
-                if cross_normal_dot < 0.0 {
-                    Some((index, (last ^ v) / cross_normal_dot))
-                } else {
-                    None
-                }
-            })
-            .min_by(|l, r| if l.1 <= r.1 {
-                std::cmp::Ordering::Less
-            } else {
-                std::cmp::Ordering::Greater
-            })
-        ;
-
-        if let Some((smallest_cotan_index, _)) = smallest_cotan_opt {
-            sorted.push(points.swap_remove(smallest_cotan_index));
-        } else {
-            break;
-        }
-    }
-
-    sorted
+    pub polygons: Vec<geom::Polygon>,
+    pub bound_box: geom::BoundBox,
 }
 
 impl Brush {
-    pub fn from_planes(planes: &[Plane]) -> Option<Brush> {
-        let mut polygons = Vec::<Polygon>::new();
+    pub fn from_planes(planes: &[geom::Plane]) -> Option<Brush> {
+        let mut polygons = Vec::<geom::Polygon>::new();
 
         for p1 in planes {
             let mut points = Vec::new();
@@ -86,49 +38,27 @@ impl Brush {
                 .into_iter()
                 .filter(|point| planes
                     .iter()
-                    .all(|plane| plane.get_point_relation(*point) != PointRelation::Front)
+                    .all(|plane| plane.get_point_relation(*point) != geom::PointRelation::Front)
                 )
                 .collect();
 
-            // deduplicate points
-            points = points
-                .into_iter()
-                .fold(Vec::new(), |mut prev, candidate| {
-                    for point in prev.iter().copied() {
-                        if (candidate - point).length2() < GEOM_EPSILON {
-                            return prev;
-                        }
-                    }
-
-                    prev.push(candidate);
-                    prev
-                });
+            points = geom::deduplicate_points(points);
             
             // check if points are even a polygon
             if points.len() < 3 {
                 continue;
             }
 
-            // TODO: Fix point sorting, this solution is sh*t
-            let mut points = sort_plane_points(points, p1);
+            points = geom::sort_plane_points(points, *p1);
 
-            let point_normal = Vec3f::cross(
-                (points[2] - points[1]).normalized(),
-                (points[0] - points[1]).normalized(),
-            ).normalized();
-
-            // fix point orientation
-            if (point_normal ^ p1.normal) < 0.0 {
-                points = points.into_iter().rev().collect();
-            }
-
-            polygons.push(Polygon { points, plane: *p1 });
+            polygons.push(geom::Polygon { points, plane: *p1 });
         }
 
-        let mut bound_box = BoundBox::zero();
+        let mut bound_box = geom::BoundBox::zero();
         for polygon in &polygons {
-            bound_box = bound_box.total(&BoundBox::for_points(polygon.points.iter().copied()));
+            bound_box = bound_box.total(&geom::BoundBox::for_points(polygon.points.iter().copied()));
         }
+
         Some(Brush {
             polygons,
             bound_box,
@@ -136,13 +66,13 @@ impl Brush {
     }
 }
 
-pub fn get_map_polygons(brushes: &[Brush], filter: bool) -> Vec<Polygon> {
+pub fn get_map_polygons(brushes: &[Brush], filter: bool) -> Vec<geom::Polygon> {
     if filter {
         let mut result = Vec::new();
 
         for brush in brushes {
             'polygon_loop: for polygon in &brush.polygons {
-                let polygon_bbox = BoundBox::for_points(polygon.points.iter().copied());
+                let polygon_bbox = geom::BoundBox::for_points(polygon.points.iter().copied());
     
                 'second_loop: for second_brush in brushes {
                     if false
@@ -153,7 +83,7 @@ pub fn get_map_polygons(brushes: &[Brush], filter: bool) -> Vec<Polygon> {
                     }
     
                     for second_polygon in &second_brush.polygons {
-                        if second_polygon.plane.get_polygon_relation(polygon) != PolygonRelation::Back {
+                        if second_polygon.plane.get_polygon_relation(polygon) != geom::PolygonRelation::Back {
                             continue 'second_loop;
                         }
                     }
@@ -174,40 +104,4 @@ pub fn get_map_polygons(brushes: &[Brush], filter: bool) -> Vec<Polygon> {
             .cloned()
             .collect::<Vec<_>>()
     }
-
-    // return brushes
-    //     .iter()
-    //     .map(|brush| brush.polygons.iter())
-    //     .flat_map(|v| v)
-    //     .cloned()
-    //     .collect::<Vec<_>>()
-    // ;
-
-    /*
-    let mut result = Vec::new();
-
-    for brush in brushes {
-        'polygon_loop: for polygon in &brush.polygons {
-            let polygon_bbox = BoundBox::for_points(&polygon.points);
-
-            'second_loop: for second in brushes {
-                if std::ptr::eq(brush, second) || !polygon_bbox.is_intersecting(&second.bound_box) {
-                    continue;
-                }
-
-                for second_polygon in &second.polygons {
-                    if second_polygon.plane.get_polygon_relation(polygon) != PolygonRelation::Back {
-                        continue 'second_loop;
-                    }
-                }
-
-                continue 'polygon_loop;
-            }
-
-            result.push(polygon.clone());
-        }
-    }
-
-    result
-     */
 }

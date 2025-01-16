@@ -1,8 +1,6 @@
-use core::f32;
+/// Standard geometry primitive module
 
-use itertools::{chain, Itertools};
-
-use crate::math::{self, Mat2f, Vec2f, Vec3f};
+use crate::math::{Mat2f, Vec2f, Vec3f};
 
 /// Geometric epsilon (1 mm)
 pub const GEOM_EPSILON: f32 = 0.001;
@@ -167,6 +165,16 @@ pub struct Line {
     pub base: Vec3f,
 }
 
+impl Line {
+    /// Build line from points
+    pub fn from_points(first: Vec3f, second: Vec3f) -> Self {
+        Self {
+            direction: (second - first).normalized(),
+            base: first,
+        }
+    }
+}
+
 /// Relation of plane and polygon
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub enum PolygonRelation {
@@ -224,6 +232,26 @@ impl PartialEq for Plane {
 }
 
 impl Plane {
+    /// Build plane for point triple (normal is calculated as if triple will be CCW-oriented)
+    pub fn from_points(p1: Vec3f, p2: Vec3f, p3: Vec3f) -> Self {
+        let normal = Vec3f::cross(
+            (p3 - p2).normalized(),
+            (p1 - p2).normalized()
+        ).normalized();
+
+        let distance = p2 ^ normal;
+
+        Self { normal, distance }
+    }
+
+    /// Build plane from it's point and normal
+    pub fn from_point_normal(point: Vec3f, mut normal: Vec3f) -> Self {
+        // just for safety)
+        normal.normalize();
+
+        Self { distance: point ^ normal, normal }
+    }
+
     // Intersect this plane with another one
     pub fn intersect_plane(&self, rhs: Plane) -> Line {
         let direction = (self.normal % rhs.normal).normalized();
@@ -257,6 +285,38 @@ impl Plane {
         for_direction!(x, y, res.x, res.y,   0.0);
 
         panic!("Maths is broken - line MUST intersect at least one coodrinate plane.");
+    }
+
+    /// Get intersection line of plane and the polygon
+    pub fn intersect_polygon(&self, polygon: &Polygon) -> Option<(Vec3f, Vec3f)> {
+        let mut first: Option<Vec3f> = None;
+        let mut second: Option<Vec3f> = None;
+
+        // current point relation
+        let mut prev_point = *polygon.points.last().unwrap();
+        let mut prev_relation = self.get_point_relation(prev_point);
+
+        for index in 0..polygon.points.len() {
+            let curr_point = *polygon.points.get(index).unwrap();
+            let curr_relation = self.get_point_relation(curr_point);
+
+            if curr_relation == PointRelation::OnPlane {
+                first = Some(curr_point);
+                std::mem::swap(&mut first, &mut second);
+            } else if false
+                || prev_relation == PointRelation::Front && curr_relation == PointRelation::Back
+                || curr_relation == PointRelation::Front && prev_relation == PointRelation::Back
+            {
+                first = Some(self.intersect_line(Line::from_points(prev_point, curr_point)));
+
+                std::mem::swap(&mut first, &mut second);
+            }
+
+            prev_point = curr_point;
+            prev_relation = curr_relation;
+        }
+
+        Option::zip(first, second)
     }
 
     /// Make plane that contains equal point set, but has counter-directional normal
@@ -305,74 +365,70 @@ impl Plane {
         line.base + line.direction * t
     }
 
-    // Split polygon by self
+    /// Split polygon by the plane
     pub fn split_polygon(&self, polygon: &Polygon) -> PolygonSplitResult {
-        // check if polygon actually intersects and cut cases then not.
         match self.get_polygon_relation(polygon) {
             PolygonRelation::Back => return PolygonSplitResult::Back,
             PolygonRelation::Front => return PolygonSplitResult::Front,
             PolygonRelation::OnPlane => return PolygonSplitResult::OnPlane,
-            _ => {}
+            PolygonRelation::Intersects => {}
         };
 
-        let mut new_points = Vec::new();
+        let (first_index, first_point, first_relation) = polygon.points
+            .iter()
+            .enumerate()
+            .map(|(id, vt)| (id, *vt, self.get_point_relation(*vt)))
+            .find(|(_, _, relation)| *relation != PointRelation::OnPlane)
+            .unwrap();
 
-        let mut curr = *polygon.points.last().unwrap();
-        for next in polygon.points.iter().copied() {
-            new_points.push(curr);
+        let mut prev_point = first_point;
+        let mut prev_relation = first_relation;
 
-            let curr_rel = self.get_point_relation(curr);
-            let next_rel = self.get_point_relation(next);
+        let mut first_is_front = first_relation == PointRelation::Front;
+        let mut first_point_set = Vec::new();
+        let mut second_point_set = Vec::new();
+
+        let index_iter = (0..polygon.points.len())
+            .map(|index| (index + first_index + 1) % polygon.points.len());
+        for index in index_iter {
+            // get current point
+            let curr_point = *polygon.points.get(index).unwrap();
+            let curr_relation = self.get_point_relation(curr_point);
 
             // add new point if this line's crossing the polygon.
-            if false
-                || curr_rel == PointRelation::Front && next_rel == PointRelation::Back
-                || curr_rel == PointRelation::Back && next_rel == PointRelation::Front
+            if curr_relation == PointRelation::OnPlane {
+                first_point_set.push(curr_point);
+                second_point_set.push(curr_point);
+
+                first_is_front = !first_is_front;
+                std::mem::swap(&mut first_point_set, &mut second_point_set);
+            } else if false
+                || prev_relation == PointRelation::Front && curr_relation == PointRelation::Back
+                || curr_relation == PointRelation::Front && prev_relation == PointRelation::Back
             {
-                new_points.push(self.intersect_line(Line { base: curr, direction: curr - next }));
+                let intr = self.intersect_line(Line::from_points(prev_point, curr_point));
+                first_point_set.push(intr);
+                second_point_set.push(intr);
+
+                first_is_front = !first_is_front;
+                std::mem::swap(&mut first_point_set, &mut second_point_set);
+
+                first_point_set.push(curr_point);
+            } else {
+                first_point_set.push(curr_point);
             }
 
-            curr = next;
+            prev_point = curr_point;
+            prev_relation = curr_relation;
         }
 
-        // TODO Fix this sh*t
-        let all = new_points.iter().all(|p| self.get_point_relation(*p) != PointRelation::OnPlane);
-        if all {
-            println!("WTF?????");
+        if !first_is_front {
+            std::mem::swap(&mut first_point_set, &mut second_point_set);
         }
-
-        // get resulting loop and find first root point
-        let mut point_loop = new_points
-            .iter()
-            .copied()
-            .cycle()
-            .skip_while(|p| self.get_point_relation(*p) != PointRelation::OnPlane);
-
-        let first_plane_point = point_loop.next().unwrap();
-
-        let first = chain!(
-            std::iter::once(first_plane_point),
-            (&mut point_loop)
-                .take_while_inclusive(|p| self.get_point_relation(*p) != PointRelation::OnPlane)
-        ).collect::<Vec<_>>();
-        
-        let second_plane_point = *first.last().unwrap();
-
-        let second = chain!(
-            std::iter::once(second_plane_point),
-            (&mut point_loop)
-                .take_while_inclusive(|p| self.get_point_relation(*p) != PointRelation::OnPlane)
-        ).collect::<Vec<_>>();
-
-        let (front, back) = match self.get_point_relation(first[1]) {
-            PointRelation::Front   => (first , second),
-            PointRelation::Back    => (second, first ),
-            PointRelation::OnPlane => panic!("geometry broken during 'split_polygon' function execution"),
-        };
 
         PolygonSplitResult::Intersects {
-            front : Polygon { plane: polygon.plane, points: front },
-            back  : Polygon { plane: polygon.plane, points: back  },
+            front: Polygon { plane: polygon.plane, points: first_point_set  },
+            back:  Polygon { plane: polygon.plane, points: second_point_set },
         }
     }
 }
@@ -388,30 +444,103 @@ pub struct Polygon {
     pub plane: Plane,
 }
 
-impl Polygon {
-    pub fn from_ccw(points: Vec<Vec3f>) -> Self {
-        assert!(points.len() >= 3);
+/// Remove duplicates from point set
+pub fn deduplicate_points(points: Vec<Vec3f>) -> Vec<Vec3f> {
+    points
+        .into_iter()
+        .fold(Vec::new(), |mut prev, candidate| {
+            for point in prev.iter().copied() {
+                if (candidate - point).length2() < GEOM_EPSILON {
+                    return prev;
+                }
+            }
 
-        let normal = ((points[2] - points[1]).normalized() % (points[0] - points[1]).normalized()).normalized();
+            prev.push(candidate);
+            prev
+        })
+}
 
-        let point = points
+/// Sort point set by angle from pivot point
+pub fn sort_plane_points(mut points: Vec<Vec3f>, plane: Plane) -> Vec<Vec3f> {
+    let center = points
+        .iter()
+        .copied()
+        .fold(Vec3f::zero(), std::ops::Add::add)
+        / (points.len() as f32)
+    ;
+
+    let mut sorted = vec![points.pop().unwrap()];
+
+    while !points.is_empty() {
+        let last = *sorted.last().unwrap() - center;
+
+        let smallest_cotan_opt = points
             .iter()
-            .fold(vec3f!(0.0, 0.0, 0.0), |s, v| s + *v)
-            / points.len() as f32
+            .copied()
+            .enumerate()
+            .filter_map(|(index, p)| {
+                let v = p - center;
+                let cross_normal_dot = (last % v) ^ plane.normal;
+
+                // check for direction and calculate cotangent
+                if cross_normal_dot < 0.0 {
+                    Some((index, (last ^ v) / cross_normal_dot))
+                } else {
+                    None
+                }
+            })
+            .min_by(|l, r| if l.1 <= r.1 {
+                std::cmp::Ordering::Less
+            } else {
+                std::cmp::Ordering::Greater
+            })
         ;
 
+        if let Some((smallest_cotan_index, _)) = smallest_cotan_opt {
+            sorted.push(points.swap_remove(smallest_cotan_index));
+        } else {
+            break;
+        }
+    }
+
+    // fix point set orientation
+    // TODO: Fix this sh*tcode
+    if sorted.len() >= 3 {
+        let point_normal = Vec3f::cross(
+            (sorted[2] - sorted[1]).normalized(),
+            (sorted[0] - sorted[1]).normalized(),
+        ).normalized();
+    
+        // fix point orientation
+        if (point_normal ^ plane.normal) < 0.0 {
+            sorted.reverse();
+        }
+    }
+
+    sorted
+}
+
+impl Polygon {
+    /// Negate polygon orientation (e.g. normal is now -normal, point order is reversed to fit normal.)
+    pub fn negate_orientation(&mut self) {
+        self.plane = self.plane.negate_direction();
+        self.points.reverse();
+    }
+
+    /// From convex point set, normal is calculated by assuming polygon is clockwise
+    pub fn from_ccw(points: Vec<Vec3f>) -> Self {
+        // yep, that's all
+        assert!(points.len() >= 3);
         Self {
-            plane: Plane {
-                normal,
-                distance: point ^ normal,
-            },
+            plane: Plane::from_points(points[0], points[1], points[2]),
             points,
         }
     }
 
     /// Build polygon from clockwise-going points
-    pub fn from_cw(points: Vec<Vec3f>) -> Self {
+    pub fn from_cw(mut points: Vec<Vec3f>) -> Self {
         // yep, that's very ineffective solution, but I don't care (in this case)
-        Self::from_ccw(points.into_iter().rev().collect())
+        points.reverse();
+        Self::from_ccw(points)
     }
 }

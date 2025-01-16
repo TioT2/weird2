@@ -1,7 +1,7 @@
 use crate::{geom, math::Vec3f};
 
 /// Declare actual map builder module
-mod builder;
+pub mod builder;
 
 
 /// Volume identifier
@@ -76,7 +76,7 @@ impl LocationBsp {
     pub fn find_volume(&self, position: Vec3f) -> Option<VolumeId> {
         match self {
             Self::Plane {
-                plane,
+                 plane,
                 front,
                 back
             } => {
@@ -99,12 +99,11 @@ pub struct Location {
     volumes: Vec<Volume>,
 }
 impl Location {
-
+    /// Build location from???
     pub fn build(brushes: Vec<crate::Brush>) -> Location {
         builder::build(brushes)
     }
 
-    
     /// Determine which (unit) volume point is locacted in
     pub fn get_point_volume(&self, _point: Vec3f) -> Option<VolumeId> {
         unimplemented!()

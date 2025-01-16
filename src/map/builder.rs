@@ -3,6 +3,9 @@
 2. Calculate hull volume
 3. Build 'render polyhedra' and corresponding rendering BSP
 4. Resolve render polyhedra portals
+5. Remove invisible sections (all volumes that contains external
+    polygons or portal to such are considered invisible.
+    That's the exact reason why levels must not have 'holes' in their structure)
 */
 
 use std::num::NonZeroU32;
@@ -17,18 +20,19 @@ pub struct PhysicalPolygon {
 }
 
 /// Hull polygon
-struct HullPolygon {
+pub struct HullPolygon {
     /// Polygon itself
     pub polygon: geom::Polygon,
 
     /// Do polygon belong to set of polygons of initial hull
-    /// (used for invisible surface removal)
+    /// (used in invisible surface removal pass)
     pub is_external: bool,
 
     /// Set of all polygons that will be actually displayed
     pub physical_polygons: Vec<PhysicalPolygon>,
 
     /// Reference to split this polygon born at
+    /// (used in portal resolution pass)
     pub split_reference: Option<SplitReference>,
 }
 
@@ -41,6 +45,7 @@ pub struct SplitId(NonZeroU32);
 pub struct VolumeId(NonZeroU32);
 
 /// Reference to certain split pass during split pass
+#[derive(Copy, Clone)]
 pub struct SplitReference {
     /// split operation index
     pub split_id: SplitId,
@@ -50,7 +55,7 @@ pub struct SplitReference {
 }
 
 /// Hull volume
-struct HullVolume {
+pub struct HullVolume {
     /// Set of external polygons
     pub polygons: Vec<HullPolygon>,
 }
@@ -193,7 +198,7 @@ impl HullVolume {
                     geom::PolygonRelation::OnPlane => {
                         // It's technically **should not** be reached,
                         // but I don't want to have a panic here...
-                        eprintln!("Potential splitter plane is incident face of volume it holds.");
+                        eprintln!("Potential splitter plane is incident to face of volume it holds.");
                     }
                 }
 
@@ -202,6 +207,33 @@ impl HullVolume {
         ;
 
         result
+    }
+
+    // Get intersection polygon of current volume and plane
+    fn get_intersection_polygon(&self, plane: geom::Plane) -> Option<geom::Polygon> {
+        // Get ALL splitter plane intersection points
+        let mut intersection_points = self.polygons
+            .iter()
+            .map(|hull_polygon| plane.intersect_polygon(&hull_polygon.polygon))
+            .filter_map(|v| v)
+            .flat_map(|(begin, end)| [begin, end].into_iter())
+            .collect::<Vec<Vec3f>>();
+
+        // Deduplicate and sort them
+        intersection_points = geom::deduplicate_points(intersection_points);
+
+        if intersection_points.len() < 3 {
+            None
+        } else {
+            intersection_points = geom::sort_plane_points(intersection_points, plane);
+            Some(geom::Polygon {
+                points: geom::sort_plane_points(intersection_points, plane),
+                plane
+            })
+        }
+
+
+        // Build intersection polygon
     }
 
     /// Split hull volume by plane
@@ -223,27 +255,110 @@ impl HullVolume {
         incident_front_polygons: Vec<PhysicalPolygon>,
         incident_back_polygon: Vec<PhysicalPolygon>,
         split_id: SplitId,
-    ) -> (HullVolume, HullVolume, geom::Polygon) {
-        /*
-        1. build intersection polygon of `self` and `plane`.
-        2. split self by splitter plane
-        */
+    ) -> Option<(HullVolume, HullVolume, geom::Polygon)> {
 
-        todo!()
+        // intersection polygon MUST exist
+        let mut intersection_polygon = self.get_intersection_polygon(plane)?;
+
+        let mut front_hull_polygons = Vec::new();
+        let mut back_hull_polygons = Vec::new();
+
+        /*  */
+
+        for hull_polygon in self.polygons {
+            match plane.split_polygon(&hull_polygon.polygon) {
+                geom::PolygonSplitResult::Front => {
+                    front_hull_polygons.push(hull_polygon);
+                }
+                geom::PolygonSplitResult::Back => {
+                    back_hull_polygons.push(hull_polygon);
+                }
+                geom::PolygonSplitResult::Intersects { front: front_hull_polygon, back: back_hull_polygon } => {
+                    // split physical polygons
+                    let mut front_physical_polygons = Vec::new();
+                    let mut back_physical_polygons = Vec::new();
+
+                    for physical_polygon in hull_polygon.physical_polygons {
+                        match plane.split_polygon(&physical_polygon.polygon) {
+                            geom::PolygonSplitResult::Front => {
+                                front_physical_polygons.push(physical_polygon);
+                            }
+                            geom::PolygonSplitResult::Back => {
+                                back_physical_polygons.push(physical_polygon);
+                            }
+                            geom::PolygonSplitResult::Intersects { front, back } => {
+                                front_physical_polygons.push(PhysicalPolygon { polygon: front });
+                                back_physical_polygons.push(PhysicalPolygon { polygon: back });
+                            }
+                            geom::PolygonSplitResult::OnPlane => {
+                                // probably panic here...
+                                eprintln!("Physical polygon somehow lies on volume splitter plane...");
+                            }
+                        }
+                    }
+                    
+                    front_hull_polygons.push(HullPolygon {
+                        is_external: hull_polygon.is_external,
+                        physical_polygons: front_physical_polygons,
+                        polygon: front_hull_polygon,
+                        split_reference: hull_polygon.split_reference,
+                    });
+
+                    back_hull_polygons.push(HullPolygon {
+                        is_external: hull_polygon.is_external,
+                        physical_polygons: back_physical_polygons,
+                        polygon: back_hull_polygon,
+                        split_reference: hull_polygon.split_reference,
+                    });
+                }
+                geom::PolygonSplitResult::OnPlane => {
+                    eprintln!("Hull polygon somehow lies on volume splitter plane...");
+                }
+            }
+        }
+
+        let split_polygon = intersection_polygon.clone();
+
+        let front_intersection_hull_polygon = HullPolygon {
+            is_external: false,
+            physical_polygons: incident_front_polygons,
+            polygon: intersection_polygon.clone(),
+            split_reference: Some(SplitReference { edge_is_front: true, split_id })
+        };
+        
+        // negate intersection polygon's orientation to match back
+        intersection_polygon.negate_orientation();
+        let back_intersection_hull_polygon = HullPolygon {
+            is_external: false,
+            physical_polygons: incident_back_polygon,
+            polygon: intersection_polygon,
+            split_reference: Some(SplitReference { edge_is_front: false, split_id })
+        };
+
+        front_hull_polygons.push(front_intersection_hull_polygon);
+        back_hull_polygons.push(back_intersection_hull_polygon);
+
+        let front_hull_volume = HullVolume { polygons: front_hull_polygons };
+        let back_hull_volume = HullVolume { polygons: back_hull_polygons };
+
+        Some((front_hull_volume, back_hull_volume, split_polygon))
     }
 }
 
 pub struct SplitInfo {
     /// Polygon used to split
     pub split_polygon: geom::Polygon,
+
+    /// Split Id
+    pub id: SplitId,
 }
 
 pub struct Builder {
     /// Final volumes
-    volumes: Vec<HullVolume>,
+    pub volumes: Vec<HullVolume>,
 
     /// Split infos
-    split_infos: Vec<SplitInfo>,
+    pub split_infos: Vec<SplitInfo>,
 }
 
 impl Builder {
@@ -322,10 +437,10 @@ impl Builder {
 
             // kinda heuristics
             let splitter_rate = 0.0
-                + current_back.abs_diff(current_front) as f32
-                + current_split as f32 * 0.5
+                + current_back.abs_diff(current_front) as f32 * 0.5
+                + current_split as f32
                 - current_on as f32
-                + volume_polygon_rate * 0.25
+                + volume_polygon_rate * 0.125
             ;
 
             if splitter_rate < best_splitter_rate {
@@ -374,16 +489,25 @@ impl Builder {
             }
         }
     
-        // get current split identifier
+        // Get current split identifier
         let split_id = self.get_next_split_id();
 
-        let (front_volume, back_volume, split_polygon) = volume.split(splitter_plane, front_incident_polygons, back_incident_polygons, split_id);
+        // Split MUST be possible, because splitter plane face belongs to hull volume (by definition)
+        // If it's not the case, something went totally wrong.
+        let (front_volume, back_volume, split_polygon) = volume
+            .split(
+                splitter_plane,
+                front_incident_polygons,
+                back_incident_polygons,
+                split_id
+            )
+            .unwrap();
 
         let front_bsp = self.build_volume(front_volume, front_polygons);
         let back_bsp = self.build_volume(back_volume, back_polygons);
 
         // add split info
-        self.add_split(SplitInfo { split_polygon });
+        self.add_split(SplitInfo { split_polygon, id: split_id });
 
         VolumeBsp::Node {
             front: Some(Box::new(front_bsp)),
@@ -401,7 +525,7 @@ impl Builder {
                 geom::BoundBox::zero(),
                 |total, brush| total.total(&brush.bound_box)
             )
-            .extend(Vec3f::new(16.0, 16.0, 16.0));
+            .extend(Vec3f::new(200.0, 200.0, 200.0));
 
         // calculate hull volume
         let hull_volume = HullVolume::from_bound_box(hull);
@@ -418,20 +542,32 @@ impl Builder {
 
     /// Start portal resolve pass
     pub fn start_resolve_portals(&mut self) {
+        // portal resolve: 
+        // vec<portal> reoslve))
+        struct SplitResolveInfo<'t> {
+            id: SplitId,
 
-        todo!()
+            split_polygon: &'t geom::Polygon,
+
+            faces: Vec<(&'t mut HullVolume, usize)>,
+        }
+
+        for info in &self.split_infos {
+        }
+
+        todo!("Builder.start_resolve_portals function")
     }
 
     /// Remove invisible volumes
     pub fn start_remove_invisible(&mut self) {
-        todo!()
+        todo!("Builder.start_remove_invisible function")
     }
 }
 
 pub fn build(brushes: Vec<Brush>) -> Location {
     let mut builder = Builder::new();
 
-    // Build volumes
+    // Build volumes & volume BSP
     let volume_bsp = builder.start_build_volumes(&brushes);
 
     // Resolve volume portals

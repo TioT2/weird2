@@ -36,7 +36,7 @@ fn sort_plane_points(mut points: Vec<Vec3f>, plane: &Plane) -> Vec<Vec3f> {
                     None
                 }
             })
-            .min_by(|l, r| if l.1 < r.1 {
+            .min_by(|l, r| if l.1 <= r.1 {
                 std::cmp::Ordering::Less
             } else {
                 std::cmp::Ordering::Greater
@@ -109,10 +109,20 @@ impl Brush {
                 continue;
             }
 
-            polygons.push(Polygon {
-                points: sort_plane_points(points, p1),
-                plane: *p1,
-            })
+            // TODO: Fix point sorting, this solution is sh*t
+            let mut points = sort_plane_points(points, p1);
+
+            let point_normal = Vec3f::cross(
+                (points[2] - points[1]).normalized(),
+                (points[0] - points[1]).normalized(),
+            ).normalized();
+
+            // fix point orientation
+            if (point_normal ^ p1.normal) < 0.0 {
+                points = points.into_iter().rev().collect();
+            }
+
+            polygons.push(Polygon { points, plane: *p1 });
         }
 
         let mut bound_box = BoundBox::zero();

@@ -52,6 +52,7 @@ impl BoundBox {
         }
     }
 
+    /// Build minimal boundbox that contains this pair of points
     pub fn new(p1: Vec3f, p2: Vec3f) -> Self {
         Self {
             min: Vec3f::new(
@@ -67,14 +68,22 @@ impl BoundBox {
         }
     }
 
+    /// Get boundbox maximal fitting coordinates
     pub fn max(self) -> Vec3f {
         self.max
     }
 
+    /// Get boundbox minimal fitting coordinates
     pub fn min(self) -> Vec3f {
         self.min
     }
 
+    /// Get boundbox dimensions
+    pub fn size(self) -> Vec3f {
+        self.max - self.min
+    }
+
+    /// Translate boundbox to some extent
     pub fn translate(self, distance: Vec3f) -> Self {
         Self {
             min: self.min + distance,
@@ -82,6 +91,7 @@ impl BoundBox {
         }
     }
 
+    /// Scale boundbox
     pub fn scale(self, scale: Vec3f) -> Self {
         Self {
             min: self.min * scale,
@@ -89,13 +99,21 @@ impl BoundBox {
         }
     }
 
+    /// Extend boundbox by some (positive) vector.
+    /// In case if delta is negative,
     pub fn extend(self, delta: Vec3f) -> Self {
-        Self {
-            min: self.min - delta,
-            max: self.max + delta,
+        if delta.x < 0.0 || delta.y < 0.0 || delta.z < 0.0 {
+            self
+        } else {
+            Self {
+                min: self.min - delta,
+                max: self.max + delta,
+            }
         }
+
     }
 
+    /// Get minimal boundbox that contains all points from both of `self` and `rhs`
     pub fn total(&self, rhs: &BoundBox) -> Self {
         Self {
             min: Vec3f::new(
@@ -111,6 +129,8 @@ impl BoundBox {
         }
     }
 
+    /// Calculate common boundbox for some point sef.
+    /// Note: Point set must be finite (if you want to get result, of course).
     pub fn for_points(iter: impl Iterator<Item = Vec3f>) -> Self {
         let mut min = Vec3f::new(f32::INFINITY, f32::INFINITY, f32::INFINITY);
         let mut max = Vec3f::new(f32::NEG_INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY);
@@ -128,41 +148,71 @@ impl BoundBox {
         Self { min, max }
     }
 
+    /// Check if boundbox intersection isn't empty
     pub fn is_intersecting(&self, another: &BoundBox) -> bool {
         true
             && self.max.x >= another.min.x && self.min.x <= another.max.x
             && self.max.y >= another.min.y && self.min.y <= another.max.y
             && self.max.z >= another.min.z && self.min.z <= another.max.z
-    }
+    } // is_intersecting
 }
 
+/// Line in space
 #[derive(Debug, Copy, Clone)]
 pub struct Line {
+    /// Line direction vector, assumed to be normalized
     pub direction: Vec3f,
+
+    /// Line base point
     pub base: Vec3f,
 }
 
+/// Relation of plane and polygon
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub enum PolygonRelation {
+    /// Polygon located in front of plane
     Front,
+
+    /// Polygon located back of plane
     Back,
+
+    /// Polygon located completely on plane
     OnPlane,
+
+    /// Polygon intersects with plane (splitted by plane)
     Intersects,
 }
 
+/// Relation of plane and point
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub enum PointRelation {
+    /// Point it located behind plane
     Back,
+
+    /// Point is located on plane
     OnPlane,
+
+    /// Point is located in front of plane
     Front,
 }
 
+/// Polygon by plane splitting result, resembles `PolygonRelation` by structure
 pub enum PolygonSplitResult {
+    /// Polygon located in front of plane, so it doesn't require splitting
     Front,
+
+    /// Polygon located back of plane, so it doesn't require splitting
     Back,
+
+    /// Polygon located back of plane, so it doesn't require splitting
     OnPlane,
+
+    /// Polygon intersects with plane
     Intersects {
+        /// Front part
         front: Polygon,
+
+        /// Back part
         back: Polygon,
     },
 }
@@ -174,28 +224,8 @@ impl PartialEq for Plane {
 }
 
 impl Plane {
-    pub fn translate(self, point: Vec3f) -> Self {
-        Self {
-            normal: self.normal,
-            distance: point ^ self.normal,
-        }
-    }
-
-    pub fn scale(self, scale: Vec3f) -> Self {
-        let new_normal = Vec3f::new(
-            self.normal.x * scale.y * scale.z,
-            self.normal.y * scale.x * scale.z,
-            self.normal.z * scale.x * scale.y,
-        );
-        let nn_len = new_normal.length();
-        Self {
-            normal: new_normal / nn_len,
-            distance: self.distance * scale.x * scale.y * scale.z / nn_len,
-        }
-    } // scale
-
-    // intersection of current plane with other one calculation function
-    pub fn intersect_plane(self, rhs: &Plane) -> Line {
+    // Intersect this plane with another one
+    pub fn intersect_plane(&self, rhs: Plane) -> Line {
         let direction = (self.normal % rhs.normal).normalized();
 
         let npvec = Vec2f::new(
@@ -229,7 +259,12 @@ impl Plane {
         panic!("Maths is broken - line MUST intersect at least one coodrinate plane.");
     }
 
-    /// get relation of point and plane
+    /// Make plane that contains equal point set, but has counter-directional normal
+    pub fn negate_direction(self) -> Self {
+        Self { normal: -self.normal, distance: -self.distance }
+    }
+
+    /// Get relation of point and plane
     pub fn get_point_relation(&self, point: Vec3f) -> PointRelation {
         let metrics = (point ^ self.normal) - self.distance;
 
@@ -242,7 +277,7 @@ impl Plane {
         }
     }
 
-    // get relation of plane to this polygon. is used in intersection later.
+    // Get relation of plane and polygon
     pub fn get_polygon_relation(&self, polygon: &Polygon) -> PolygonRelation {
         let mut front_occured = false;
         let mut back_occured = false;
@@ -263,14 +298,14 @@ impl Plane {
         }
     }
 
-    // intersection of this polygon and line getting function
+    // Get intersection of this polygon and line
     pub fn intersect_line(&self, line: Line) -> Vec3f {
         let t = (self.distance - (line.base ^ self.normal)) / (line.direction ^ self.normal);
 
         line.base + line.direction * t
     }
 
-    // polygon by current plane splitting function
+    // Split polygon by self
     pub fn split_polygon(&self, polygon: &Polygon) -> PolygonSplitResult {
         // check if polygon actually intersects and cut cases then not.
         match self.get_polygon_relation(polygon) {
@@ -332,22 +367,17 @@ impl Plane {
         let (front, back) = match self.get_point_relation(first[1]) {
             PointRelation::Front   => (first , second),
             PointRelation::Back    => (second, first ),
-            PointRelation::OnPlane => panic!("split_polygon broken"),
-        };
-
-        let polygonize = |v| Polygon {
-            plane: polygon.plane,
-            points: v
+            PointRelation::OnPlane => panic!("geometry broken during 'split_polygon' function execution"),
         };
 
         PolygonSplitResult::Intersects {
-            front : polygonize(front),
-            back  : polygonize(back),
+            front : Polygon { plane: polygon.plane, points: front },
+            back  : Polygon { plane: polygon.plane, points: back  },
         }
     }
 }
 
-/// Polygon representation structure
+/// Polygon. Polygon structure contains .
 /// TODO: build convexity-safe polygon.
 #[derive(Debug, Clone)]
 pub struct Polygon {
@@ -359,8 +389,7 @@ pub struct Polygon {
 }
 
 impl Polygon {
-    /// Build polygon from clockwise-going points
-    pub fn from_cw(points: Vec<Vec3f>) -> Self {
+    pub fn from_ccw(points: Vec<Vec3f>) -> Self {
         assert!(points.len() >= 3);
 
         let normal = ((points[2] - points[1]).normalized() % (points[0] - points[1]).normalized()).normalized();
@@ -376,7 +405,13 @@ impl Polygon {
                 normal,
                 distance: point ^ normal,
             },
-            points
+            points,
         }
+    }
+
+    /// Build polygon from clockwise-going points
+    pub fn from_cw(points: Vec<Vec3f>) -> Self {
+        // yep, that's very ineffective solution, but I don't care (in this case)
+        Self::from_ccw(points.into_iter().rev().collect())
     }
 }

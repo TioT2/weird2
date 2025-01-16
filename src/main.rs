@@ -215,6 +215,7 @@ fn parse_map(map: &str) -> Option<Vec<Vec<Plane>>> {
             let p2 = parse_vec3()?;
             let p3 = parse_vec3()?;
 
+            // points are written in clockwise order, as I know
             let normal = -((p3 - p2).normalized() % (p1 - p2).normalized()).normalized();
             let distance = p2 ^ normal;
 
@@ -223,6 +224,92 @@ fn parse_map(map: &str) -> Option<Vec<Vec<Plane>>> {
     }
 
     Some(result)
+}
+
+pub unsafe fn render_bsp(bsp: &bsp::Bsp, camera_location: Vec3f) {
+    struct VisitContext {
+        location: Vec3f,
+    }
+
+    impl VisitContext {
+        pub unsafe fn visit(&mut self, node: &bsp::Bsp) {
+            match node {
+                bsp::Bsp::Element { splitter, front, back } => {
+                    match splitter.get_point_relation(self.location) {
+                        PointRelation::Front => {
+                            self.visit(back);
+                            self.visit(front);
+                        }
+                        _ => {
+                            self.visit(front);
+                            self.visit(back);
+                        }
+                    }
+                }
+                bsp::Bsp::Leaf { polygons } => {
+                    
+                    'polygon_loop: for polygon in polygons {
+
+                        // let point_normal = Vec3f::cross(
+                        //     (polygon.points[2] - polygon.points[1]).normalized(),
+                        //     (polygon.points[0] - polygon.points[1]).normalized(),
+                        // ).normalized();
+
+                        // backface culling
+                        if (polygon.plane.normal ^ self.location) - polygon.plane.distance <= 0.0 {
+                            continue 'polygon_loop;
+                        }
+
+                        let color = [
+                            ((polygon.plane.normal.x + 1.0) / 2.0 * 255.0) as u8,
+                            ((polygon.plane.normal.y + 1.0) / 2.0 * 255.0) as u8,
+                            ((polygon.plane.normal.z + 1.0) / 2.0 * 255.0) as u8
+                        ];
+
+                        glu_sys::glColor3ub(color[0], color[1], color[2]);
+
+                        glu_sys::glBegin(glu_sys::GL_POLYGON);
+                        for point in &polygon.points {
+                            glu_sys::glVertex3f(point.x, point.y, point.z);
+                        }
+                        glu_sys::glEnd();
+                    }
+                }
+            }
+        }
+    }
+
+    VisitContext { location: camera_location, }.visit(&bsp);
+}
+
+pub unsafe fn render_brushes(brushes: &[Brush], camera_location: Vec3f) {
+    for brush in brushes {
+        'polygon_loop: for polygon in &brush.polygons {
+            let point_normal = Vec3f::cross(
+                (polygon.points[2] - polygon.points[1]).normalized(),
+                (polygon.points[0] - polygon.points[1]).normalized(),
+            ).normalized();
+            // point_normal = point_normal * (point_normal ^ polygon.plane.normal).signum();
+
+            if (point_normal ^ camera_location) - polygon.plane.distance <= 0.0 {
+                continue 'polygon_loop;
+            }
+
+            let color = [
+                ((polygon.plane.normal.x + 1.0) / 2.0 * 255.0) as u8,
+                ((polygon.plane.normal.y + 1.0) / 2.0 * 255.0) as u8,
+                ((polygon.plane.normal.z + 1.0) / 2.0 * 255.0) as u8
+            ];
+
+            glu_sys::glColor3ub(color[0], color[1], color[2]);
+
+            glu_sys::glBegin(glu_sys::GL_POLYGON);
+            for point in &polygon.points {
+                glu_sys::glVertex3f(point.x, point.y, point.z);
+            }
+            glu_sys::glEnd();
+        }
+    }
 }
 
 fn main() {
@@ -303,72 +390,8 @@ fn main() {
                 1.0
             );
 
-            // let view_matrix = Mat4::view(
-            //     camera.location,
-            //     camera.location + camera.direction,
-            //     Vec3f::new(0.0, 0.0, 1.0)
-            // );
-            // let projection_matrix = Mat4::projection_frustum(
-            //     -0.01,
-            //     0.01,
-            //     -0.01,
-            //     0.01,
-            //     0.01,
-            //     1024.0
-            // );
-            // let view_projection_matrix = view_matrix * projection_matrix;
-
-            struct VisitContext {
-                location: Vec3f,
-            }
-
-            impl VisitContext {
-                pub unsafe fn visit(&mut self, node: &bsp::Bsp) {
-                    match node {
-                        bsp::Bsp::Element { splitter, front, back } => {
-                            match splitter.get_point_relation(self.location) {
-                                PointRelation::Front => {
-                                    self.visit(back);
-                                    self.visit(front);
-                                }
-                                _ => {
-                                    self.visit(front);
-                                    self.visit(back);
-                                }
-                            }
-                        }
-                        bsp::Bsp::Leaf { polygons } => {
-                            
-                            'polygon_loop: for polygon in polygons {
-
-                                // backface culling
-                                if (polygon.plane.normal ^ self.location) - polygon.plane.distance <= 0.0 {
-                                    continue 'polygon_loop;
-                                }
-
-                                let color = [
-                                    ((polygon.plane.normal.x + 1.0) / 2.0 * 255.0) as u8,
-                                    ((polygon.plane.normal.y + 1.0) / 2.0 * 255.0) as u8,
-                                    ((polygon.plane.normal.z + 1.0) / 2.0 * 255.0) as u8
-                                ];
-
-                                glu_sys::glColor3ub(color[0], color[1], color[2]);
-
-                                glu_sys::glBegin(glu_sys::GL_POLYGON);
-                                for point in &polygon.points {
-                                    glu_sys::glVertex3f(point.x, point.y, point.z);
-                                }
-                                glu_sys::glEnd();
-                            }
-                        }
-                    }
-                }
-            }
-
-            VisitContext {
-                location: camera.location,
-            }
-                .visit(&bsp);
+            render_bsp(&bsp, camera.location);
+            // render_brushes(&brushes, camera.location);
         }
 
         window.gl_swap_window();

@@ -205,15 +205,18 @@ impl HullVolume {
     }
 
     /// Split hull volume by plane
+    /// 
     /// # Inputs
     /// - `plane` plane to split by
-    /// - `indicent_front_polygons` polygons
-    /// - `indicent_back_polygons` polygons
+    /// - `indicent_front_polygons` polygons that should belong to front hull
+    /// - `indicent_back_polygons` polygons that should belong to back hull
+    /// - `split_id` ID of split operation (used during portal resolve pass)
     /// 
     /// # Result
-    /// - front polygon
-    /// - back polygon
-    /// - polygon || plane
+    /// Triple, that contains:
+    /// - front hull
+    /// - back hull
+    /// - split polygon (polygon normal directed as plane)
     pub fn split(
         self,
         plane: geom::Plane,
@@ -221,6 +224,11 @@ impl HullVolume {
         incident_back_polygon: Vec<PhysicalPolygon>,
         split_id: SplitId,
     ) -> (HullVolume, HullVolume, geom::Polygon) {
+        /*
+        1. build intersection polygon of `self` and `plane`.
+        2. split self by splitter plane
+        */
+
         todo!()
     }
 }
@@ -385,7 +393,7 @@ impl Builder {
     }
 
     /// Start volume building pass
-    pub fn start_build_volumes(&mut self, brushes: &[Brush]) {
+    pub fn start_build_volumes(&mut self, brushes: &[Brush]) -> VolumeBsp {
         // calculate polygon set hull
         let hull = brushes
             .iter()
@@ -405,17 +413,18 @@ impl Builder {
             .map(|polygon| PhysicalPolygon { polygon: polygon.clone() })
             .collect::<Vec<_>>();
 
-        self.build_volume(hull_volume, polygons);
+        self.build_volume(hull_volume, polygons)
     }
 
     /// Start portal resolve pass
     pub fn start_resolve_portals(&mut self) {
 
+        todo!()
     }
 
     /// Remove invisible volumes
     pub fn start_remove_invisible(&mut self) {
-
+        todo!()
     }
 }
 
@@ -423,7 +432,7 @@ pub fn build(brushes: Vec<Brush>) -> Location {
     let mut builder = Builder::new();
 
     // Build volumes
-    builder.start_build_volumes(&brushes);
+    let volume_bsp = builder.start_build_volumes(&brushes);
 
     // Resolve volume portals
     builder.start_resolve_portals();

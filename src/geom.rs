@@ -527,6 +527,27 @@ impl Polygon {
         self.points.reverse();
     }
 
+    /// Build boundbox for polygon
+    pub fn build_bound_box(&self) -> BoundBox {
+        BoundBox::for_points(self.points.iter().copied())
+    } // build_bound_box
+
+    /// Iterator on planes that are parallel to polygon normal and contain corresponding edges
+    pub fn iter_edge_planes<'t>(&'t self) -> impl Iterator<Item = Plane> + 't {
+        (0..self.points.len())
+            .map(|index| {
+                let first = *self.points.get(index).unwrap();
+                let second = *self.points.get((index + 1) % self.points.len()).unwrap();
+
+                let normal = Vec3f::cross(
+                    second - first,
+                    self.plane.normal
+                ).normalized();
+
+                Plane::from_point_normal(first, normal)
+            })
+    } // iter_edge_planes
+
     /// From convex point set, normal is calculated by assuming polygon is clockwise
     pub fn from_ccw(points: Vec<Vec3f>) -> Self {
         // yep, that's all

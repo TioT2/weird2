@@ -1,5 +1,5 @@
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use brush::Brush;
 use geom::{Plane, PointRelation};
@@ -291,23 +291,23 @@ fn main() {
     let mut input = Input::new();
     let mut camera = Camera::new();
 
+    camera.location = Vec3f::new(-200.0, 2000.0, -50.0);
+
     // let bsp = {
     //     let polygons = brush::get_map_polygons(&brushes, false);
     //     bsp::Bsp::build(&polygons)
     // };
 
-    let volumes = {
-        let mut builder = map::builder::Builder::new();
-        builder.start_build_volumes(&brushes);
-        builder.volumes
-    };
+    let mut builder = map::builder::Builder::new();
+    builder.start_build_volumes(&brushes);
+    builder.start_resolve_portals();
+
+    // perform tiny volume debug check
 
     let mut do_sync_logical_camera = true;
     let mut do_enable_depth_test = true;
 
-    println!("count: {}", volumes.len());
-    // return;
-    // let mut logical_camera = camera;
+    let mut logical_camera = camera;
 
     'main_loop: loop {
         input.release_changed();
@@ -343,9 +343,9 @@ fn main() {
             do_enable_depth_test = !do_enable_depth_test;
         }
 
-        // if do_sync_logical_camera {
-        //     logical_camera = camera;
-        // }
+        if do_sync_logical_camera {
+            logical_camera = camera;
+        }
 
         unsafe {
             if do_enable_depth_test {
@@ -378,11 +378,125 @@ fn main() {
 
             // println!("camera: <{}, {}, {}>", camera.location.x, camera.location.y, camera.location.z);
 
+            // Render by BSP
+            'render: {
+                println!("Rendering started!");
+
+                let volume_id_opt = builder.volume_bsp.as_ref().unwrap().traverse(logical_camera.location);
+
+                let Some(volume_index) = volume_id_opt else {
+                    break 'render;
+                };
+
+                let start_volume = builder.volumes.get(volume_index).unwrap();
+
+                struct RenderContext<'t> {
+                    camera_location: Vec3f,
+                    camera_direction: Vec3f,
+                    camera_plane: Plane,
+                    builder: &'t map::builder::Builder,
+                    render_set: BTreeSet<usize>,
+                    depth: usize,
+                }
+
+                impl<'t> RenderContext<'t> {
+                    pub fn render_volume(&mut self, volume: &map::builder::HullVolume) {
+                        // if self.depth >= 32 {
+                        //     eprintln!("Rendering depth exceeded 32!");
+                        //     return;
+                        // }
+
+                        self.depth += 1;
+
+                        for face in &volume.faces {
+                            'portal_rendering: for portal in &face.portal_polygons {
+                                let polygon = self.builder.portal_polygons
+                                    .get(portal.polygon_set_index)
+                                    .unwrap();
+
+                                // if self.camera_direction ^ polygon.plane.normal >= 0.0 {
+                                //     continue 'portal_rendering;
+                                // }
+
+                                // perform check
+                                // let backface_cull_result =
+                                //     (polygon.plane.normal ^ self.camera_location) - polygon.plane.distance
+                                //     >= 0.0
+                                // ;
+                                // if backface_cull_result != portal.is_front {
+                                //     continue 'portal_rendering;
+                                // }
+
+                                if self.render_set.contains(&portal.dst_volume_index) {
+                                    // println!("Volume is already rendered!");
+                                    continue 'portal_rendering;
+                                }
+                                _ = self.render_set.insert(portal.dst_volume_index);
+
+                                let dst_volume = self.builder.volumes.get(portal.dst_volume_index).unwrap();
+
+                                self.render_volume(dst_volume);
+                            }
+
+                            'polygon_rendering: for physical_polygon in &face.physical_polygons {
+                                let polygon = &physical_polygon.polygon;
+
+                                // if polygon.plane.normal ^ self.camera_direction >= 0.0 {
+                                //     continue 'polygon_rendering;
+                                // }
+
+                                if (polygon.plane.normal ^ self.camera_location) - polygon.plane.distance <= 0.0 {
+                                    continue 'polygon_rendering;
+                                }
+
+                                let polygon = &physical_polygon.polygon;
+
+                                let color = [
+                                    ((polygon.plane.normal.x + 1.0) / 2.0 * 255.0) as u8,
+                                    ((polygon.plane.normal.y + 1.0) / 2.0 * 255.0) as u8,
+                                    ((polygon.plane.normal.z + 1.0) / 2.0 * 255.0) as u8
+                                ];
+
+                                unsafe {
+                                    glu_sys::glColor3ub(color[0], color[1], color[2]);
+            
+                                    glu_sys::glBegin(glu_sys::GL_POLYGON);
+                                    for point in &polygon.points {
+                                        glu_sys::glVertex3f(point.x, point.y, point.z);
+                                    }
+                                    glu_sys::glEnd();
+                                }
+                            }
+                        }
+
+                        self.depth -= 1;
+                    }
+                }
+
+                let mut render_context = RenderContext {
+                    camera_direction: logical_camera.direction,
+                    camera_location: logical_camera.location,
+                    camera_plane: Plane::from_point_normal(
+                        logical_camera.location,
+                        logical_camera.direction
+                    ),
+                    render_set: {
+                        let mut set = BTreeSet::new();
+                        set.insert(volume_index);
+                        set
+                    },
+                    builder: &builder,
+                    depth: 0,
+                };
+
+                render_context.render_volume(start_volume);
+            }
+
             // Render hull volumes
-            // #[cfg(not)]
+            #[cfg(not)]
             {
                 let render_hull_volume = |hull_volume: &map::builder::HullVolume| {
-                    for hull_polygon in &hull_volume.polygons {
+                    for hull_polygon in &hull_volume.faces {
                         let polygon = &hull_polygon.polygon;
 
                         // backface culling
@@ -427,7 +541,7 @@ fn main() {
                 // static mut tact: u32 = 0;
                 // tact += 1;
                 // render_hull_volume(&volumes[tact as usize % volumes.len()]);
-                for hull_volume in &volumes {
+                for hull_volume in &builder.volumes {
                     render_hull_volume(hull_volume);
                 }
             }

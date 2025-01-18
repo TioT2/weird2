@@ -2,7 +2,6 @@
 use std::collections::{BTreeSet, HashMap};
 
 use brush::Brush;
-use geom::{Plane, PointRelation};
 use math::Vec3f;
 use sdl2::{event::Event, keyboard::Scancode};
 
@@ -188,7 +187,7 @@ impl Camera {
     }
 }
 
-fn parse_map(map: &str) -> Option<Vec<Vec<Plane>>> {
+fn parse_map(map: &str) -> Option<Vec<Vec<geom::Plane>>> {
     let mut result = Vec::new();
     let mut current = Vec::new();
 
@@ -222,11 +221,7 @@ fn parse_map(map: &str) -> Option<Vec<Vec<Plane>>> {
             let p2 = parse_vec3()?;
             let p3 = parse_vec3()?;
 
-            // points are written in clockwise order, as I know
-            let normal = -((p3 - p2).normalized() % (p1 - p2).normalized()).normalized();
-            let distance = p2 ^ normal;
-
-            current.push(Plane { normal, distance });
+            current.push(geom::Plane::from_points(p2, p1, p3));
         }
     }
 
@@ -324,10 +319,109 @@ fn main() {
     builder.start_resolve_portals();
     builder.start_remove_invisible();
 
+    #[cfg(not)]
+    {
+        let mut noportal_count = 0;
+        for volume in &builder.volumes {
+            let portal_count  = volume.faces
+                .iter()
+                .map(|f| f.portal_polygons.len())
+                .sum::<usize>();
+            if portal_count == 0 {
+                noportal_count += 1;
+            }
+        }
+        println!("Volumes without portals count: {}/{}", noportal_count, builder.volumes.len());
+    }
+
     let mut do_sync_logical_camera = true;
     let mut do_enable_depth_test = true;
 
     let mut logical_camera = camera;
+
+    struct PortalGraph {
+        pub vertices: Vec<Vec3f>,
+        pub edges: Vec<(u32, u32)>,
+    }
+
+    let portal_graph = 'build_portal_graph: {
+        #[cfg(not)]
+        {
+            let get_volume_center = |volume: &map::builder::HullVolume| -> Vec3f {
+                let mut collector = Vec3f::zero();
+    
+                for face in &volume.faces {
+                    let mut face_collector = Vec3f::zero();
+    
+                    for point in &face.polygon.points {
+                        face_collector += *point;
+                    }
+    
+                    collector += face_collector / face.polygon.points.len() as f32;
+                }
+    
+                collector / volume.faces.len() as f32
+            };
+    
+            
+            let volume_centers = Vec::from_iter(builder.volumes.iter().map(get_volume_center));
+            
+            let mut polygon_ids = BTreeSet::<usize>::from_iter(0..builder.volumes.len());
+            let mut edges = Vec::<(u32, u32)>::new();
+    
+            while let Some(first_id) = polygon_ids.first().copied() {
+                let mut visited_volume_ids = BTreeSet::<usize>::new();
+                let mut edge_polygons = BTreeSet::new();
+    
+                edge_polygons.insert(first_id);
+    
+                while !edge_polygons.is_empty() {
+                    let mut new_edge_polygons = BTreeSet::new();
+    
+                    for volume_index in edge_polygons {
+                        let volume = &builder.volumes[volume_index];
+    
+                        for face in &volume.faces {
+                            'portal_loop: for portal in &face.portal_polygons {
+                                let dst_index = portal.dst_volume_index;
+    
+                                if visited_volume_ids.contains(&dst_index) {
+                                    continue 'portal_loop;
+                                }
+    
+                                edges.push((volume_index as u32, dst_index as u32));
+    
+                                new_edge_polygons.insert(dst_index);
+                            }
+                        }
+    
+                        visited_volume_ids.insert(volume_index);
+                    }
+    
+                    edge_polygons = new_edge_polygons;
+                }
+    
+                for v in visited_volume_ids {
+                    polygon_ids.remove(&v);
+                }
+            }
+    
+            break 'build_portal_graph PortalGraph {
+                edges,
+                vertices: volume_centers
+            };
+        }
+
+        #[allow(unreachable_code)]
+        {
+            break 'build_portal_graph PortalGraph {
+                vertices: Vec::new(),
+                edges: Vec::new()
+            };
+        }
+    };
+
+
 
     'main_loop: loop {
         input.release_changed();
@@ -401,7 +495,7 @@ fn main() {
             // Render by BSP
             // #[cfg(not)]
             'render: {
-                println!("Rendering started!");
+                // println!("Rendering started!");
 
                 let volume_id_opt = builder.volume_bsp.as_ref().unwrap().traverse(logical_camera.location);
 
@@ -414,7 +508,7 @@ fn main() {
                 struct RenderContext<'t> {
                     camera_location: Vec3f,
                     camera_direction: Vec3f,
-                    camera_plane: Plane,
+                    camera_plane: geom::Plane,
                     builder: &'t map::builder::Builder,
                     depth: usize,
 
@@ -501,7 +595,7 @@ fn main() {
                 let mut render_context = RenderContext {
                     camera_direction: logical_camera.direction,
                     camera_location: logical_camera.location,
-                    camera_plane: Plane::from_point_normal(
+                    camera_plane: geom::Plane::from_point_normal(
                         logical_camera.location,
                         logical_camera.direction
                     ),
@@ -519,6 +613,27 @@ fn main() {
                 render_context.render_volume(start_volume);
 
                 println!("Render set miss count: {}", render_context.set_miss_count);
+            }
+
+            // Render pre-calculated portal graph
+            #[cfg(not)]
+            {
+                glu_sys::glColor3f(1.0, 0.0, 0.0);
+                glu_sys::glLineWidth(3.0);
+
+
+                for (first_index, second_index) in &portal_graph.edges {
+                    let first = portal_graph.vertices[*first_index as usize];
+                    let second = portal_graph.vertices[*second_index as usize];
+
+                    glu_sys::glBegin(glu_sys::GL_LINE_STRIP);
+                    glu_sys::glVertex3f(first.x, first.y, first.z);
+                    glu_sys::glVertex3f(second.x, second.y, second.z);
+                    glu_sys::glEnd();
+                }
+    
+
+                glu_sys::glLineWidth(1.0);
             }
 
             // Render portal graph

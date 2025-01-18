@@ -468,21 +468,16 @@ impl Builder {
                 }
             }
 
-            // // check if splitter is splitter, actually
-            // if current_front == 0 && current_back == 0 && current_on == 0 {
-            //     continue;
-            // }
-
             let volume_split_stat = volume.get_split_stat(physical_polygon.polygon.plane);
 
             let volume_polygon_rate = 
                 volume_split_stat.front.abs_diff(volume_split_stat.back) as f32 + volume_split_stat.split as f32;
 
-            // kinda heuristics
+            // -- kind of heuristics
             let splitter_rate = 0.0
-                + current_back.abs_diff(current_front) as f32 * 0.5
-                + current_split as f32
-                - current_on as f32
+                + current_back.abs_diff(current_front) as f32 * 1.0
+                + current_split as f32 * 4.0
+                - current_on as f32 * 4.0
                 + volume_polygon_rate * 0.125
             ;
 
@@ -833,7 +828,7 @@ impl Builder {
 
     /// Get indices of invisible volumes
     fn get_invisible_volume_idx(&mut self) -> Vec<usize> {
-        let mut external_index_set = self.volumes
+        let mut invisible_index_set = self.volumes
             .iter()
             .enumerate()
             .filter_map(|(index, volume)| {
@@ -854,7 +849,7 @@ impl Builder {
         'external_propagation_loop: loop {
             let mut new_external_set = BTreeSet::new();
 
-            'volume_loop: for (volume_index, is_new) in external_index_set.iter() {
+            'volume_loop: for (volume_index, is_new) in invisible_index_set.iter() {
                 if !is_new {
                     continue 'volume_loop;
                 }
@@ -863,7 +858,7 @@ impl Builder {
 
                 for face in &volume.faces {
                     for portal in &face.portal_polygons {
-                        if !external_index_set.contains_key(&portal.dst_volume_index) {
+                        if !invisible_index_set.contains_key(&portal.dst_volume_index) {
                             new_external_set.insert(portal.dst_volume_index);
                         }
                     }
@@ -874,24 +869,35 @@ impl Builder {
                 break 'external_propagation_loop;
             }
 
-            for is_new in external_index_set.values_mut() {
+            for is_new in invisible_index_set.values_mut() {
                 *is_new = false;
             }
 
-            external_index_set.extend(new_external_set
+            invisible_index_set.extend(new_external_set
                 .into_iter()
                 .map(|index| (index, true))
             );
         }
 
-        let mut set = external_index_set
+        let mut invisible_index_vec = invisible_index_set
             .into_iter()
             .map(|(index, _)| index)
             .collect::<Vec<_>>();
 
-        set.sort();
+        // remove unreachable volumes
+        for (volume_index, volume) in self.volumes.iter().enumerate() {
+            let portal_count = volume.faces
+                .iter()
+                .map(|f| f.portal_polygons.len())
+                .sum::<usize>();
+            if portal_count == 0 {
+                invisible_index_vec.push(volume_index);
+            }
+        }
 
-        set
+        invisible_index_vec.sort();
+
+        invisible_index_vec
     }
 
     /// Remove invisible volumes

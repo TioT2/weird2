@@ -264,7 +264,10 @@ pub unsafe fn render_brushes(brushes: &[Brush], camera_location: Vec3f) {
 }
 
 fn main() {
+    print!("\n\n\n\n\n\n\n\n");
+
     // yay, this code will not compile on non-local builds)))
+    // --
     let map = parse_map(include_str!("../temp/e1m1.map")).unwrap();
 
     let brushes = map
@@ -292,6 +295,7 @@ fn main() {
     let mut camera = Camera::new();
 
     camera.location = Vec3f::new(-200.0, 2000.0, -50.0);
+    // camera.location = Vec3f::new(-10.0, -30.0, 150.0);
 
     // let bsp = {
     //     let polygons = brush::get_map_polygons(&brushes, false);
@@ -300,9 +304,25 @@ fn main() {
 
     let mut builder = map::builder::Builder::new();
     builder.start_build_volumes(&brushes);
-    builder.start_resolve_portals();
 
-    // perform tiny volume debug check
+    // Perfrom volume face coplanarity check
+    #[cfg(not)]
+    {
+        for volume in &builder.volumes {
+            for face in &volume.faces {
+                let main_polygon = &face.polygon;
+                for physical_polygon in &face.physical_polygons {
+                    if physical_polygon.polygon.plane != main_polygon.plane {
+                        eprintln!("Coplanarity check failed");
+                    }
+                }
+            }
+        }
+        eprintln!("Coplanarity check finished.");
+    }
+
+    builder.start_resolve_portals();
+    builder.start_remove_invisible();
 
     let mut do_sync_logical_camera = true;
     let mut do_enable_depth_test = true;
@@ -379,6 +399,7 @@ fn main() {
             // println!("camera: <{}, {}, {}>", camera.location.x, camera.location.y, camera.location.z);
 
             // Render by BSP
+            // #[cfg(not)]
             'render: {
                 println!("Rendering started!");
 
@@ -395,8 +416,10 @@ fn main() {
                     camera_direction: Vec3f,
                     camera_plane: Plane,
                     builder: &'t map::builder::Builder,
-                    render_set: BTreeSet<usize>,
                     depth: usize,
+
+                    render_set: BTreeSet<usize>,
+                    set_miss_count: usize,
                 }
 
                 impl<'t> RenderContext<'t> {
@@ -410,25 +433,27 @@ fn main() {
 
                         for face in &volume.faces {
                             'portal_rendering: for portal in &face.portal_polygons {
-                                let polygon = self.builder.portal_polygons
+                                let portal_polygon = self.builder.portal_polygons
                                     .get(portal.polygon_set_index)
                                     .unwrap();
 
-                                // if self.camera_direction ^ polygon.plane.normal >= 0.0 {
+                                // let normal_check = self.camera_direction ^ portal_polygon.plane.normal >= 0.0;
+                                // if normal_check == portal.is_front {
                                 //     continue 'portal_rendering;
                                 // }
 
                                 // perform check
-                                // let backface_cull_result =
-                                //     (polygon.plane.normal ^ self.camera_location) - polygon.plane.distance
-                                //     >= 0.0
-                                // ;
-                                // if backface_cull_result != portal.is_front {
-                                //     continue 'portal_rendering;
-                                // }
+                                let backface_cull_result =
+                                    (portal_polygon.plane.normal ^ self.camera_location) - portal_polygon.plane.distance
+                                    >= 0.0
+                                ;
+                                if backface_cull_result != portal.is_front {
+                                    continue 'portal_rendering;
+                                }
 
                                 if self.render_set.contains(&portal.dst_volume_index) {
                                     // println!("Volume is already rendered!");
+                                    self.set_miss_count += 1;
                                     continue 'portal_rendering;
                                 }
                                 _ = self.render_set.insert(portal.dst_volume_index);
@@ -480,22 +505,97 @@ fn main() {
                         logical_camera.location,
                         logical_camera.direction
                     ),
+                    builder: &builder,
+                    depth: 0,
+
                     render_set: {
                         let mut set = BTreeSet::new();
                         set.insert(volume_index);
                         set
                     },
-                    builder: &builder,
-                    depth: 0,
+                    set_miss_count: 0,
                 };
 
                 render_context.render_volume(start_volume);
+
+                println!("Render set miss count: {}", render_context.set_miss_count);
+            }
+
+            // Render portal graph
+            #[cfg(not)]
+            {
+                let get_volume_center = |volume_index: usize| -> Vec3f {
+                    let volume = &builder.volumes[volume_index];
+
+                    let mut collector = Vec3f::zero();
+
+                    for face in &volume.faces {
+                        let mut face_collector = Vec3f::zero();
+
+                        for point in &face.polygon.points {
+                            face_collector += *point;
+                        }
+
+                        collector += face_collector / face.polygon.points.len() as f32;
+                    }
+
+                    collector / volume.faces.len() as f32
+                };
+
+                let mut polygon_ids = BTreeSet::<usize>::from_iter(0..builder.volumes.len());
+
+                glu_sys::glColor3f(1.0, 0.0, 0.0);
+                glu_sys::glLineWidth(3.0);
+
+                while let Some(first_id) = polygon_ids.first().copied() {
+                    let mut visited_volume_ids = BTreeSet::<usize>::new();
+                    let mut edge_polygons = vec![
+                        (first_id, get_volume_center(first_id))
+                    ];
+
+                    while !edge_polygons.is_empty() {
+                        let mut new_edge_polygons = Vec::new();
+    
+                        for (volume_index, volume_center) in edge_polygons {
+                            let volume = &builder.volumes[volume_index];
+    
+                            for face in &volume.faces {
+                                'portal_loop: for portal in &face.portal_polygons {
+                                    let dst_index = portal.dst_volume_index;
+    
+                                    if visited_volume_ids.contains(&dst_index) {
+                                        continue 'portal_loop;
+                                    }
+    
+                                    let center = get_volume_center(dst_index);
+    
+                                    glu_sys::glBegin(glu_sys::GL_LINE_STRIP);
+                                    glu_sys::glVertex3f(volume_center.x, volume_center.y, volume_center.z);
+                                    glu_sys::glVertex3f(center.x, center.y, center.z);
+                                    glu_sys::glEnd();
+    
+                                    new_edge_polygons.push((dst_index, center));
+                                }
+                            }
+    
+                            visited_volume_ids.insert(volume_index);
+                        }
+    
+                        edge_polygons = new_edge_polygons;
+                    }
+
+                    for v in visited_volume_ids {
+                        polygon_ids.remove(&v);
+                    }
+                }
+
+                glu_sys::glLineWidth(1.0);
             }
 
             // Render hull volumes
             #[cfg(not)]
             {
-                let render_hull_volume = |hull_volume: &map::builder::HullVolume| {
+                let render_hull_volume = |hull_volume: &map::builder::HullVolume, render_hull: bool, render_physical: bool| {
                     for hull_polygon in &hull_volume.faces {
                         let polygon = &hull_polygon.polygon;
 
@@ -504,45 +604,57 @@ fn main() {
                         //     continue 'face_polygon_loop;
                         // }
 
-                        let color = [
-                            ((polygon.plane.normal.x + 1.0) / 2.0 * 255.0) as u8,
-                            ((polygon.plane.normal.y + 1.0) / 2.0 * 255.0) as u8,
-                            ((polygon.plane.normal.z + 1.0) / 2.0 * 255.0) as u8
-                        ];
-
-                        glu_sys::glColor3ub(color[0], color[1], color[2]);
-
-                        glu_sys::glBegin(glu_sys::GL_LINE_LOOP);
-                        for point in &polygon.points {
-                            glu_sys::glVertex3f(point.x, point.y, point.z);
-                        }
-                        glu_sys::glEnd();
-
-                        for physical_polygon in &hull_polygon.physical_polygons {
-                            let polygon = &physical_polygon.polygon;
-
+                        
+                        if render_hull {
                             let color = [
                                 ((polygon.plane.normal.x + 1.0) / 2.0 * 255.0) as u8,
                                 ((polygon.plane.normal.y + 1.0) / 2.0 * 255.0) as u8,
                                 ((polygon.plane.normal.z + 1.0) / 2.0 * 255.0) as u8
                             ];
-    
+
                             glu_sys::glColor3ub(color[0], color[1], color[2]);
-    
-                            glu_sys::glBegin(glu_sys::GL_POLYGON);
+                            
+                            glu_sys::glBegin(glu_sys::GL_LINE_LOOP);
                             for point in &polygon.points {
                                 glu_sys::glVertex3f(point.x, point.y, point.z);
                             }
                             glu_sys::glEnd();
                         }
+
+                        if render_physical {
+                            for physical_polygon in &hull_polygon.physical_polygons {
+                                let polygon = &physical_polygon.polygon;
+    
+                                let color = [
+                                    ((polygon.plane.normal.x + 1.0) / 2.0 * 255.0) as u8,
+                                    ((polygon.plane.normal.y + 1.0) / 2.0 * 255.0) as u8,
+                                    ((polygon.plane.normal.z + 1.0) / 2.0 * 255.0) as u8
+                                ];
+        
+                                glu_sys::glColor3ub(color[0], color[1], color[2]);
+        
+                                glu_sys::glBegin(glu_sys::GL_POLYGON);
+                                for point in &polygon.points {
+                                    glu_sys::glVertex3f(point.x, point.y, point.z);
+                                }
+                                glu_sys::glEnd();
+                            }
+                        }
                     }
                 };
 
-                // static mut tact: u32 = 0;
-                // tact += 1;
-                // render_hull_volume(&volumes[tact as usize % volumes.len()]);
+                static mut volume_index: u32 = 0;
+                if input.is_key_clicked(Scancode::Space) {
+                    volume_index += 1;
+                }
+                render_hull_volume(
+                    &builder.volumes[volume_index as usize % builder.volumes.len()],
+                    false,
+                    true
+                );
+
                 for hull_volume in &builder.volumes {
-                    render_hull_volume(hull_volume);
+                    render_hull_volume(hull_volume, true, true);
                 }
             }
 

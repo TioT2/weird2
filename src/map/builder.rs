@@ -8,7 +8,7 @@
     That's the exact reason why levels must not have 'holes' in their structure)
 */
 
-use std::{collections::HashMap, num::NonZeroU32};
+use std::{collections::{BTreeMap, BTreeSet, HashMap}, num::NonZeroU32};
 
 use crate::{brush::Brush, geom, math::Vec3f};
 use super::Location;
@@ -54,7 +54,7 @@ pub struct HullFace {
 }
 
 /// Polygon split id
-#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
 pub struct SplitId(NonZeroU32);
 
 /// Reference to certain split pass during split pass
@@ -267,7 +267,7 @@ impl HullVolume {
         self,
         plane: geom::Plane,
         incident_front_polygons: Vec<PhysicalPolygon>,
-        incident_back_polygon: Vec<PhysicalPolygon>,
+        incident_back_polygons: Vec<PhysicalPolygon>,
         split_id: SplitId,
     ) -> Option<(HullVolume, HullVolume, geom::Polygon)> {
 
@@ -310,7 +310,7 @@ impl HullVolume {
                             }
                         }
                     }
-                    
+
                     front_hull_polygons.push(HullFace {
                         is_external: hull_polygon.is_external,
                         physical_polygons: front_physical_polygons,
@@ -340,17 +340,17 @@ impl HullVolume {
             physical_polygons: incident_front_polygons,
             portal_polygons: Vec::new(), // constructed during portal_resolve pass
             polygon: intersection_polygon.clone(),
-            split_reference: Some(SplitReference { edge_is_front: true, split_id })
+            split_reference: Some(SplitReference { edge_is_front: false, split_id })
         };
         
         // negate intersection polygon's orientation to match back
         intersection_polygon.negate_orientation();
         let back_intersection_hull_polygon = HullFace {
             is_external: false,
-            physical_polygons: incident_back_polygon,
-            portal_polygons: Vec::new(), // constructed during portal_resolve pass
+            physical_polygons: incident_back_polygons,
+            portal_polygons: Vec::new(),
             polygon: intersection_polygon,
-            split_reference: Some(SplitReference { edge_is_front: false, split_id })
+            split_reference: Some(SplitReference { edge_is_front: true, split_id })
         };
 
         front_hull_polygons.push(front_intersection_hull_polygon);
@@ -422,6 +422,16 @@ impl Builder {
     fn build_volume(&mut self, volume: HullVolume, physical_polygons: Vec<PhysicalPolygon>) -> VolumeBsp {
         // final polygon, insert hull in volume set and return
         if physical_polygons.is_empty() {
+
+            // for face in &volume.faces {
+            //     if let Some(split_ref) = face.split_reference {
+            //         let split_info = self.split_infos.get(split_ref.split_id.0.get() as usize - 1).unwrap();
+            //         if face.polygon.plane != split_info.split_polygon.plane && face.polygon.plane != split_info.split_polygon.plane.negate_direction() {
+            //             panic!("Early planarity check failed");
+            //         }
+            //     }
+            // }
+
             self.volumes.push(volume);
             return VolumeBsp::Leaf(self.volumes.len() - 1);
         }
@@ -536,11 +546,11 @@ impl Builder {
             )
             .unwrap();
 
-        let front_bsp = self.build_volume(front_volume, front_polygons);
-        let back_bsp = self.build_volume(back_volume, back_polygons);
-
         // add split info
         self.add_split(SplitInfo { split_polygon, id: split_id });
+
+        let front_bsp = self.build_volume(front_volume, front_polygons);
+        let back_bsp = self.build_volume(back_volume, back_polygons);
 
         VolumeBsp::Node {
             front: Some(Box::new(front_bsp)),
@@ -579,22 +589,24 @@ impl Builder {
 
     /// Build resolve tasks
     /// (mapping between split id and sets of references (volume_id, volume_face_id))
-    fn build_resolve_tasks(&self) -> HashMap<SplitId, Vec<(usize, usize)>> {
+    fn build_resolve_tasks(&self) -> BTreeMap<SplitId, Vec<(usize, usize)>> {
         // Construct initial structure
         let mut tasks = self.split_infos
             .iter()
             .map(|split_info| (split_info.id, Vec::new()))
-            .collect::<HashMap<_, _>>();
+            .collect::<BTreeMap<SplitId, Vec<(usize, usize)>>>();
 
         // Fill volume arrays
         for (volume_index, volume) in self.volumes.iter().enumerate() {
-            for (hull_polygon_index, hull_polygon) in volume.faces.iter().enumerate() {
-                if let Some(split_ref) = hull_polygon.split_reference {
-                    tasks
-                        .get_mut(&split_ref.split_id)
-                        .unwrap()
-                        .push((volume_index, hull_polygon_index));
-                }
+            'face_loop: for (hull_face_index, hull_face) in volume.faces.iter().enumerate() {
+                let Some(split_ref) = hull_face.split_reference else {
+                    continue 'face_loop;
+                };
+                
+                tasks
+                    .get_mut(&split_ref.split_id)
+                    .unwrap()
+                    .push((volume_index, hull_face_index));
             }
         }
 
@@ -608,6 +620,29 @@ impl Builder {
         &self,
         task: &[(usize, usize)]
     ) -> (Vec<SplitTaskPolygon>, Vec<SplitTaskPolygon>) {
+        /// Polygon cutting descriptor
+        pub struct CutInfo {
+            /// Plane set
+            pub planes: Vec<geom::Plane>,
+
+            /// Cutter boundbox
+            pub bound_box: geom::BoundBox,
+        }
+
+        let cut_info_set = task
+            .iter()
+            .copied()
+            .flat_map(|(volume_index, face_index)| {
+                let volume = self.volumes.get(volume_index).unwrap();
+                let face = volume.faces.get(face_index).unwrap();
+
+                face.physical_polygons.iter()
+            })
+            .map(|physical_polygon| CutInfo {
+                planes: physical_polygon.polygon.iter_edge_planes().collect(),
+                bound_box: physical_polygon.polygon.build_bound_box(),
+            })
+            .collect::<Vec<_>>();
 
         // Front polygons to resolve
         let mut total_front_polygons = Vec::<SplitTaskPolygon>::new();
@@ -625,9 +660,7 @@ impl Builder {
                 face.polygon.build_bound_box())
             ];
 
-            for cut_polygon in &face.physical_polygons {
-                let cut_polygon_bb = cut_polygon.polygon.build_bound_box();
-
+            for cut_info in &cut_info_set {
                 let mut new_portal_polygons = Vec::new();
 
                 // possible improvement:
@@ -635,13 +668,13 @@ impl Builder {
                 // cut_edge, and only AFTER check perform splitting.
 
                 'portal_polygon_loop: for (mut portal_polygon, mut portal_polygon_bb) in portal_polygons {
-                    if !cut_polygon_bb.is_intersecting(&portal_polygon_bb) {
+                    if !cut_info.bound_box.is_intersecting(&portal_polygon_bb) {
                         new_portal_polygons.push((portal_polygon, portal_polygon_bb));
                         continue 'portal_polygon_loop;
                     }
 
                     // cut portal_polygon by cut_polygon
-                    for cut_edge_plane in cut_polygon.polygon.iter_edge_planes() {
+                    for cut_edge_plane in &cut_info.planes {
                         match cut_edge_plane.split_polygon(&portal_polygon) {
                             geom::PolygonSplitResult::Front => {
                                 // resolution process finished.
@@ -702,6 +735,27 @@ impl Builder {
 
         // Build portal resolution 'tasks'
         let resolve_tasks = self.build_resolve_tasks();
+
+        for (id, task_contents) in &resolve_tasks {
+            let info = &self.split_infos[id.0.get() as usize - 1];
+            let split_polygon = &info.split_polygon;
+        
+            std::hint::black_box(&split_polygon);
+        
+            let plane = split_polygon.plane;
+        
+            for (volume_id, face_id) in task_contents.iter().copied() {
+                let face_polygon = &self.volumes[volume_id].faces[face_id].polygon;
+                let face_plane = face_polygon.plane;
+                
+                std::hint::black_box(&face_polygon);
+                if face_plane != plane && face_plane.negate_direction() != plane {
+                    panic!("Task face coplanarity check failed!\n First plane: {:?}\nSecond plane: {:?}",
+                        plane, face_plane
+                    );
+                }
+            }
+        }
 
         // process tasks into polygon set
         for (_, task) in resolve_tasks {
@@ -766,7 +820,7 @@ impl Builder {
                         .portal_polygons
                         .push(PortalPolygon {
                             dst_volume_index: front_polygon.dst_volume_index,
-                            is_front: false,
+                            is_front: true,
                             polygon_set_index: portal_polygon_index,
                         })
                         ;
@@ -777,9 +831,146 @@ impl Builder {
         // todo!("Builder.start_resolve_portals function")
     }
 
+    /// Get indices of invisible volumes
+    fn get_invisible_volume_idx(&mut self) -> Vec<usize> {
+        let mut external_index_set = self.volumes
+            .iter()
+            .enumerate()
+            .filter_map(|(index, volume)| {
+                let cond = volume
+                    .faces
+                    .iter()
+                    .any(|face| face.is_external);
+
+                if cond {
+                    Some(index)
+                } else {
+                    None
+                }
+            })
+            .map(|index| (index, true))
+            .collect::<HashMap<usize, bool>>();
+
+        'external_propagation_loop: loop {
+            let mut new_external_set = BTreeSet::new();
+
+            'volume_loop: for (volume_index, is_new) in external_index_set.iter() {
+                if !is_new {
+                    continue 'volume_loop;
+                }
+
+                let volume = self.volumes.get(*volume_index).unwrap();
+
+                for face in &volume.faces {
+                    for portal in &face.portal_polygons {
+                        if !external_index_set.contains_key(&portal.dst_volume_index) {
+                            new_external_set.insert(portal.dst_volume_index);
+                        }
+                    }
+                }
+            }
+
+            if new_external_set.is_empty() {
+                break 'external_propagation_loop;
+            }
+
+            for is_new in external_index_set.values_mut() {
+                *is_new = false;
+            }
+
+            external_index_set.extend(new_external_set
+                .into_iter()
+                .map(|index| (index, true))
+            );
+        }
+
+        let mut set = external_index_set
+            .into_iter()
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+
+        set.sort();
+
+        set
+    }
+
     /// Remove invisible volumes
+    /// 
+    /// # TODO
+    /// Filter portal polygon set
     pub fn start_remove_invisible(&mut self) {
-        todo!("Builder.start_remove_invisible function")
+        let mut invisible_volume_idx = self.get_invisible_volume_idx();
+        invisible_volume_idx.reverse();
+
+        let mut index_map = Vec::<Option<usize>>::with_capacity(self.volumes.len());
+
+        let mut delta = 0;
+
+        for i in 0..self.volumes.len() {
+            if let Some(removed_index) = invisible_volume_idx.last().copied() {
+                if i < removed_index {
+                    index_map.push(Some(i - delta));
+                } else {
+                    index_map.push(None);
+                    delta += 1;
+                    invisible_volume_idx.pop();
+                }
+            } else {
+                index_map.push(Some(i - delta));
+            }
+        }
+
+        let old_volumes = std::mem::replace(&mut self.volumes, Vec::new());
+
+        for (volume_index, mut volume) in old_volumes.into_iter().enumerate() {
+            if index_map.get(volume_index).unwrap().is_none() {
+                println!("Removed by {}", volume_index);
+                continue;
+            }
+
+            for face in &mut volume.faces {
+                let old_portal_polygons = std::mem::replace(&mut face.portal_polygons, Vec::new());
+
+                'portal_loop: for mut portal_polygon in old_portal_polygons {
+                    let Some(new_volume_index) = index_map[portal_polygon.dst_volume_index] else {
+                        eprintln!("Reachable face somehow have not map...");
+                        continue 'portal_loop;
+                    };
+
+                    portal_polygon.dst_volume_index = new_volume_index;
+
+                    face.portal_polygons.push(portal_polygon);
+                }
+            }
+
+            self.volumes.push(volume);
+        }
+
+        // Map volume BSP
+
+        fn map_volume_bsp(old_volume_bsp: VolumeBsp, index_map: &[Option<usize>]) -> Option<Box<VolumeBsp>> {
+            match old_volume_bsp {
+                VolumeBsp::Node { plane, front, back } => {
+                    let front = map_volume_bsp(*front.unwrap(), index_map);
+                    let back = map_volume_bsp(*back.unwrap(), index_map);
+
+                    if front.is_none() && back.is_none() {
+                        None
+                    } else {
+                        Some(Box::new(VolumeBsp::Node { plane, front, back }))
+                    }
+                },
+                VolumeBsp::Leaf(index) => {
+                    index_map[index].map(|new_index| Box::new(VolumeBsp::Leaf(new_index)))
+                },
+            }
+        }
+
+        let old_volume_bsp = std::mem::replace(&mut self.volume_bsp, None);
+
+        if let Some(bsp) = old_volume_bsp {
+            self.volume_bsp = map_volume_bsp(*bsp, &index_map);
+        }
     }
 }
 

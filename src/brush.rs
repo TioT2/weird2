@@ -49,7 +49,8 @@ impl Brush {
                 continue;
             }
 
-            points = geom::sort_plane_points(points, *p1);
+            // Sort points along normal
+            points = geom::sort_points_by_angle(points, p1.normal);
 
             polygons.push(geom::Polygon { points, plane: *p1 });
         }

@@ -460,8 +460,8 @@ pub fn deduplicate_points(points: Vec<Vec3f>) -> Vec<Vec3f> {
         })
 }
 
-/// Sort point set by angle from pivot point
-pub fn sort_plane_points(mut points: Vec<Vec3f>, plane: Plane) -> Vec<Vec3f> {
+/// Sort points
+pub fn sort_points_by_angle(mut points: Vec<Vec3f>, normal: Vec3f) -> Vec<Vec3f> {
     let center = points
         .iter()
         .copied()
@@ -480,7 +480,7 @@ pub fn sort_plane_points(mut points: Vec<Vec3f>, plane: Plane) -> Vec<Vec3f> {
             .enumerate()
             .filter_map(|(index, p)| {
                 let v = p - center;
-                let cross_normal_dot = (last % v) ^ plane.normal;
+                let cross_normal_dot = (last % v) ^ normal;
 
                 // check for direction and calculate cotangent
                 if cross_normal_dot < 0.0 {
@@ -512,7 +512,7 @@ pub fn sort_plane_points(mut points: Vec<Vec3f>, plane: Plane) -> Vec<Vec3f> {
         ).normalized();
     
         // fix point orientation
-        if (point_normal ^ plane.normal) < 0.0 {
+        if (point_normal ^ normal) < 0.0 {
             sorted.reverse();
         }
     }

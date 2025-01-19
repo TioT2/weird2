@@ -9,4 +9,4 @@ itertools = "0.13.0"
 sdl2 = "0.37.0"
 
 [profile.dev]
-opt-level = 1
+opt-level = 0

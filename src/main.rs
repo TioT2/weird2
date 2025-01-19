@@ -187,47 +187,6 @@ impl Camera {
     }
 }
 
-fn parse_map(map: &str) -> Option<Vec<Vec<geom::Plane>>> {
-    let mut result = Vec::new();
-    let mut current = Vec::new();
-
-    for line in map.lines() {
-        if line.starts_with('\"') {
-            continue;
-        }
-        if line.starts_with('{') {
-            continue;
-        }
-        if line.starts_with('}') {
-            result.push(current);
-            current = Vec::new();
-            continue;
-        }
-        if line.starts_with('(') {
-            let mut iter = line.split(' ');
-
-            let mut parse_vec3 = || -> Option<Vec3f> {
-                iter.next()?;
-                let result = vec3f!(
-                    iter.next()?.parse::<i32>().ok()? as f32,
-                    iter.next()?.parse::<i32>().ok()? as f32,
-                    iter.next()?.parse::<i32>().ok()? as f32,
-                );
-                iter.next()?;
-                Some(result)
-            };
-
-            let p1 = parse_vec3()?;
-            let p2 = parse_vec3()?;
-            let p3 = parse_vec3()?;
-
-            current.push(geom::Plane::from_points(p2, p1, p3));
-        }
-    }
-
-    Some(result)
-}
-
 pub unsafe fn render_brushes(brushes: &[Brush], camera_location: Vec3f) {
     for brush in brushes {
         'polygon_loop: for polygon in &brush.polygons {
@@ -262,14 +221,26 @@ fn main() {
     print!("\n\n\n\n\n\n\n\n");
 
     // yay, this code will not compile on non-local builds)))
+    // bit of functional rust code)
     // --
-    let map = parse_map(include_str!("../temp/e1m1.map")).unwrap();
-
-    let brushes = map
-        .into_iter()
-        .filter_map(|planes| Brush::from_planes(&planes))
-        .collect::<Vec<_>>()
-    ;
+    let brushes = map::builder::Map::parse(include_str!("../temp/e1m1.map"))
+        .expect("Map parsing error occured!")
+        .find_entity("classname", Some("worldspawn"))
+        .expect("No worldspawn entity in map!")
+        .brushes
+        .iter()
+        .map(|brush| brush
+            .faces
+            .iter()
+            .map(|face| geom::Plane::from_points(
+                face.p1,
+                face.p0,
+                face.p2
+            ))
+            .collect::<Vec<_>>()
+        )
+        .filter_map(|brush_set| Brush::from_planes(brush_set.as_slice()))
+        .collect::<Vec<_>>();
 
     let sdl = sdl2::init().unwrap();
     let video = sdl.video().unwrap();
@@ -291,6 +262,7 @@ fn main() {
 
     camera.location = Vec3f::new(-200.0, 2000.0, -50.0);
     // camera.location = Vec3f::new(-10.0, -30.0, 150.0);
+    // camera.location = Vec3f::new(30.0, 40.0, 50.0);
 
     // let bsp = {
     //     let polygons = brush::get_map_polygons(&brushes, false);
@@ -332,6 +304,29 @@ fn main() {
             }
         }
         println!("Volumes without portals count: {}/{}", noportal_count, builder.volumes.len());
+    }
+
+    // Calculate average projected point count
+    #[cfg(not)]
+    {
+        let mut point_count = 0;
+        let mut face_count = 0;
+
+        for volume in &builder.volumes {
+            face_count += volume.faces.len();
+
+            for face in &volume.faces {
+                for polygon in &face.portal_polygons {
+                    point_count += builder.portal_polygons[polygon.dst_volume_index].points.len();
+                }
+
+                for polygon in &face.physical_polygons {
+                    point_count += polygon.polygon.points.len();
+                }
+            }
+        }
+
+        println!("Average points-per-face: {}", point_count as f32 / face_count as f32);
     }
 
     let mut do_sync_logical_camera = true;

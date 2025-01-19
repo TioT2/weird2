@@ -1,7 +1,6 @@
 
 use std::collections::{BTreeSet, HashMap};
 
-use brush::Brush;
 use math::Vec3f;
 use sdl2::{event::Event, keyboard::Scancode};
 
@@ -14,9 +13,6 @@ pub mod rand;
 
 /// Binary space partition implementation
 pub mod bsp;
-
-/// Brush builder
-pub mod brush;
 
 /// Basic geometry
 pub mod geom;
@@ -187,60 +183,13 @@ impl Camera {
     }
 }
 
-pub unsafe fn render_brushes(brushes: &[Brush], camera_location: Vec3f) {
-    for brush in brushes {
-        'polygon_loop: for polygon in &brush.polygons {
-            let point_normal = Vec3f::cross(
-                (polygon.points[2] - polygon.points[1]).normalized(),
-                (polygon.points[0] - polygon.points[1]).normalized(),
-            ).normalized();
-            // point_normal = point_normal * (point_normal ^ polygon.plane.normal).signum();
-
-            if (point_normal ^ camera_location) - polygon.plane.distance <= 0.0 {
-                continue 'polygon_loop;
-            }
-
-            let color = [
-                ((polygon.plane.normal.x + 1.0) / 2.0 * 255.0) as u8,
-                ((polygon.plane.normal.y + 1.0) / 2.0 * 255.0) as u8,
-                ((polygon.plane.normal.z + 1.0) / 2.0 * 255.0) as u8
-            ];
-
-            glu_sys::glColor3ub(color[0], color[1], color[2]);
-
-            glu_sys::glBegin(glu_sys::GL_POLYGON);
-            for point in &polygon.points {
-                glu_sys::glVertex3f(point.x, point.y, point.z);
-            }
-            glu_sys::glEnd();
-        }
-    }
-}
-
 fn main() {
     print!("\n\n\n\n\n\n\n\n");
 
     // yay, this code will not compile on non-local builds)))
     // bit of functional rust code)
     // --
-    let brushes = map::builder::Map::parse(include_str!("../temp/e1m1.map"))
-        .expect("Map parsing error occured!")
-        .find_entity("classname", Some("worldspawn"))
-        .expect("No worldspawn entity in map!")
-        .brushes
-        .iter()
-        .map(|brush| brush
-            .faces
-            .iter()
-            .map(|face| geom::Plane::from_points(
-                face.p1,
-                face.p0,
-                face.p2
-            ))
-            .collect::<Vec<_>>()
-        )
-        .filter_map(|brush_set| Brush::from_planes(brush_set.as_slice()))
-        .collect::<Vec<_>>();
+    let location_map = map::builder::Map::parse(include_str!("../temp/e1m1.map")).unwrap();
 
     let sdl = sdl2::init().unwrap();
     let video = sdl.video().unwrap();
@@ -270,7 +219,7 @@ fn main() {
     // };
 
     let mut builder = map::builder::Builder::new();
-    builder.start_build_volumes(&brushes);
+    builder.start_build_volumes(location_map.build_world_physical_polygons());
 
     // Perfrom volume face coplanarity check
     #[cfg(not)]
@@ -331,6 +280,7 @@ fn main() {
 
     let mut do_sync_logical_camera = true;
     let mut do_enable_depth_test = true;
+    let mut do_enable_slow_rendering = false;
 
     let mut logical_camera = camera;
 
@@ -452,6 +402,10 @@ fn main() {
             do_enable_depth_test = !do_enable_depth_test;
         }
 
+        if input.is_key_clicked(Scancode::Minus) {
+            do_enable_slow_rendering = !do_enable_slow_rendering;
+        }
+
         if do_sync_logical_camera {
             logical_camera = camera;
         }
@@ -468,6 +422,7 @@ fn main() {
             } else {
                 glu_sys::glClear(glu_sys::GL_COLOR_BUFFER_BIT);
             }
+
             glu_sys::glClearColor(0.30, 0.47, 0.80, 0.0);
 
             glu_sys::glLoadIdentity();
@@ -492,17 +447,19 @@ fn main() {
             'render: {
                 // println!("Rendering started!");
 
-                let volume_id_opt = builder.volume_bsp.as_ref().unwrap().traverse(logical_camera.location);
+                let start_volume_index_opt = builder.volume_bsp
+                    .as_ref()
+                    .unwrap()
+                    .traverse(logical_camera.location);
 
-                let Some(volume_index) = volume_id_opt else {
+                let Some(start_volume_index) = start_volume_index_opt else {
                     break 'render;
                 };
 
-                let start_volume = builder.volumes.get(volume_index).unwrap();
+                let start_volume = builder.volumes.get(start_volume_index).unwrap();
 
                 struct RenderContext<'t> {
                     camera_location: Vec3f,
-                    camera_direction: Vec3f,
                     camera_plane: geom::Plane,
                     builder: &'t map::builder::Builder,
                     depth: usize,
@@ -518,6 +475,10 @@ fn main() {
                         //     return;
                         // }
 
+                        // if self.depth >= 4 {
+                        //     return;
+                        // }
+
                         self.depth += 1;
 
                         for face in &volume.faces {
@@ -526,12 +487,7 @@ fn main() {
                                     .get(portal.polygon_set_index)
                                     .unwrap();
 
-                                // let normal_check = self.camera_direction ^ portal_polygon.plane.normal >= 0.0;
-                                // if normal_check == portal.is_front {
-                                //     continue 'portal_rendering;
-                                // }
-
-                                // perform check
+                                // Perform standard backface culling
                                 let backface_cull_result =
                                     (portal_polygon.plane.normal ^ self.camera_location) - portal_polygon.plane.distance
                                     >= 0.0
@@ -540,8 +496,13 @@ fn main() {
                                     continue 'portal_rendering;
                                 }
 
+                                // Perform visibility check
+                                if self.camera_plane.get_polygon_relation(&portal_polygon) == geom::PolygonRelation::Back {
+                                    continue 'portal_rendering;
+                                }
+
+                                // Check repeats
                                 if self.render_set.contains(&portal.dst_volume_index) {
-                                    // println!("Volume is already rendered!");
                                     self.set_miss_count += 1;
                                     continue 'portal_rendering;
                                 }
@@ -551,13 +512,11 @@ fn main() {
 
                                 self.render_volume(dst_volume);
                             }
+                        }
 
+                        for face in &volume.faces {
                             'polygon_rendering: for physical_polygon in &face.physical_polygons {
                                 let polygon = &physical_polygon.polygon;
-
-                                // if polygon.plane.normal ^ self.camera_direction >= 0.0 {
-                                //     continue 'polygon_rendering;
-                                // }
 
                                 if (polygon.plane.normal ^ self.camera_location) - polygon.plane.distance <= 0.0 {
                                     continue 'polygon_rendering;
@@ -568,8 +527,9 @@ fn main() {
                                 let color = [
                                     ((polygon.plane.normal.x + 1.0) / 2.0 * 255.0) as u8,
                                     ((polygon.plane.normal.y + 1.0) / 2.0 * 255.0) as u8,
-                                    ((polygon.plane.normal.z + 1.0) / 2.0 * 255.0) as u8
+                                    ((polygon.plane.normal.z + 1.0) / 2.0 * 255.0) as u8,
                                 ];
+                                // let color = physical_polygon.color.to_le_bytes();
 
                                 unsafe {
                                     glu_sys::glColor3ub(color[0], color[1], color[2]);
@@ -588,7 +548,6 @@ fn main() {
                 }
 
                 let mut render_context = RenderContext {
-                    camera_direction: logical_camera.direction,
                     camera_location: logical_camera.location,
                     camera_plane: geom::Plane::from_point_normal(
                         logical_camera.location,
@@ -599,7 +558,7 @@ fn main() {
 
                     render_set: {
                         let mut set = BTreeSet::new();
-                        set.insert(volume_index);
+                        set.insert(start_volume_index);
                         set
                     },
                     set_miss_count: 0,

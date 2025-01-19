@@ -99,11 +99,6 @@ pub struct Location {
     volumes: Vec<Volume>,
 }
 impl Location {
-    /// Build location from???
-    pub fn build(brushes: Vec<crate::Brush>) -> Location {
-        builder::build(brushes)
-    }
-
     /// Determine which (unit) volume point is locacted in
     pub fn get_point_volume(&self, _point: Vec3f) -> Option<VolumeId> {
         unimplemented!()

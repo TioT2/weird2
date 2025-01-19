@@ -10,7 +10,7 @@
 
 use std::{collections::{BTreeMap, BTreeSet, HashMap}, num::NonZeroU32};
 
-use crate::{brush::Brush, geom, math::Vec3f};
+use crate::{geom::{self, Polygon}, math::{Mat3f, Vec3f}, rand};
 use super::Location;
 
 /// Q1 .map brush face binary representation
@@ -352,6 +352,92 @@ impl Map {
 
         return None;
     }
+
+    /// Build physical polygon set
+    pub fn build_world_physical_polygons(&self) -> Vec<PhysicalPolygon> {
+        let mut randomizer = rand::Xorshift128p::new(304780.try_into().unwrap());
+
+        // 'material -> physical polygon color' table
+        let mut texture_color_table = HashMap::<String, u32>::new();
+
+        let Some(worldspawn) = self.find_entity("classname", Some("worldspawn")) else {
+            return Vec::new();
+        };
+
+        let mut physical_polygons = Vec::<PhysicalPolygon>::new();
+
+        for brush in &worldspawn.brushes {
+            let planes = brush.faces
+                .iter()
+                .map(|face| {
+                    let color = texture_color_table
+                        .get(&face.texture_name)
+                        .copied()
+                        .unwrap_or_else(|| {
+                            let new_color = (randomizer.next() & 0xFFFFFFFF) as u32;
+
+                            texture_color_table.insert(face.texture_name.clone(), new_color);
+
+                            new_color
+                        });
+
+                    (geom::Plane::from_points(face.p1, face.p0, face.p2), color)
+                })
+                .collect::<Vec<_>>();
+
+            for (p1, color) in &planes {
+                let mut points = Vec::<Vec3f>::new();
+
+                for (p2, _) in &planes {
+                    if std::ptr::eq(p1, p2) {
+                        continue;
+                    }
+
+                    for (p3, _) in &planes {
+                        if std::ptr::eq(p1, p3) || std::ptr::eq(p2, p3) {
+                            continue;
+                        }
+
+                        let mat = Mat3f::from_rows(p1.normal, p2.normal, p3.normal);
+                        let inv = match mat.inversed() {
+                            Some(m) => m,
+                            None => continue,
+                        };
+                        let intersection_point = inv * Vec3f::new(p1.distance, p2.distance, p3.distance);
+    
+                        points.push(intersection_point);
+                    }
+                }
+
+                points = points
+                    .into_iter()
+                    .filter(|point| planes
+                        .iter()
+                        .all(|(plane, _)| {
+                            plane.get_point_relation(*point) != geom::PointRelation::Front
+                        })
+                    )
+                    .collect::<Vec<_>>();
+
+                points = geom::deduplicate_points(points);
+
+                if points.len() < 3 {
+                    // It's not even a polygon, actually
+                    continue;
+                }
+
+                physical_polygons.push(PhysicalPolygon {
+                    polygon: geom::Polygon {
+                        points: geom::sort_points_by_angle(points, p1.normal),
+                        plane: *p1,
+                    },
+                    color: *color
+                })
+            }
+        }
+
+        physical_polygons
+    }
 }
 
 /// Polygon that should be drawn
@@ -359,7 +445,8 @@ pub struct PhysicalPolygon {
     /// Actual polygon
     pub polygon: geom::Polygon,
 
-    // Material info?
+    /// All material info (just for debug)
+    pub color: u32,
 }
 
 /// Reference to another volume
@@ -644,8 +731,15 @@ impl HullVolume {
                                 back_physical_polygons.push(physical_polygon);
                             }
                             geom::PolygonSplitResult::Intersects { front, back } => {
-                                front_physical_polygons.push(PhysicalPolygon { polygon: front });
-                                back_physical_polygons.push(PhysicalPolygon { polygon: back });
+                                front_physical_polygons.push(PhysicalPolygon {
+                                    polygon: front,
+                                    color: physical_polygon.color,
+                                });
+
+                                back_physical_polygons.push(PhysicalPolygon {
+                                    polygon: back,
+                                    color: physical_polygon.color,
+                                });
                             }
                             geom::PolygonSplitResult::OnPlane => {
                                 // probably panic here...
@@ -880,8 +974,15 @@ impl Builder {
                 // to front and back
                 geom::PolygonSplitResult::Intersects { front, back } => {
                     // it's not good to split polygon
-                    front_polygons.push(PhysicalPolygon { polygon: front });
-                    back_polygons.push(PhysicalPolygon { polygon: back });
+                    front_polygons.push(PhysicalPolygon {
+                        polygon: front,
+                        color: physical_polygon.color,
+                    });
+
+                    back_polygons.push(PhysicalPolygon {
+                        polygon: back,
+                        color: physical_polygon.color,
+                    });
                 }
             }
         }
@@ -914,28 +1015,23 @@ impl Builder {
     }
 
     /// Start volume building pass
-    pub fn start_build_volumes(&mut self, brushes: &[Brush]) {
-        // calculate polygon set hull
-        let hull = brushes
+    pub fn start_build_volumes(&mut self, physical_polygons: Vec<PhysicalPolygon>) {
+
+        let hull = geom::BoundBox::for_points(physical_polygons
             .iter()
-            .fold(
-                geom::BoundBox::zero(),
-                |total, brush| total.total(&brush.bound_box)
+            .flat_map(|polygon| polygon
+                .polygon
+                .points
+                .iter()
+                .copied()
             )
-            .extend(Vec3f::new(200.0, 200.0, 200.0));
+        ).extend(Vec3f::new(200.0, 200.0, 200.0));
 
         // calculate hull volume
         let hull_volume = HullVolume::from_bound_box(hull);
 
-        // get brush polygons
-        let polygons = brushes
-            .iter()
-            .flat_map(|v| v.polygons.iter())
-            .map(|polygon| PhysicalPolygon { polygon: polygon.clone() })
-            .collect::<Vec<_>>();
-
         // Build volumes
-        let volume_bsp = self.build_volume(hull_volume, polygons);
+        let volume_bsp = self.build_volume(hull_volume, physical_polygons);
 
         // write volume BSP
         self.volume_bsp = Some(Box::new(volume_bsp));
@@ -1263,9 +1359,6 @@ impl Builder {
     }
 
     /// Remove invisible volumes
-    /// 
-    /// # TODO
-    /// Filter portal polygon set
     pub fn start_remove_invisible(&mut self) {
         let mut invisible_volume_idx = self.get_invisible_volume_idx();
         invisible_volume_idx.reverse();
@@ -1343,11 +1436,11 @@ impl Builder {
 }
 
 /// Builder
-pub fn build(brushes: Vec<Brush>) -> Location {
+pub fn build(map: &Map) -> Location {
     let mut builder = Builder::new();
 
     // Build volumes & volume BSP
-    builder.start_build_volumes(&brushes);
+    builder.start_build_volumes(map.build_world_physical_polygons());
 
     // Resolve volume portals
     builder.start_resolve_portals();

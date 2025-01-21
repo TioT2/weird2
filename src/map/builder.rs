@@ -10,7 +10,7 @@
 
 use std::{collections::{BTreeMap, BTreeSet, HashMap}, num::NonZeroU32};
 
-use crate::{geom::{self, Polygon}, math::{Mat3f, Vec3f}, rand};
+use crate::{geom, math::{Mat3f, Vec3f}, rand};
 use super::Location;
 
 /// Q1 .map brush face binary representation
@@ -28,10 +28,10 @@ pub struct MapBrushFace {
     /// Brush texture name
     pub texture_name: String,
 
-    /// Texture offset by X (in pixels)
+    /// Texture offset by X (in texels)
     pub texture_offset_x: f32,
 
-    /// Texture offset by Y (in pixels)
+    /// Texture offset by Y (in texels)
     pub texture_offset_y: f32,
 
     /// Texture rotation (in degrees)
@@ -51,7 +51,7 @@ pub struct MapBrush {
     pub faces: Vec<MapBrushFace>,
 }
 
-/// Quake map entity
+/// Map entity (brush and string-string property collection)
 #[derive(Clone, Debug)]
 pub struct MapEntity {
     /// Entity properties
@@ -111,12 +111,12 @@ impl Map {
             // token skipping loop
             'comment_skip_loop: loop {
                 str_rest = str_rest.trim_start();
-    
+
                 if str_rest.starts_with("//") {
                     let mut off = 0;
-    
+
                     let mut rest_iter = str_rest.chars();
-    
+
                     'comment_skip: while let Some(ch) = rest_iter.next() {
                         if ch == '\n' {
                             break 'comment_skip;
@@ -353,6 +353,34 @@ impl Map {
         return None;
     }
 
+    /// Extract all 'origin' properties from map
+    /// (this function is used in invisible volume removal pass)
+    pub fn get_all_origins(&self) -> Vec<Vec3f> {
+        self
+            .entities
+            .iter()
+
+            // Map entities to their 'origin' properties
+            .filter_map(|entity| entity.properties.get("origin"))
+
+            // Parse origin property values into vectors
+            .filter_map(|origin| {
+                let flt_arr = origin
+                    .split_whitespace()
+                    .map(|str| str.parse::<f32>())
+                    .collect::<Result<Vec<_>, _>>()
+                    .ok()
+                    ?;
+
+                Some(Vec3f::new(
+                    *flt_arr.get(0)?,
+                    *flt_arr.get(1)?,
+                    *flt_arr.get(2)?,
+                ))
+            })
+            .collect::<Vec<_>>()
+    }
+
     /// Build physical polygon set
     pub fn build_world_physical_polygons(&self) -> Vec<PhysicalPolygon> {
         let mut randomizer = rand::Xorshift128p::new(304780.try_into().unwrap());
@@ -426,6 +454,7 @@ impl Map {
                     continue;
                 }
 
+                // Build physical polygon
                 physical_polygons.push(PhysicalPolygon {
                     polygon: geom::Polygon {
                         points: geom::sort_points_by_angle(points, p1.normal),
@@ -454,7 +483,7 @@ pub struct PortalPolygon {
     /// Index of actual polygon
     pub polygon_set_index: usize,
 
-    /// True denoted polygon polygon should be used 'as-is', False - as check results should be reversed
+    /// True denotes that portal polygon should be used 'as-is', False - as check results should be reversed
     pub is_front: bool,
 
     /// Destination volume
@@ -605,6 +634,17 @@ impl HullVolume {
                 })
                 .collect()
         }
+    }
+
+
+    /// Check if volume contains point or not
+    pub fn contains_point(&self, point: Vec3f) -> bool {
+        self
+            .faces
+            .iter()
+            .all(|face| {
+                face.polygon.plane.get_point_relation(point) != geom::PointRelation::Back
+            })
     }
 
     /// Calculate statistics about splitting
@@ -1284,97 +1324,23 @@ impl Builder {
         // todo!("Builder.start_resolve_portals function")
     }
 
-    /// Get indices of invisible volumes
-    fn get_invisible_volume_idx(&mut self) -> Vec<usize> {
-        let mut invisible_index_set = self.volumes
-            .iter()
-            .enumerate()
-            .filter_map(|(index, volume)| {
-                let cond = volume
-                    .faces
-                    .iter()
-                    .any(|face| face.is_external);
-
-                if cond {
-                    Some(index)
-                } else {
-                    None
-                }
-            })
-            .map(|index| (index, true))
-            .collect::<HashMap<usize, bool>>();
-
-        'external_propagation_loop: loop {
-            let mut new_external_set = BTreeSet::new();
-
-            'volume_loop: for (volume_index, is_new) in invisible_index_set.iter() {
-                if !is_new {
-                    continue 'volume_loop;
-                }
-
-                let volume = self.volumes.get(*volume_index).unwrap();
-
-                for face in &volume.faces {
-                    for portal in &face.portal_polygons {
-                        if !invisible_index_set.contains_key(&portal.dst_volume_index) {
-                            new_external_set.insert(portal.dst_volume_index);
-                        }
-                    }
-                }
-            }
-
-            if new_external_set.is_empty() {
-                break 'external_propagation_loop;
-            }
-
-            for is_new in invisible_index_set.values_mut() {
-                *is_new = false;
-            }
-
-            invisible_index_set.extend(new_external_set
-                .into_iter()
-                .map(|index| (index, true))
-            );
-        }
-
-        let mut invisible_index_vec = invisible_index_set
-            .into_iter()
-            .map(|(index, _)| index)
-            .collect::<Vec<_>>();
-
-        // remove unreachable volumes
-        for (volume_index, volume) in self.volumes.iter().enumerate() {
-            let portal_count = volume.faces
-                .iter()
-                .map(|f| f.portal_polygons.len())
-                .sum::<usize>();
-            if portal_count == 0 {
-                invisible_index_vec.push(volume_index);
-            }
-        }
-
-        invisible_index_vec.sort();
-
-        invisible_index_vec
-    }
-
-    /// Remove invisible volumes
-    pub fn start_remove_invisible(&mut self) {
-        let mut invisible_volume_idx = self.get_invisible_volume_idx();
-        invisible_volume_idx.reverse();
+    /// Remove volumes by index set
+    fn remove_volumes(&mut self, mut removed_volume_idx: Vec<usize>) {
+        removed_volume_idx.sort();
+        removed_volume_idx.reverse();
 
         let mut index_map = Vec::<Option<usize>>::with_capacity(self.volumes.len());
 
         let mut delta = 0;
 
         for i in 0..self.volumes.len() {
-            if let Some(removed_index) = invisible_volume_idx.last().copied() {
+            if let Some(removed_index) = removed_volume_idx.last().copied() {
                 if i < removed_index {
                     index_map.push(Some(i - delta));
                 } else {
                     index_map.push(None);
                     delta += 1;
-                    invisible_volume_idx.pop();
+                    removed_volume_idx.pop();
                 }
             } else {
                 index_map.push(Some(i - delta));
@@ -1433,6 +1399,79 @@ impl Builder {
             self.volume_bsp = map_volume_bsp(*bsp, &index_map);
         }
     }
+
+    /// Build sets of potentially-visible volumes
+    fn build_volume_graph(&self) -> Vec<BTreeSet<usize>> {
+        // Indices of ALL volumes in graph
+        let mut total_volume_idx = BTreeSet::from_iter(0..self.volumes.len());
+        let mut total_conn_components = Vec::<BTreeSet<usize>>::new();
+
+        while let Some(first_index) = total_volume_idx.first().copied() {
+            let mut conn_component = BTreeSet::<usize>::new();
+            let mut component_edge = BTreeSet::<usize>::new();
+            let mut new_component_edge = BTreeSet::<usize>::new();
+
+            component_edge.insert(first_index);
+
+            while !component_edge.is_empty() {
+
+                for edge_elt_index in component_edge.iter().copied() {
+                    let volume = &self.volumes[edge_elt_index];
+
+                    let portal_idx_iter = volume
+                        .faces
+                        .iter()
+                        .flat_map(|face| face
+                            .portal_polygons
+                            .iter()
+                            .map(|pp| pp.dst_volume_index)
+                        );
+
+                    for dst_index in portal_idx_iter {
+                        if conn_component.contains(&dst_index) {
+                            continue;
+                        }
+
+                        new_component_edge.insert(dst_index);
+                    }
+
+                    conn_component.insert(edge_elt_index);
+                }
+
+                std::mem::swap(&mut component_edge, &mut new_component_edge);
+                new_component_edge.clear();
+            }
+
+            // Remove current conn component elements from total index span
+            for index in conn_component.iter() {
+                total_volume_idx.remove(index);
+            }
+
+            // Add conn component to index span
+            total_conn_components.push(conn_component);
+        }
+
+        total_conn_components
+    }
+
+    pub fn start_remove_invisible(&mut self, visible_from: Vec<Vec3f>) {
+        let removed_index_set = self
+            .build_volume_graph()
+            .into_iter()
+            .filter(|volume_index_set| volume_index_set
+                .iter()
+                .map(|index| &self.volumes[*index])
+                .all(|volume| visible_from
+                    .iter()
+                    .copied()
+                    .all(|pt| !volume.contains_point(pt))
+                )
+            )
+            .flat_map(|set| set.into_iter())
+            .collect::<Vec<_>>();
+
+        self.remove_volumes(removed_index_set);
+    }
 }
 
 /// Builder
@@ -1446,8 +1485,7 @@ pub fn build(map: &Map) -> Location {
     builder.start_resolve_portals();
 
     // Remove invisible surfaces
-    builder.start_remove_invisible();
+    builder.start_remove_invisible(map.get_all_origins());
 
     unimplemented!()
 }
-

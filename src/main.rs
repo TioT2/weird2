@@ -1,5 +1,5 @@
 
-use std::collections::{BTreeSet, HashMap};
+use std::{collections::{BTreeSet, HashMap}, num::ParseFloatError};
 
 use math::Vec3f;
 use sdl2::{event::Event, keyboard::Scancode};
@@ -42,6 +42,11 @@ pub struct Timer {
     start: std::time::Instant,
     now: std::time::Instant,
     dt: std::time::Duration,
+
+    fps_duration: std::time::Duration,
+    fps_last_measure: std::time::Instant,
+    fps_frame_counter: usize,
+    fps: Option<f32>,
 }
 
 impl Timer {
@@ -51,6 +56,11 @@ impl Timer {
             start: now,
             now,
             dt: std::time::Duration::from_millis(60),
+
+            fps_duration: std::time::Duration::from_millis(1000),
+            fps_last_measure: now,
+            fps_frame_counter: 0,
+            fps: None,
         }
     }
 
@@ -58,6 +68,16 @@ impl Timer {
         let new_now = std::time::Instant::now();
         self.dt = new_now.duration_since(self.now);
         self.now = new_now;
+        
+        self.fps_frame_counter += 1;
+
+        let fps_delta = self.now - self.fps_last_measure;
+        if fps_delta > self.fps_duration {
+            self.fps = Some(self.fps_frame_counter as f32 / fps_delta.as_secs_f32());
+
+            self.fps_last_measure = self.now;
+            self.fps_frame_counter = 0;
+        }
     }
 
     pub fn get_delta_time(&self) -> f32 {
@@ -68,6 +88,10 @@ impl Timer {
         self.now
             .duration_since(self.start)
             .as_secs_f32()
+    }
+
+    pub fn get_fps(&self) -> f32 {
+        self.fps.unwrap_or(std::f32::NAN)
     }
 }
 
@@ -189,7 +213,7 @@ fn main() {
     // yay, this code will not compile on non-local builds)))
     // bit of functional rust code)
     // --
-    let location_map = map::builder::Map::parse(include_str!("../temp/e1m1.map")).unwrap();
+    let location_map = map::builder::Map::parse(include_str!("../temp/test3.map")).unwrap();
 
     let sdl = sdl2::init().unwrap();
     let video = sdl.video().unwrap();
@@ -238,7 +262,10 @@ fn main() {
     }
 
     builder.start_resolve_portals();
-    builder.start_remove_invisible();
+    // builder.start_remove_invisible();
+
+    // Use origin set to remove all invisibles
+    builder.start_remove_invisible(location_map.get_all_origins());
 
     #[cfg(not)]
     {
@@ -283,6 +310,13 @@ fn main() {
     let mut do_enable_slow_rendering = false;
 
     let mut logical_camera = camera;
+
+    // let projection_matrix = math::Mat4f::projection_frustum(-0.5, 0.5, -0.5, 0.5, 0.25, 8192.0);
+    // let mut view_matrix = math::Mat4f::view(
+    //     camera.location,
+    //     camera.location + camera.direction,
+    //     Vec3f::new(0.0, 0.0, 1.0)
+    // );
 
     struct PortalGraph {
         pub vertices: Vec<Vec3f>,
@@ -366,8 +400,6 @@ fn main() {
         }
     };
 
-
-
     'main_loop: loop {
         input.release_changed();
 
@@ -410,6 +442,8 @@ fn main() {
             logical_camera = camera;
         }
 
+        println!("FPS: {}", timer.get_fps());
+
         unsafe {
             if do_enable_depth_test {
                 glu_sys::glEnable(glu_sys::GL_DEPTH_TEST);
@@ -443,7 +477,7 @@ fn main() {
             // println!("camera: <{}, {}, {}>", camera.location.x, camera.location.y, camera.location.z);
 
             // Render by BSP
-            // #[cfg(not)]
+            #[cfg(not)]
             'render: {
                 // println!("Rendering started!");
 
@@ -662,7 +696,7 @@ fn main() {
             }
 
             // Render hull volumes
-            #[cfg(not)]
+            // #[cfg(not)]
             {
                 let render_hull_volume = |hull_volume: &map::builder::HullVolume, render_hull: bool, render_physical: bool| {
                     for hull_polygon in &hull_volume.faces {

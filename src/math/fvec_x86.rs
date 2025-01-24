@@ -1,3 +1,7 @@
+/// Fast vector implementation
+/// Thia is is common representation of Vec3/Vec4
+/// floating-point vectors based on x86 SSE extension.
+
 use std::arch::x86_64 as arch;
 
 /// SIMD-based float-point 3/4-component vector

@@ -166,7 +166,7 @@ macro_rules! impl_vecn {
         }
 
         impl<T: Add<T, Output = T> + Mul<T, Output = T>> $struct_name<T> {
-            fn dot(self, rhs: $struct_name<T>) -> T {
+            pub fn dot(self, rhs: $struct_name<T>) -> T {
                 operator_on_variadic!(+, $(self.$x * rhs.$x),*)
             }
         }

@@ -1,108 +1,201 @@
+use std::num::NonZeroU32;
+
 use crate::{geom, math::Vec3f};
 
 /// Declare actual map builder module
 pub mod builder;
 
+/// Id generic implementation
+macro_rules! impl_id {
+    ($name: ident) => {
+        /// Unique identifier
+        #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug, Ord, PartialOrd)]
+        pub struct $name(NonZeroU32);
 
-/// Volume identifier
-#[derive(Copy, Clone, PartialEq, Eq)]
-pub struct VolumeId(u32);
+        impl $name {
+            /// Build id from index
+            pub fn from_index(index: usize) -> Self {
+                $name(NonZeroU32::try_from(index as u32 + 1).unwrap())
+            }
 
-/// Polygon identifier
-#[derive(Copy, Clone, PartialEq, Eq)]
-pub struct PolygonId(u32);
-
-/// Volume's polygon
-pub struct VolumePolygon {
-    /// Volume portal polygon
-    polygon: geom::Polygon,
-
-    /// Polygon color
-    color: Vec3f,
+            /// Get index by id
+            pub fn into_index(self) -> usize {
+                self.0.get() as usize - 1
+            }
+        }
+    };
 }
 
-impl VolumePolygon {
-    /// Get polygon
-    pub fn get_polygon(&self) -> &geom::Polygon {
-        &self.polygon
-    }
+impl_id!(VolumeId);
+impl_id!(PolygonId);
+impl_id!(MaterialId);
 
-    /// Get polygon color
-    pub fn get_color(&self) -> Vec3f {
-        self.color
-    }
+/// Visible volume part
+pub struct Surface {
+    /// Polygon material identifier
+    pub material_id: MaterialId,
+
+    /// Polygon itself identifier
+    pub polygon_id: PolygonId,
 }
 
-/// Portal to another volume
-pub struct VolumePortal {
-    /// Polygon to cut output by
-    polygon: geom::Polygon,
+/// Portal (volume-volume connection)
+pub struct Portal {
+    /// Portal polygon identifier
+    pub polygon_id: PolygonId,
+    
+    /// Is portal polygon facing 'into' volume it belongs to.
+    /// This flag is used to share same portal polygons between different volumes
+    pub is_facing_front: bool,
 
-    /// Destination volume index
-    destination: VolumeId,
+    /// Destination volume's identifier
+    pub dst_volume_id: VolumeId,
 }
 
-/// Volume structure (single convex volume)
+/// Convex collection of polygons and portals
 pub struct Volume {
-    /// Unique identifier
-    id: VolumeId,
+    /// Set of visible volume elements
+    surfaces: Vec<Surface>,
+
+    /// Set of connections to another volumes
+    portals: Vec<Portal>,
 }
 
 impl Volume {
-    /// Get volume unique identifier
-    pub fn get_id(&self) -> VolumeId {
-        self.id
+    /// Get physical polygon set
+    pub fn get_surfaces(&self) -> &[Surface] {
+        &self.surfaces
+    }
+
+    /// Get portal set
+    pub fn get_portals(&self) -> &[Portal] {
+        &self.portals
     }
 }
 
-/// Location BSP element (thing)
-pub enum LocationBsp {
-    Plane {
-        /// Splitter plane
-        plane: geom::Plane,
+#[repr(C, packed)]
+#[derive(Copy, Clone, PartialEq, Eq)]
+pub struct Rgb8 {
+    /// Red color component
+    pub r: u8,
 
-        /// Front
-        front: Option<Box<LocationBsp>>,
+    /// Gree color component
+    pub g: u8,
 
-        /// Back
-        back: Option<Box<LocationBsp>>,
-    },
-    /// Destination volume Id
-    Volume(VolumeId),
+    /// Blue color component
+    pub b: u8,
 }
 
-impl LocationBsp {
-    /// Find corresponding volume
-    pub fn find_volume(&self, position: Vec3f) -> Option<VolumeId> {
+impl From<u32> for Rgb8 {
+    fn from(value: u32) -> Self {
+        let [r, g, b, _] = value.to_le_bytes();
+
+        Self { r, g, b }
+    }
+}
+
+impl Into<u32> for Rgb8 {
+    fn into(self) -> u32 {
+        u32::from_le_bytes([self.r, self.g, self.b, 0])
+    }
+}
+
+/// Material descriptor
+pub struct Material {
+    /// Only single-color materials are supported) (At least now)
+    pub color: Rgb8,
+}
+
+/// Binary Space Partition, used during 
+pub enum Bsp {
+    /// Space partition
+    Partition {
+        /// Plane that splits front/back volume sets. Front volume set is located in front of plane.
+        splitter_plane: geom::Plane,
+
+        /// Pointer to front polygon part
+        front: Box<Bsp>,
+
+        /// Pointer to back polygon part
+        back: Box<Bsp>,
+    },
+
+    /// Final volume
+    Volume(VolumeId),
+
+    /// Nothing there
+    Void,
+}
+
+impl Bsp {
+    /// Traverse map BSP by point
+    pub fn traverse(&self, point: Vec3f) -> Option<VolumeId> {
         match self {
-            Self::Plane {
-                 plane,
-                front,
-                back
-            } => {
-                let leaf = match plane.get_point_relation(position) {
-                    geom::PointRelation::Front | geom::PointRelation::OnPlane => front.as_ref(),
-                    geom::PointRelation::Back => back.as_ref(),
+            Bsp::Partition { splitter_plane, front, back } => {
+                let side_ref = match splitter_plane.get_point_relation(point) {
+                    geom::PointRelation::Front | geom::PointRelation::OnPlane => front,
+                    geom::PointRelation::Back => back,
                 };
 
-                leaf
-                    .map(|v| v.find_volume(position))
-                    .flatten()
+                side_ref.traverse(point)
             }
-            Self::Volume(id) => Some(*id),
+            Bsp::Volume(id) => Some(*id),
+            Bsp::Void => None,
         }
     }
 }
 
-pub struct Location {
-    /// Set of location volumes
-    volumes: Vec<Volume>,
-}
-impl Location {
-    /// Determine which (unit) volume point is locacted in
-    pub fn get_point_volume(&self, _point: Vec3f) -> Option<VolumeId> {
-        unimplemented!()
-    } // get_point_volume
+/// Map
+pub struct Map {
+    /// Map BSP. Actually, empty map *may not* contain any volumes, so BSP is an option.
+    bsp: Box<Bsp>,
+
+    /// Set of map polygons
+    polygon_set: Vec<geom::Polygon>,
+
+    /// Set of map materials
+    material_set: Vec<Material>,
+
+    /// Set of map volumes
+    volume_set: Vec<Volume>,
 }
 
-// map_bsp.rs
+impl Map {
+    /// Build map from BSP and sets.
+    pub fn new(bsp: Box<Bsp>, polygon_set: Vec<geom::Polygon>, material_set: Vec<Material>, volume_set: Vec<Volume>) -> Self {
+        Self {
+            bsp,
+            polygon_set,
+            material_set,
+            volume_set
+        }
+    }
+
+    /// Get volume by id
+    pub fn get_volume(&self, id: VolumeId) -> Option<&Volume> {
+        self.volume_set.get(id.into_index())
+    }
+
+    /// Get iterator on ids of all volumes
+    pub fn all_volume_ids(&self) -> impl Iterator<Item = VolumeId> {
+        (0..self.volume_set.len())
+            .map(VolumeId::from_index)
+    }
+
+    /// Get material by id
+    pub fn get_material(&self, id: MaterialId) -> Option<&Material> {
+        self.material_set.get(id.into_index())
+    }
+
+    /// Get polygon by id
+    pub fn get_polygon(&self, id: PolygonId) -> Option<&geom::Polygon> {
+        self.polygon_set.get(id.into_index())
+    }
+
+    /// Get location BSP
+    pub fn get_bsp(&self) -> &Bsp {
+        &self.bsp
+    }
+}
+
+// mod.rs

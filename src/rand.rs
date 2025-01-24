@@ -53,3 +53,38 @@ impl Iterator for Xorshift128p {
         Some(self.next())
     }
 }
+
+/// (VERY) Lightweight random generator
+#[derive(Copy, Clone)]
+pub struct Xorshift32 {
+    /// Current random generator state
+    state: u32,
+}
+
+impl Xorshift32 {
+    /// Generator constructor
+    pub fn new() -> Self {
+        Self { state: 1 }
+    }
+
+    /// Generate next number
+    pub fn next(&mut self) -> u32 {
+        self.state ^= self.state << 13;
+        self.state ^= self.state >> 17;
+        self.state ^= self.state <<  5;
+        self.state
+    }
+
+    /// Generate next F64 in [0..1] range
+    pub fn next_unit_f64(&mut self) -> f64 {
+        self.next() as f64 / 0xFFFF_FFFFu32 as f64
+    }
+}
+
+impl Iterator for Xorshift32 {
+    type Item = u32;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        Some(self.next())
+    }
+}

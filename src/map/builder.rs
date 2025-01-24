@@ -11,7 +11,6 @@
 use std::{collections::{BTreeMap, BTreeSet, HashMap}, num::NonZeroU32};
 
 use crate::{geom, math::{Mat3f, Vec3f}, rand};
-use super::Location;
 
 /// Q1 .map brush face binary representation
 #[derive(Clone, Debug)]
@@ -382,38 +381,43 @@ impl Map {
     }
 
     /// Build physical polygon set
-    pub fn build_world_physical_polygons(&self) -> Vec<PhysicalPolygon> {
+    pub fn build_world_physical_polygons(&self) -> (Vec<PhysicalPolygon>, Vec<Material>) {
         let mut randomizer = rand::Xorshift128p::new(304780.try_into().unwrap());
 
         // 'material -> physical polygon color' table
-        let mut texture_color_table = HashMap::<String, u32>::new();
+        let mut texture_mtlid_talbe = HashMap::<String, usize>::new();
 
         let Some(worldspawn) = self.find_entity("classname", Some("worldspawn")) else {
-            return Vec::new();
+            return (Vec::new(), Vec::new());
         };
 
         let mut physical_polygons = Vec::<PhysicalPolygon>::new();
+        let mut materials = Vec::<Material>::new();
 
         for brush in &worldspawn.brushes {
             let planes = brush.faces
                 .iter()
                 .map(|face| {
-                    let color = texture_color_table
+                    let mtlid = texture_mtlid_talbe
                         .get(&face.texture_name)
                         .copied()
                         .unwrap_or_else(|| {
-                            let new_color = (randomizer.next() & 0xFFFFFFFF) as u32;
+                            let mtlid = materials.len();
 
-                            texture_color_table.insert(face.texture_name.clone(), new_color);
+                            texture_mtlid_talbe.insert(face.texture_name.clone(), mtlid);
 
-                            new_color
+                            materials.push(Material {
+                                color: (randomizer.next() & 0xFFFFFFFF) as u32,
+                            });
+
+                            mtlid
                         });
 
-                    (geom::Plane::from_points(face.p1, face.p0, face.p2), color)
+                    (geom::Plane::from_points(face.p1, face.p0, face.p2), mtlid)
                 })
                 .collect::<Vec<_>>();
 
-            for (p1, color) in &planes {
+            for (p1, mtlid) in &planes {
                 let mut points = Vec::<Vec3f>::new();
 
                 for (p2, _) in &planes {
@@ -460,12 +464,12 @@ impl Map {
                         points: geom::sort_points_by_angle(points, p1.normal),
                         plane: *p1,
                     },
-                    color: *color
+                    material_index: *mtlid
                 })
             }
         }
 
-        physical_polygons
+        (physical_polygons, materials)
     }
 }
 
@@ -475,7 +479,7 @@ pub struct PhysicalPolygon {
     pub polygon: geom::Polygon,
 
     /// All material info (just for debug)
-    pub color: u32,
+    pub material_index: usize,
 }
 
 /// Reference to another volume
@@ -773,12 +777,12 @@ impl HullVolume {
                             geom::PolygonSplitResult::Intersects { front, back } => {
                                 front_physical_polygons.push(PhysicalPolygon {
                                     polygon: front,
-                                    color: physical_polygon.color,
+                                    material_index: physical_polygon.material_index,
                                 });
 
                                 back_physical_polygons.push(PhysicalPolygon {
                                     polygon: back,
-                                    color: physical_polygon.color,
+                                    material_index: physical_polygon.material_index,
                                 });
                             }
                             geom::PolygonSplitResult::OnPlane => {
@@ -863,10 +867,18 @@ pub struct SplitTaskPolygon {
     pub polygon: geom::Polygon,
 }
 
+/// Simple material description
+pub struct Material {
+    pub color: u32,
+}
+
 /// Map builder structure
 pub struct Builder {
     /// Final volumes
     pub volumes: Vec<HullVolume>,
+
+    /// Material set
+    pub materials: Vec<Material>,
 
     /// Split infos
     pub split_infos: Vec<SplitInfo>,
@@ -882,6 +894,7 @@ impl Builder {
     pub fn new() -> Self {
         Self {
             volumes: Vec::new(),
+            materials: Vec::new(),
             split_infos: Vec::new(),
             portal_polygons: Vec::new(),
             volume_bsp: None,
@@ -1016,12 +1029,12 @@ impl Builder {
                     // it's not good to split polygon
                     front_polygons.push(PhysicalPolygon {
                         polygon: front,
-                        color: physical_polygon.color,
+                        material_index: physical_polygon.material_index,
                     });
 
                     back_polygons.push(PhysicalPolygon {
                         polygon: back,
-                        color: physical_polygon.color,
+                        material_index: physical_polygon.material_index,
                     });
                 }
             }
@@ -1324,54 +1337,118 @@ impl Builder {
         // todo!("Builder.start_resolve_portals function")
     }
 
-    /// Remove volumes by index set
-    fn remove_volumes(&mut self, mut removed_volume_idx: Vec<usize>) {
-        removed_volume_idx.sort();
-        removed_volume_idx.reverse();
-
-        let mut index_map = Vec::<Option<usize>>::with_capacity(self.volumes.len());
+    /// Build index map based on set of polygons to remove and total set array size
+    fn build_index_map(mut remove_set: Vec<usize>, total_count: usize) -> Vec<Option<usize>> {
+        remove_set.sort();
+        remove_set.reverse();
 
         let mut delta = 0;
 
-        for i in 0..self.volumes.len() {
-            if let Some(removed_index) = removed_volume_idx.last().copied() {
+        let mut index_map = Vec::<Option<usize>>::with_capacity(total_count);
+
+        for i in 0..total_count {
+            if let Some(removed_index) = remove_set.last().copied() {
                 if i < removed_index {
                     index_map.push(Some(i - delta));
                 } else {
                     index_map.push(None);
                     delta += 1;
-                    removed_volume_idx.pop();
+                    remove_set.pop();
                 }
             } else {
                 index_map.push(Some(i - delta));
             }
         }
 
-        let old_volumes = std::mem::replace(&mut self.volumes, Vec::new());
+        index_map
+    }
 
-        for (volume_index, mut volume) in old_volumes.into_iter().enumerate() {
-            if index_map.get(volume_index).unwrap().is_none() {
-                // println!("Removed by {}", volume_index);
-                continue;
-            }
+    /// Remove volumes by index set
+    /// 
+    /// # Note
+    /// If remove set contains at least one volume from a connectivity component, set **must** contain
+    /// rest of the connectivity component volumes. If it isn't true, BSP mutation will be incorrect,
+    /// and it may cause very strange panics in future.
+    fn remove_volumes(&mut self, mut removed_volume_idx: Vec<usize>) {
+        removed_volume_idx.sort();
+        removed_volume_idx.reverse();
 
-            for face in &mut volume.faces {
-                let old_portal_polygons = std::mem::replace(&mut face.portal_polygons, Vec::new());
+        let portal_index_map = {
+            let portal_remove_set = removed_volume_idx
+                .iter()
+                .flat_map(|id| {
+                    let volume = self.volumes.get(*id).unwrap();
+                    volume
+                        .faces
+                        .iter()
+                        .flat_map(|face| face
+                            .portal_polygons
+                            .iter()
+                            .map(|portal| portal.polygon_set_index)
+                        )
+                })
+                .collect::<BTreeSet<_>>();
 
-                'portal_loop: for mut portal_polygon in old_portal_polygons {
-                    let Some(new_volume_index) = index_map[portal_polygon.dst_volume_index] else {
-                        eprintln!("Reachable face somehow have not map...");
-                        continue 'portal_loop;
-                    };
+            Self::build_index_map(
+                portal_remove_set.into_iter().collect(),
+                self.portal_polygons.len()
+            )
+        };
 
-                    portal_polygon.dst_volume_index = new_volume_index;
-
-                    face.portal_polygons.push(portal_polygon);
+        // Map portal polygons
+        // Meh, vector construction. I hope that rust compiler is 'good enuf' to deal with things like this.
+        self.portal_polygons = std::mem::replace(&mut self.portal_polygons, Vec::new())
+            .into_iter()
+            .enumerate()
+            .filter_map(|(index, polygon)| {
+                if portal_index_map.get(index).unwrap().is_some() {
+                    Some(polygon)
+                } else {
+                    None
                 }
-            }
+            })
+            .collect();
 
-            self.volumes.push(volume);
-        }
+        let volume_index_map = Self::build_index_map(
+            removed_volume_idx,
+            self.volumes.len()
+        );
+
+        // Map volumes
+        self.volumes = std::mem::replace(&mut self.volumes, Vec::new())
+            .into_iter()
+            .enumerate()
+            .filter_map(|(volume_index, mut volume)| {
+                if volume_index_map.get(volume_index).unwrap().is_none() {
+                    return None;
+                }
+
+                for face in &mut volume.faces {
+                    face.portal_polygons = std::mem::replace(&mut face.portal_polygons, Vec::new())
+                        .into_iter()
+                        .filter_map(|portal_polygon| {
+                            let Some(new_volume_index) = volume_index_map[portal_polygon.dst_volume_index] else {
+                                eprintln!("Reachable face somehow have no map...");
+                                return None;
+                            };
+        
+                            let Some(new_portal_polygon_index) = portal_index_map[portal_polygon.polygon_set_index] else {
+                                eprintln!("Reachable face somehow have no polygon...");
+                                return None;
+                            };
+        
+                            Some(PortalPolygon {
+                                dst_volume_index: new_volume_index,
+                                polygon_set_index: new_portal_polygon_index,
+                                is_front: portal_polygon.is_front,
+                            })
+                        })
+                        .collect();
+                }
+
+                Some(volume)
+            })
+            .collect();
 
         // Map volume BSP
 
@@ -1393,10 +1470,8 @@ impl Builder {
             }
         }
 
-        let old_volume_bsp = std::mem::replace(&mut self.volume_bsp, None);
-
-        if let Some(bsp) = old_volume_bsp {
-            self.volume_bsp = map_volume_bsp(*bsp, &index_map);
+        if let Some(bsp) = std::mem::replace(&mut self.volume_bsp, None) {
+            self.volume_bsp = map_volume_bsp(*bsp, &volume_index_map);
         }
     }
 
@@ -1472,14 +1547,90 @@ impl Builder {
 
         self.remove_volumes(removed_index_set);
     }
+
+    /// Start map building
+    pub fn start_build_map(self) -> super::Map {
+        fn map_bsp(vbsp: Option<Box<VolumeBsp>>) -> super::Bsp {
+            let Some(vbsp) = vbsp else {
+                return super::Bsp::Void;
+            };
+
+            match *vbsp {
+                VolumeBsp::Node {
+                    plane,
+                    front,
+                    back
+                } => super::Bsp::Partition {
+                    splitter_plane: plane,
+                    front: Box::new(map_bsp(front)),
+                    back: Box::new(map_bsp(back)),
+                },
+                VolumeBsp::Leaf(index) => super::Bsp::Volume(super::VolumeId::from_index(index)),
+            }
+        }
+
+        let bsp = Box::new(map_bsp(self.volume_bsp));
+
+        let mut polygon_set = self.portal_polygons;
+
+        let volume_set = self.volumes
+            .into_iter()
+            .map(|hull_volume| {
+                let mut surfaces = Vec::new();
+                let mut portals = Vec::new();
+
+                for face in hull_volume.faces {
+                    surfaces.extend(face
+                        .physical_polygons
+                        .into_iter()
+                        .map(|physical_polygon| {
+                            let polygon_index = polygon_set.len();
+
+                            polygon_set.push(physical_polygon.polygon);
+
+                            super::Surface {
+                                material_id: super::MaterialId::from_index(physical_polygon.material_index),
+                                polygon_id: super::PolygonId::from_index(polygon_index),
+                            }
+                        })
+                    );
+
+                    portals.extend(face
+                        .portal_polygons
+                        .into_iter()
+                        .map(|portal_polygon| super::Portal {
+                            dst_volume_id: super::VolumeId::from_index(portal_polygon.dst_volume_index),
+                            polygon_id: super::PolygonId::from_index(portal_polygon.polygon_set_index),
+                            is_facing_front: portal_polygon.is_front,
+                        })
+                    );
+                }
+
+                super::Volume { portals, surfaces }
+            })
+            .collect::<Vec<_>>();
+
+        let material_set = self.materials
+            .into_iter()
+            .map(|material| {
+                super::Material { color: material.color.into() }
+            })
+            .collect::<Vec<_>>();
+
+        super::Map::new(bsp, polygon_set, material_set, volume_set)
+    }
 }
 
 /// Builder
-pub fn build(map: &Map) -> Location {
+pub fn build(map: &Map) -> super::Map {
     let mut builder = Builder::new();
 
+    let physical_polygons;
+
+    (physical_polygons, builder.materials) = map.build_world_physical_polygons();
+
     // Build volumes & volume BSP
-    builder.start_build_volumes(map.build_world_physical_polygons());
+    builder.start_build_volumes(physical_polygons);
 
     // Resolve volume portals
     builder.start_resolve_portals();
@@ -1487,5 +1638,6 @@ pub fn build(map: &Map) -> Location {
     // Remove invisible surfaces
     builder.start_remove_invisible(map.get_all_origins());
 
-    unimplemented!()
+    // Finalize building
+    builder.start_build_map()
 }

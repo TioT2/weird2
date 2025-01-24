@@ -326,11 +326,11 @@ impl Plane {
 
     /// Get relation of point and plane
     pub fn get_point_relation(&self, point: Vec3f) -> PointRelation {
-        let metrics = (point ^ self.normal) - self.distance;
+        let metric = (point ^ self.normal) - self.distance;
 
-        if metrics > GEOM_EPSILON {
+        if metric > GEOM_EPSILON {
             PointRelation::Front
-        } else if metrics < -GEOM_EPSILON {
+        } else if metric < -GEOM_EPSILON {
             PointRelation::Back
         } else {
             PointRelation::OnPlane
@@ -358,7 +358,7 @@ impl Plane {
         }
     }
 
-    // Get intersection of this polygon and line
+    // Get intersection of the plane and line
     pub fn intersect_line(&self, line: Line) -> Vec3f {
         let t = (self.distance - (line.base ^ self.normal)) / (line.direction ^ self.normal);
 
@@ -460,7 +460,7 @@ pub fn deduplicate_points(points: Vec<Vec3f>) -> Vec<Vec3f> {
         })
 }
 
-/// Sort points
+/// Sort points by angle ???
 pub fn sort_points_by_angle(mut points: Vec<Vec3f>, normal: Vec3f) -> Vec<Vec3f> {
     let center = points
         .iter()
@@ -527,10 +527,10 @@ impl Polygon {
         self.points.reverse();
     }
 
-    /// Build boundbox for polygon
+    /// Build polygon bounding box
     pub fn build_bound_box(&self) -> BoundBox {
         BoundBox::for_points(self.points.iter().copied())
-    } // build_bound_box
+    }
 
     /// Iterator on planes that are parallel to polygon normal and contain corresponding edges
     pub fn iter_edge_planes<'t>(&'t self) -> impl Iterator<Item = Plane> + 't {
@@ -546,9 +546,9 @@ impl Polygon {
 
                 Plane::from_point_normal(first, normal)
             })
-    } // iter_edge_planes
+    }
 
-    /// From convex point set, normal is calculated by assuming polygon is clockwise
+    /// From convex point set, normal is calculated by assuming polygon is counter-clockwise
     pub fn from_ccw(points: Vec<Vec3f>) -> Self {
         // yep, that's all
         assert!(points.len() >= 3);

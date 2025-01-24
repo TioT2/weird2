@@ -1,4 +1,5 @@
-use std::{cell::Cell, collections::{BTreeMap, BTreeSet, HashMap}};
+use core::f32;
+use std::collections::{BTreeSet, HashMap};
 
 use math::Vec3f;
 use sdl2::{event::Event, keyboard::Scancode};
@@ -19,36 +20,32 @@ pub mod geom;
 /// New map implementation
 pub mod map;
 
-#[derive(Copy, Clone)]
-pub struct Xorshift32 {
-    state: u32,
-}
-
-impl Xorshift32 {
-    pub fn new() -> Self {
-        Self { state: 1 }
-    }
-
-    pub fn next(&mut self) -> u32 {
-        self.state ^= self.state << 13;
-        self.state ^= self.state >> 17;
-        self.state ^= self.state <<  5;
-        self.state
-    }
-}
-
+/// Time measure utility
 pub struct Timer {
+    /// Timer initialization time point
     start: std::time::Instant,
+
+    /// Current time
     now: std::time::Instant,
+
+    /// Duration between two last timer updates
     dt: std::time::Duration,
 
+    /// Current FPS updating duration
     fps_duration: std::time::Duration,
+
+    /// Last time FPS was measured
     fps_last_measure: std::time::Instant,
+
+    /// Count of timer updates after last FPS recalculation
     fps_frame_counter: usize,
+
+    /// FPS, actually
     fps: Option<f32>,
 }
 
 impl Timer {
+    /// Create new timer
     pub fn new() -> Self {
         let now = std::time::Instant::now();
         Self {
@@ -63,6 +60,7 @@ impl Timer {
         }
     }
 
+    /// Update timer
     pub fn response(&mut self) {
         let new_now = std::time::Instant::now();
         self.dt = new_now.duration_since(self.now);
@@ -79,18 +77,29 @@ impl Timer {
         }
     }
 
+    /// Get current duration between frames
     pub fn get_delta_time(&self) -> f32 {
         self.dt.as_secs_f32()
     }
 
+    /// Get current time
     pub fn get_time(&self) -> f32 {
         self.now
             .duration_since(self.start)
             .as_secs_f32()
     }
 
+    /// Get current framaes-per-second
     pub fn get_fps(&self) -> f32 {
         self.fps.unwrap_or(std::f32::NAN)
+    }
+
+    /// FPS measure duration
+    pub fn set_fps_duration(&mut self, new_fps_duration: std::time::Duration) {
+        self.fps_duration = new_fps_duration;
+        self.fps_frame_counter = 0;
+        self.fps = None;
+        self.fps_last_measure = std::time::Instant::now();
     }
 }
 
@@ -211,7 +220,7 @@ fn main() {
 
     // yay, this code will not compile on non-local builds)))
     // --
-    let location_map = map::builder::Map::parse(include_str!("../temp/e1m1.map")).unwrap();
+    let location_map = map::builder::Map::parse(include_str!("../temp/test3.map")).unwrap();
 
     let sdl = sdl2::init().unwrap();
     let video = sdl.video().unwrap();
@@ -231,172 +240,22 @@ fn main() {
     let mut input = Input::new();
     let mut camera = Camera::new();
 
-    camera.location = Vec3f::new(-200.0, 2000.0, -50.0);
-    // camera.location = Vec3f::new(-10.0, -30.0, 150.0);
-    // camera.location = Vec3f::new(30.0, 40.0, 50.0);
+    // camera.location = Vec3f::new(-200.0, 2000.0, -50.0);
+    camera.location = Vec3f::new(30.0, 40.0, 50.0);
 
-    // let bsp = {
-    //     let polygons = brush::get_map_polygons(&brushes, false);
-    //     bsp::Bsp::build(&polygons)
-    // };
+    let compiled_map = map::builder::build(&location_map);
 
-    let mut builder = map::builder::Builder::new();
-    builder.start_build_volumes(location_map.build_world_physical_polygons());
-
-    // Perfrom volume face coplanarity check
-    #[cfg(not)]
-    {
-        for volume in &builder.volumes {
-            for face in &volume.faces {
-                let main_polygon = &face.polygon;
-                for physical_polygon in &face.physical_polygons {
-                    if physical_polygon.polygon.plane != main_polygon.plane {
-                        eprintln!("Coplanarity check failed");
-                    }
-                }
-            }
-        }
-        eprintln!("Coplanarity check finished.");
-    }
-
-    builder.start_resolve_portals();
-    // builder.start_remove_invisible();
-
-    // Use origin set to remove all invisibles
-    builder.start_remove_invisible(location_map.get_all_origins());
-
-    #[cfg(not)]
-    {
-        let mut noportal_count = 0;
-        for volume in &builder.volumes {
-            let portal_count  = volume.faces
-                .iter()
-                .map(|f| f.portal_polygons.len())
-                .sum::<usize>();
-            if portal_count == 0 {
-                noportal_count += 1;
-            }
-        }
-        println!("Volumes without portals count: {}/{}", noportal_count, builder.volumes.len());
-    }
-
-    // Calculate average projected point count
-    #[cfg(not)]
-    {
-        let mut point_count = 0;
-        let mut face_count = 0;
-
-        for volume in &builder.volumes {
-            face_count += volume.faces.len();
-
-            for face in &volume.faces {
-                for polygon in &face.portal_polygons {
-                    point_count += builder.portal_polygons[polygon.dst_volume_index].points.len();
-                }
-
-                for polygon in &face.physical_polygons {
-                    point_count += polygon.polygon.points.len();
-                }
-            }
-        }
-
-        println!("Average points-per-face: {}", point_count as f32 / face_count as f32);
-    }
-
+    // Synchronize visible-set-building and projection cameras
     let mut do_sync_logical_camera = true;
-    let mut do_enable_depth_test = true;
+
+    // Enable depth test (will be removed after software rasterizer implementation)
+    let mut do_enable_depth_test = false;
+
+    // Enable rendering with synchronization after some portion of frame pixels renderend
     let mut do_enable_slow_rendering = false;
 
+    // Camera used for visible set building
     let mut logical_camera = camera;
-
-    // let projection_matrix = math::Mat4f::projection_frustum(-0.5, 0.5, -0.5, 0.5, 0.25, 8192.0);
-    // let mut view_matrix = math::Mat4f::view(
-    //     camera.location,
-    //     camera.location + camera.direction,
-    //     Vec3f::new(0.0, 0.0, 1.0)
-    // );
-
-    struct PortalGraph {
-        pub vertices: Vec<Vec3f>,
-        pub edges: Vec<(u32, u32)>,
-    }
-
-    let portal_graph = 'build_portal_graph: {
-        #[cfg(not)]
-        {
-            let get_volume_center = |volume: &map::builder::HullVolume| -> Vec3f {
-                let mut collector = Vec3f::zero();
-    
-                for face in &volume.faces {
-                    let mut face_collector = Vec3f::zero();
-    
-                    for point in &face.polygon.points {
-                        face_collector += *point;
-                    }
-    
-                    collector += face_collector / face.polygon.points.len() as f32;
-                }
-    
-                collector / volume.faces.len() as f32
-            };
-    
-            
-            let volume_centers = Vec::from_iter(builder.volumes.iter().map(get_volume_center));
-            
-            let mut polygon_ids = BTreeSet::<usize>::from_iter(0..builder.volumes.len());
-            let mut edges = Vec::<(u32, u32)>::new();
-    
-            while let Some(first_id) = polygon_ids.first().copied() {
-                let mut visited_volume_ids = BTreeSet::<usize>::new();
-                let mut edge_polygons = BTreeSet::new();
-    
-                edge_polygons.insert(first_id);
-    
-                while !edge_polygons.is_empty() {
-                    let mut new_edge_polygons = BTreeSet::new();
-    
-                    for volume_index in edge_polygons {
-                        let volume = &builder.volumes[volume_index];
-    
-                        for face in &volume.faces {
-                            'portal_loop: for portal in &face.portal_polygons {
-                                let dst_index = portal.dst_volume_index;
-    
-                                if visited_volume_ids.contains(&dst_index) {
-                                    continue 'portal_loop;
-                                }
-    
-                                edges.push((volume_index as u32, dst_index as u32));
-    
-                                new_edge_polygons.insert(dst_index);
-                            }
-                        }
-    
-                        visited_volume_ids.insert(volume_index);
-                    }
-    
-                    edge_polygons = new_edge_polygons;
-                }
-    
-                for v in visited_volume_ids {
-                    polygon_ids.remove(&v);
-                }
-            }
-    
-            break 'build_portal_graph PortalGraph {
-                edges,
-                vertices: volume_centers
-            };
-        }
-
-        #[allow(unreachable_code)]
-        {
-            break 'build_portal_graph PortalGraph {
-                vertices: Vec::new(),
-                edges: Vec::new()
-            };
-        }
-    };
 
     'main_loop: loop {
         input.release_changed();
@@ -440,7 +299,13 @@ fn main() {
             logical_camera = camera;
         }
 
-        println!("FPS: {}, DB={}, ", timer.get_fps(), do_enable_depth_test as u32);
+        // Display some statistics
+        println!("FPS: {}, DB={}, SL={}, SR={}",
+            timer.get_fps(),
+            do_enable_depth_test as u32,
+            do_sync_logical_camera as u32,
+            do_enable_slow_rendering as u32,
+        );
 
         unsafe {
             if do_enable_depth_test {
@@ -472,92 +337,105 @@ fn main() {
                 1.0
             );
 
-            // println!("camera: <{}, {}, {}>", camera.location.x, camera.location.y, camera.location.z);
-
             // -- Render by BSP
             // #[cfg(not)]
-            'render: {
-                // println!("Rendering started!");
-
-                // Remind about ordered rendered volume set
-
+            {
+                /// Rneder context
                 struct RenderContext<'t> {
+                    /// Camera location
                     camera_location: Vec3f,
+
+                    /// Camera visibility plane
                     camera_plane: geom::Plane,
-                    builder: &'t map::builder::Builder,
+
+                    /// Map reference
+                    map: &'t map::Map,
                 }
 
                 impl<'t> RenderContext<'t> {
+                    /// Build correct volume set rendering order
                     fn order_rendered_volume_set(
-                        bsp: &map::builder::VolumeBsp,
-                        visible_set: &mut BTreeSet<usize>,
-                        render_set: &mut Vec<usize>,
+                        bsp: &map::Bsp,
+                        visible_set: &mut BTreeSet<map::VolumeId>,
+                        render_set: &mut Vec<map::VolumeId>,
                         camera_location: Vec3f
                     ) {
                         match bsp {
-                            map::builder::VolumeBsp::Node {
-                                plane,
+
+                            // Handle space partition
+                            map::Bsp::Partition {
+                                splitter_plane,
                                 front,
                                 back
                             } => {
-                                let (first, second) = match plane.get_point_relation(camera_location) {
+                                let (first, second) = match splitter_plane.get_point_relation(camera_location) {
                                     geom::PointRelation::Front | geom::PointRelation::OnPlane => (front, back),
                                     geom::PointRelation::Back => (back, front)
                                 };
 
-                                if let Some(second) = second.as_ref() {
-                                    Self::order_rendered_volume_set(
-                                        &second,
-                                        visible_set,
-                                        render_set,
-                                        camera_location
-                                    );
-                                }
+                                Self::order_rendered_volume_set(
+                                    second,
+                                    visible_set,
+                                    render_set,
+                                    camera_location
+                                );
 
-                                if let Some(first) = first.as_ref() {
-                                    Self::order_rendered_volume_set(
-                                        &first,
-                                        visible_set,
-                                        render_set,
-                                        camera_location
-                                    );
+                                Self::order_rendered_volume_set(
+                                    &first,
+                                    visible_set,
+                                    render_set,
+                                    camera_location
+                                );
+                            }
+
+                            // Move volume to render set if it's visible
+                            map::Bsp::Volume(id) => {
+                                if visible_set.remove(id) {
+                                    render_set.push(*id);
                                 }
                             }
-                            map::builder::VolumeBsp::Leaf(index) => {
-                                if visible_set.remove(index) {
-                                    render_set.push(*index);
-                                }
-                            }
+
+                            // Just ignore this case)
+                            map::Bsp::Void => {}
                         }
                     }
 
-                    fn render_volume(&mut self, index: usize) {
-                        let volume = &self.builder.volumes[index];
+                    /// Render single volume
+                    fn render_volume(&mut self, id: map::VolumeId) {
+                        let volume = self.map.get_volume(id).unwrap();
 
-                        let physical_polygon_iter = volume
-                            .faces
-                            .iter()
-                            .flat_map(|face| face.physical_polygons.iter());
+                        'polygon_rendering: for surface in volume.get_surfaces() {
+                            let polygon = self.map.get_polygon(surface.polygon_id).unwrap();
 
-                        'polygon_rendering: for physical_polygon in physical_polygon_iter {
-                            let polygon = &physical_polygon.polygon;
-
+                            // Perform backface culling
                             if (polygon.plane.normal ^ self.camera_location) - polygon.plane.distance <= 0.0 {
                                 continue 'polygon_rendering;
                             }
 
-                            let polygon = &physical_polygon.polygon;
+                            // Get surface material
+                            let material = self.map.get_material(surface.material_id).unwrap();
 
+                            // Calculate simple per-face diffuse light
+                            let diffuse_light = Vec3f::new(0.30, 0.47, 0.80)
+                                .normalized()
+                                .dot(polygon.plane.normal)
+                                .abs()
+                                .min(0.99);
+
+                            // Add little ambiance component)
+                            let light = diffuse_light * 0.9 + 0.09;
+
+                            // Calculate color, based on material and light
                             let color = [
-                                ((polygon.plane.normal.x + 1.0) / 2.0 * 255.0) as u8,
-                                ((polygon.plane.normal.y + 1.0) / 2.0 * 255.0) as u8,
-                                ((polygon.plane.normal.z + 1.0) / 2.0 * 255.0) as u8,
+                                (material.color.r as f32 * light) as u8,
+                                (material.color.g as f32 * light) as u8,
+                                (material.color.b as f32 * light) as u8,
                             ];
-                            // let color = physical_polygon.color.to_le_bytes();
 
+                            // Render!
                             unsafe {
                                 glu_sys::glColor3ub(color[0], color[1], color[2]);
-        
+
                                 glu_sys::glBegin(glu_sys::GL_POLYGON);
                                 for point in &polygon.points {
                                     glu_sys::glVertex3f(point.x, point.y, point.z);
@@ -568,31 +446,25 @@ fn main() {
                     }
 
                     /// Render all volumes starting from
-                    pub fn render(&mut self, start_volume_index: usize) {
-                        let mut visible_set = BTreeSet::<usize>::new();
+                    pub fn render(&mut self, start_volume_id: map::VolumeId) {
+                        let mut visible_set = BTreeSet::<map::VolumeId>::new();
 
                         // Visible set DFS edge
                         let mut visible_set_edge = BTreeSet::new();
 
-                        visible_set_edge.insert(start_volume_index);
+                        visible_set_edge.insert(start_volume_id);
 
                         while !visible_set_edge.is_empty() {
                             let mut new_edge = BTreeSet::new();
 
-                            for volume_index in visible_set_edge.iter().copied() {
-                                visible_set.insert(volume_index);
+                            for volume_id in visible_set_edge.iter().copied() {
+                                visible_set.insert(volume_id);
 
-                                let volume = self.builder.volumes.get(volume_index).unwrap();
+                                let volume = self.map.get_volume(volume_id).unwrap();
 
-                                let portal_iter = volume
-                                    .faces
-                                    .iter()
-                                    .flat_map(|face| face.portal_polygons.iter())
-                                ;
-
-                                'portal_rendering: for portal in portal_iter {
-                                    let portal_polygon = self.builder.portal_polygons
-                                        .get(portal.polygon_set_index)
+                                'portal_rendering: for portal in volume.get_portals() {
+                                    let portal_polygon = self.map
+                                        .get_polygon(portal.polygon_id)
                                         .unwrap();
 
                                     // Perform standard backface culling
@@ -603,19 +475,19 @@ fn main() {
 
                                     if false
                                         // Perform modified backface culling
-                                        || backface_cull_result != portal.is_front
+                                        || backface_cull_result != portal.is_facing_front
 
                                         // Check visibility
                                         || self.camera_plane.get_polygon_relation(&portal_polygon) == geom::PolygonRelation::Back
 
                                         // Check set
-                                        || visible_set.contains(&portal.dst_volume_index)
-                                        || visible_set_edge.contains(&portal.dst_volume_index)
+                                        || visible_set.contains(&portal.dst_volume_id)
+                                        || visible_set_edge.contains(&portal.dst_volume_id)
                                     {
                                         continue 'portal_rendering;
                                     }
 
-                                    new_edge.insert(portal.dst_volume_index);
+                                    new_edge.insert(portal.dst_volume_id);
                                 }
                             }
 
@@ -625,7 +497,7 @@ fn main() {
                         let mut render_set = Vec::new();
 
                         Self::order_rendered_volume_set(
-                            self.builder.volume_bsp.as_ref().unwrap(),
+                            self.map.get_bsp(),
                             &mut visible_set,
                             &mut render_set,
                             self.camera_location
@@ -636,12 +508,13 @@ fn main() {
                         }
                     }
 
+                    /// Display ALL level locations
                     fn render_all(&mut self) {
-                        let mut visible_set = BTreeSet::from_iter(0..self.builder.volumes.len());
+                        let mut visible_set = BTreeSet::from_iter(self.map.all_volume_ids());
                         let mut render_set = Vec::new();
 
                         Self::order_rendered_volume_set(
-                            self.builder.volume_bsp.as_ref().unwrap(),
+                            self.map.get_bsp(),
                             &mut visible_set,
                             &mut render_set,
                             self.camera_location
@@ -659,12 +532,11 @@ fn main() {
                         logical_camera.location,
                         logical_camera.direction
                     ),
-                    builder: &builder,
+                    map: &compiled_map,
                 };
 
-                let start_volume_index_opt = builder.volume_bsp
-                    .as_ref()
-                    .unwrap()
+                let start_volume_index_opt = compiled_map
+                    .get_bsp()
                     .traverse(logical_camera.location);
 
                 if let Some(start_volume_index) = start_volume_index_opt {
@@ -672,171 +544,6 @@ fn main() {
                 } else {
                     render_context.render_all();
                 }
-            }
-            
-            // Render volumes by VolumeBSP
-            #[cfg(not)]
-            {
-                fn traverse_vbsp(camera_location: Vec3f, bsp: &map::builder::VolumeBsp, volume_order: &mut Vec<usize>) {
-                    match bsp {
-                        map::builder::VolumeBsp::Node {
-                            plane,
-                            front,
-                            back
-                        } => {
-                            let (first, second) = match plane.get_point_relation(camera_location) {
-                                geom::PointRelation::Front | geom::PointRelation::OnPlane => (front, back),
-                                geom::PointRelation::Back => (back, front)
-                            };
-
-                            if let Some(first) = first.as_ref() {
-                                traverse_vbsp(camera_location, first, volume_order);
-                            }
-
-                            if let Some(second) = second.as_ref() {
-                                traverse_vbsp(camera_location, second, volume_order);
-                            }
-                        }
-                        map::builder::VolumeBsp::Leaf(index) => {
-                            volume_order.push(*index);
-                        }
-                    }
-                }
-
-                let mut volume_order = Vec::<usize>::new();
-
-                traverse_vbsp(
-                    logical_camera.location,
-                    &builder.volume_bsp.as_ref().unwrap(),
-                    &mut volume_order
-                );
-
-                volume_order.reverse();
-
-                for volume_index in volume_order {
-                    let volume = &builder.volumes[volume_index];
-
-                    let physical_polygon_iter = volume
-                        .faces
-                        .iter()
-                        .flat_map(|face| face.physical_polygons.iter());
-
-                    'physical_polygon_loop: for physical_polygon in physical_polygon_iter {
-                        let polygon = &physical_polygon.polygon;
-
-                        if (polygon.plane.normal ^ logical_camera.location) - polygon.plane.distance <= 0.0 {
-                            continue 'physical_polygon_loop;
-                        }
-
-                        let polygon = &physical_polygon.polygon;
-
-                        let color = [
-                            ((polygon.plane.normal.x + 1.0) / 2.0 * 255.0) as u8,
-                            ((polygon.plane.normal.y + 1.0) / 2.0 * 255.0) as u8,
-                            ((polygon.plane.normal.z + 1.0) / 2.0 * 255.0) as u8
-                        ];
-
-                        glu_sys::glColor3ub(color[0], color[1], color[2]);
-
-                        glu_sys::glBegin(glu_sys::GL_POLYGON);
-                        for point in &polygon.points {
-                            glu_sys::glVertex3f(point.x, point.y, point.z);
-                        }
-                        glu_sys::glEnd();
-                    }
-                }
-            }
-
-            // Render pre-calculated portal graph
-            #[cfg(not)]
-            {
-                glu_sys::glColor3f(1.0, 0.0, 0.0);
-                glu_sys::glLineWidth(3.0);
-
-
-                for (first_index, second_index) in &portal_graph.edges {
-                    let first = portal_graph.vertices[*first_index as usize];
-                    let second = portal_graph.vertices[*second_index as usize];
-
-                    glu_sys::glBegin(glu_sys::GL_LINE_STRIP);
-                    glu_sys::glVertex3f(first.x, first.y, first.z);
-                    glu_sys::glVertex3f(second.x, second.y, second.z);
-                    glu_sys::glEnd();
-                }
-    
-
-                glu_sys::glLineWidth(1.0);
-            }
-
-            // Render portal graph
-            #[cfg(not)]
-            {
-                let get_volume_center = |volume_index: usize| -> Vec3f {
-                    let volume = &builder.volumes[volume_index];
-
-                    let mut collector = Vec3f::zero();
-
-                    for face in &volume.faces {
-                        let mut face_collector = Vec3f::zero();
-
-                        for point in &face.polygon.points {
-                            face_collector += *point;
-                        }
-
-                        collector += face_collector / face.polygon.points.len() as f32;
-                    }
-
-                    collector / volume.faces.len() as f32
-                };
-
-                let mut polygon_ids = BTreeSet::<usize>::from_iter(0..builder.volumes.len());
-
-                glu_sys::glColor3f(1.0, 0.0, 0.0);
-                glu_sys::glLineWidth(3.0);
-
-                while let Some(first_id) = polygon_ids.first().copied() {
-                    let mut visited_volume_ids = BTreeSet::<usize>::new();
-                    let mut edge_polygons = vec![
-                        (first_id, get_volume_center(first_id))
-                    ];
-
-                    while !edge_polygons.is_empty() {
-                        let mut new_edge_polygons = Vec::new();
-    
-                        for (volume_index, volume_center) in edge_polygons {
-                            let volume = &builder.volumes[volume_index];
-    
-                            for face in &volume.faces {
-                                'portal_loop: for portal in &face.portal_polygons {
-                                    let dst_index = portal.dst_volume_index;
-    
-                                    if visited_volume_ids.contains(&dst_index) {
-                                        continue 'portal_loop;
-                                    }
-    
-                                    let center = get_volume_center(dst_index);
-    
-                                    glu_sys::glBegin(glu_sys::GL_LINE_STRIP);
-                                    glu_sys::glVertex3f(volume_center.x, volume_center.y, volume_center.z);
-                                    glu_sys::glVertex3f(center.x, center.y, center.z);
-                                    glu_sys::glEnd();
-    
-                                    new_edge_polygons.push((dst_index, center));
-                                }
-                            }
-    
-                            visited_volume_ids.insert(volume_index);
-                        }
-    
-                        edge_polygons = new_edge_polygons;
-                    }
-
-                    for v in visited_volume_ids {
-                        polygon_ids.remove(&v);
-                    }
-                }
-
-                glu_sys::glLineWidth(1.0);
             }
 
             // Render hull volumes
@@ -907,78 +614,6 @@ fn main() {
                     render_hull_volume(hull_volume, true, false);
                 }
             }
-
-            // Render BSP
-            #[cfg(not)]
-            {
-                struct VisitContext {
-                    location: Vec3f,
-                    // debug_plane: Plane,
-                }
-                impl VisitContext {
-                    pub unsafe fn visit(&mut self, node: &bsp::Bsp) {
-                        match node {
-                            bsp::Bsp::Element { splitter, front, back } => {
-                                match splitter.get_point_relation(self.location) {
-                                    PointRelation::Front => {
-                                        self.visit(back);
-                                        self.visit(front);
-                                    }
-                                    _ => {
-                                        self.visit(front);
-                                        self.visit(back);
-                                    }
-                                }
-                            }
-                            bsp::Bsp::Leaf { polygons } => {
-                                
-                                'polygon_loop: for polygon in polygons {
-                                    // backface culling
-                                    if (polygon.plane.normal ^ self.location) - polygon.plane.distance <= 0.0 {
-                                        continue 'polygon_loop;
-                                    }
-                                    
-                                    let color = [
-                                        ((polygon.plane.normal.x + 1.0) / 2.0 * 255.0) as u8,
-                                        ((polygon.plane.normal.y + 1.0) / 2.0 * 255.0) as u8,
-                                        ((polygon.plane.normal.z + 1.0) / 2.0 * 255.0) as u8
-                                    ];
-            
-                                    glu_sys::glColor3ub(color[0], color[1], color[2]);
-            
-                                    glu_sys::glBegin(glu_sys::GL_POLYGON);
-                                    for point in &polygon.points {
-                                        glu_sys::glVertex3f(point.x, point.y, point.z);
-                                    }
-                                    glu_sys::glEnd();
-    
-                                    // draw intersection line
-                                    // let intr = self.debug_plane.intersect_polygon(polygon);
-                                    // if let Some((begin, end)) = intr {
-                                    //     glu_sys::glColor3ub(0xFF, 0x00, 0x00);
-                                    //     glu_sys::glBegin(glu_sys::GL_LINE_STRIP);
-                                    //     glu_sys::glVertex3f(begin.x, begin.y, begin.z);
-                                    //     glu_sys::glVertex3f(end.x, end.y, end.z);
-                                    //     glu_sys::glEnd();
-                                    // }
-    
-                                }
-                            }
-                        }
-                    }
-                }
-            
-                let mut vcontext = VisitContext {
-                    location: logical_camera.location,
-                    // debug_plane: Plane::from_point_normal(
-                    //     Vec3f::new(-200.0, 2000.0, -50.0),
-                    //     Vec3f::new(1.0, 2.0, 0.0)
-                    // )
-                };
-    
-                vcontext.visit(&bsp);
-            }
-                    // render_brushes(&brushes, camera.location);
         }
 
         window.gl_swap_window();

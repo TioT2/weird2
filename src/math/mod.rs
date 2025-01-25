@@ -450,6 +450,7 @@ impl<T: Copy + Add<T, Output = T> + Mul<T, Output = T>> Mul<Vec3<T>> for Mat3<T>
 pub type Ext2f = Ext2<f32>;
 pub type Vec2f = Vec2<f32>;
 pub type Vec3f = Vec3<f32>;
+pub type Vec4f = Vec4<f32>;
 
 pub type Vec2u32 = Vec2<u32>;
 pub type Ext2u32 = Ext2<u32>;
@@ -964,6 +965,16 @@ impl Mat4<f32> {
                 + self.data[3][2],
         }
     } // fn transform_point
+
+    /// Transform 4x4 matrix
+    pub fn transform(&self, v: Vec4<f32>) -> Vec4<f32> {
+        Vec4 {
+            x: v.x * self.data[0][0] + v.y * self.data[1][0] + v.z * self.data[2][0] + v.w * self.data[3][0],
+            y: v.x * self.data[0][1] + v.y * self.data[1][1] + v.z * self.data[2][1] + v.w * self.data[3][1],
+            z: v.x * self.data[0][2] + v.y * self.data[1][2] + v.z * self.data[2][2] + v.w * self.data[3][2],
+            w: v.x * self.data[0][3] + v.y * self.data[1][3] + v.z * self.data[2][3] + v.w * self.data[3][3],
+        }
+    }
 
     pub fn transform_4x4(&self, v: Vec3<f32>) -> Vec3<f32> {
         let w =

@@ -1,7 +1,7 @@
 use core::f32;
 use std::collections::{BTreeSet, HashMap};
 
-use math::Vec3f;
+use math::{Mat4f, Vec3f, Vec4f};
 use sdl2::{event::Event, keyboard::Scancode};
 
 /// Basic math utility
@@ -310,37 +310,34 @@ fn main() {
         unsafe {
             if do_enable_depth_test {
                 glu_sys::glEnable(glu_sys::GL_DEPTH_TEST);
-            } else {
-                glu_sys::glDisable(glu_sys::GL_DEPTH_TEST);
-            }
-
-            if do_enable_depth_test {
                 glu_sys::glClear(glu_sys::GL_COLOR_BUFFER_BIT | glu_sys::GL_DEPTH_BUFFER_BIT);
             } else {
+                glu_sys::glDisable(glu_sys::GL_DEPTH_TEST);
                 glu_sys::glClear(glu_sys::GL_COLOR_BUFFER_BIT);
             }
 
             glu_sys::glClearColor(0.30, 0.47, 0.80, 0.0);
 
-            glu_sys::glLoadIdentity();
-            glu_sys::gluPerspective(60.0, 8.0 / 6.0, 0.01, 8192.0);
-
-            glu_sys::gluLookAt(
-                camera.location.x as f64,
-                camera.location.y as f64,
-                camera.location.z as f64,
-                camera.location.x as f64 + camera.direction.x as f64,
-                camera.location.y as f64 + camera.direction.y as f64,
-                camera.location.z as f64 + camera.direction.z as f64,
-                0.0,
-                0.0,
-                1.0
+            // Compute view matrix
+            let view_matrix = Mat4f::view(
+                camera.location,
+                camera.location + camera.direction,
+                Vec3f::new(0.0, 0.0, 1.0)
             );
+
+            // Compute projection matrix
+            let projection_matrix = Mat4f::projection_frustum(
+                -0.5, 0.5,
+                -0.5, 0.5,
+                0.75, 8192.0
+            );
+
+            let view_projection_matrix = view_matrix * projection_matrix;
 
             // -- Render by BSP
             // #[cfg(not)]
             {
-                /// Rneder context
+                /// Render context
                 struct RenderContext<'t> {
                     /// Camera location
                     camera_location: Vec3f,
@@ -348,11 +345,15 @@ fn main() {
                     /// Camera visibility plane
                     camera_plane: geom::Plane,
 
+                    /// VP matrix
+                    view_projection_matrix: Mat4f,
+
                     /// Map reference
                     map: &'t map::Map,
                 }
 
                 impl<'t> RenderContext<'t> {
+
                     /// Build correct volume set rendering order
                     fn order_rendered_volume_set(
                         bsp: &map::Bsp,
@@ -400,6 +401,30 @@ fn main() {
                         }
                     }
 
+                    /// Render single polygon with flat fill
+                    fn render_polygon(&mut self, polygon: &geom::Polygon, color: [u8; 3]) {
+                        // This rasterization process uses OpenGL as backend,
+                        // I guess, rasterizer will be moved to separate structure
+
+                        unsafe {
+                            glu_sys::glColor3ub(color[0], color[1], color[2]);
+
+                            glu_sys::glBegin(glu_sys::GL_POLYGON);
+
+                            for point in &polygon.points {
+                                let proj_point = self.view_projection_matrix.transform(Vec4f::new(
+                                    point.x,
+                                    point.y,
+                                    point.z,
+                                    1.0
+                                ));
+
+                                glu_sys::glVertex4f(proj_point.x, proj_point.y, proj_point.z, proj_point.w);
+                            }
+                            glu_sys::glEnd();
+                        }
+                    }
+
                     /// Render single volume
                     fn render_volume(&mut self, id: map::VolumeId) {
                         let volume = self.map.get_volume(id).unwrap();
@@ -416,14 +441,14 @@ fn main() {
                             let material = self.map.get_material(surface.material_id).unwrap();
 
                             // Calculate simple per-face diffuse light
-                            let diffuse_light = Vec3f::new(0.30, 0.47, 0.80)
+                            let light_diffuse = Vec3f::new(0.30, 0.47, 0.80)
                                 .normalized()
                                 .dot(polygon.plane.normal)
                                 .abs()
                                 .min(0.99);
 
-                            // Add little ambiance component)
-                            let light = diffuse_light * 0.9 + 0.09;
+                            // Add ambient)
+                            let light = light_diffuse * 0.9 + 0.09;
 
                             // Calculate color, based on material and light
                             let color = [
@@ -432,16 +457,7 @@ fn main() {
                                 (material.color.b as f32 * light) as u8,
                             ];
 
-                            // Render!
-                            unsafe {
-                                glu_sys::glColor3ub(color[0], color[1], color[2]);
-
-                                glu_sys::glBegin(glu_sys::GL_POLYGON);
-                                for point in &polygon.points {
-                                    glu_sys::glVertex3f(point.x, point.y, point.z);
-                                }
-                                glu_sys::glEnd();
-                            }
+                            self.render_polygon(&polygon, color);
                         }
                     }
 
@@ -508,7 +524,7 @@ fn main() {
                         }
                     }
 
-                    /// Display ALL level locations
+                    /// Display ALL level volumes
                     fn render_all(&mut self) {
                         let mut visible_set = BTreeSet::from_iter(self.map.all_volume_ids());
                         let mut render_set = Vec::new();
@@ -532,6 +548,7 @@ fn main() {
                         logical_camera.location,
                         logical_camera.direction
                     ),
+                    view_projection_matrix,
                     map: &compiled_map,
                 };
 
@@ -545,77 +562,10 @@ fn main() {
                     render_context.render_all();
                 }
             }
-
-            // Render hull volumes
-            #[cfg(not)]
-            {
-                let render_hull_volume = |hull_volume: &map::builder::HullVolume, render_hull: bool, render_physical: bool| {
-                    for hull_polygon in &hull_volume.faces {
-                        let polygon = &hull_polygon.polygon;
-
-                        // backface culling
-                        // if (polygon.plane.normal ^ camera_location) - polygon.plane.distance <= 0.0 {
-                        //     continue 'face_polygon_loop;
-                        // }
-
-                        
-                        if render_hull {
-                            let color = [
-                                ((polygon.plane.normal.x + 1.0) / 2.0 * 255.0) as u8,
-                                ((polygon.plane.normal.y + 1.0) / 2.0 * 255.0) as u8,
-                                ((polygon.plane.normal.z + 1.0) / 2.0 * 255.0) as u8
-                            ];
-
-                            glu_sys::glColor3ub(color[0], color[1], color[2]);
-                            
-                            glu_sys::glBegin(glu_sys::GL_LINE_LOOP);
-                            for point in &polygon.points {
-                                glu_sys::glVertex3f(point.x, point.y, point.z);
-                            }
-                            glu_sys::glEnd();
-                        }
-
-                        if render_physical {
-                            for physical_polygon in &hull_polygon.physical_polygons {
-                                let polygon = &physical_polygon.polygon;
-    
-                                let color = [
-                                    ((polygon.plane.normal.x + 1.0) / 2.0 * 255.0) as u8,
-                                    ((polygon.plane.normal.y + 1.0) / 2.0 * 255.0) as u8,
-                                    ((polygon.plane.normal.z + 1.0) / 2.0 * 255.0) as u8
-                                ];
-        
-                                glu_sys::glColor3ub(color[0], color[1], color[2]);
-        
-                                glu_sys::glBegin(glu_sys::GL_POLYGON);
-                                for point in &polygon.points {
-                                    glu_sys::glVertex3f(point.x, point.y, point.z);
-                                }
-                                glu_sys::glEnd();
-                            }
-                        }
-                    }
-                };
-
-                static mut volume_index: u32 = 0;
-                if input.is_key_clicked(Scancode::Space) {
-                    volume_index += 1;
-                }
-
-                println!("Current volume index: {}", volume_index as usize % builder.volumes.len());
-
-                render_hull_volume(
-                    &builder.volumes[volume_index as usize % builder.volumes.len()],
-                    false,
-                    true
-                );
-
-                for hull_volume in &builder.volumes {
-                    render_hull_volume(hull_volume, true, false);
-                }
-            }
         }
 
         window.gl_swap_window();
     }
 }
+
+// main.rs

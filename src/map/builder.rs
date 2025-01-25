@@ -1641,3 +1641,5 @@ pub fn build(map: &Map) -> super::Map {
     // Finalize building
     builder.start_build_map()
 }
+
+// builder.rs

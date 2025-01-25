@@ -30,7 +30,7 @@ impl_id!(VolumeId);
 impl_id!(PolygonId);
 impl_id!(MaterialId);
 
-/// Visible volume part
+/// Visible volume face piece
 pub struct Surface {
     /// Polygon material identifier
     pub material_id: MaterialId,

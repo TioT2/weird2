@@ -565,3 +565,5 @@ impl Polygon {
         Self::from_ccw(points)
     }
 }
+
+// geom.rs

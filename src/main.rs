@@ -1,7 +1,8 @@
 use std::collections::{BTreeSet, HashMap};
 
+use itertools::Itertools;
 use math::{Mat4f, Vec3f};
-use sdl2::{event::Event, keyboard::Scancode};
+use sdl2::{event::{self, Event}, keyboard::Scancode};
 
 /// Basic math utility
 #[macro_use]
@@ -267,7 +268,7 @@ fn main() {
     let sdl = sdl2::init().unwrap();
     let video = sdl.video().unwrap();
     let mut event_pump = sdl.event_pump().unwrap();
-    
+
     let window = video
         .window("WEIRD-2", 1024, 768)
         .opengl()
@@ -276,10 +277,8 @@ fn main() {
     ;
 
     let gl_context = window.gl_create_context().unwrap();
-
     // Disable vsync
     _ = video.gl_set_swap_interval(0);
-
     window.gl_make_current(&gl_context).unwrap();
 
     let mut timer = Timer::new();
@@ -302,6 +301,9 @@ fn main() {
 
     // Camera used for visible set building
     let mut logical_camera = camera;
+
+    // Buffer that contains software-rendered pixels
+    let mut frame_buffer = Vec::<u32>::new();
 
     'main_loop: loop {
         input.release_changed();
@@ -355,6 +357,23 @@ fn main() {
             );
         }
 
+        // Compute view matrix
+        let view_matrix = Mat4f::view(
+            camera.location,
+            camera.location + camera.direction,
+            Vec3f::new(0.0, 0.0, 1.0)
+        );
+
+        // Compute projection matrix
+        let projection_matrix = Mat4f::projection_frustum(
+            -0.5 * 8.0 / 6.0, 0.5 * 8.0 / 6.0,
+            -0.5, 0.5,
+            0.66, 100.0
+        );
+        
+        let view_projection_matrix = view_matrix * projection_matrix;
+
+        // Setup rasterizer
         unsafe {
             if do_enable_depth_test {
                 glu_sys::glEnable(glu_sys::GL_DEPTH_TEST);
@@ -365,92 +384,185 @@ fn main() {
             }
 
             glu_sys::glClearColor(0.30, 0.47, 0.80, 0.0);
+        }
 
-            // Compute view matrix
-            let view_matrix = Mat4f::view(
-                camera.location,
-                camera.location + camera.direction,
-                Vec3f::new(0.0, 0.0, 1.0)
-            );
+        /// Render context
+        struct RenderContext<'t> {
+            /// Camera location
+            camera_location: Vec3f,
 
-            // Compute projection matrix
-            let projection_matrix = Mat4f::projection_frustum(
-                -0.5 * 8.0 / 6.0, 0.5 * 8.0 / 6.0,
-                -0.5, 0.5,
-                0.66, 100.0
-            );
+            /// Camera visibility plane
+            camera_plane: geom::Plane,
 
-            let view_projection_matrix = view_matrix * projection_matrix;
+            /// VP matrix
+            view_projection_matrix: Mat4f,
 
-            // #[cfg(not)]
-            /// Render context
-            struct RenderContext<'t> {
-                /// Camera location
-                camera_location: Vec3f,
+            /// Map reference
+            map: &'t map::Map,
 
-                /// Camera visibility plane
-                camera_plane: geom::Plane,
+            /// Frame pixel array pointer
+            frame_pixels: *mut u32,
 
-                /// VP matrix
-                view_projection_matrix: Mat4f,
+            /// Frame width
+            frame_width: usize,
 
-                /// Map reference
-                map: &'t map::Map,
+            /// Frame height
+            frame_height: usize,
+
+            /// Frame stride
+            frame_stride: usize,
+        }
+
+        impl<'t> RenderContext<'t> {
+
+            /// Build correct volume set rendering order
+            fn order_rendered_volume_set(
+                bsp: &map::Bsp,
+                visible_set: &mut BTreeSet<map::VolumeId>,
+                render_set: &mut Vec<map::VolumeId>,
+                camera_location: Vec3f
+            ) {
+                match bsp {
+
+                    // Handle space partition
+                    map::Bsp::Partition {
+                        splitter_plane,
+                        front,
+                        back
+                    } => {
+                        let (first, second) = match splitter_plane.get_point_relation(camera_location) {
+                            geom::PointRelation::Front | geom::PointRelation::OnPlane => (front, back),
+                            geom::PointRelation::Back => (back, front)
+                        };
+
+                        Self::order_rendered_volume_set(
+                            second,
+                            visible_set,
+                            render_set,
+                            camera_location
+                        );
+
+                        Self::order_rendered_volume_set(
+                            &first,
+                            visible_set,
+                            render_set,
+                            camera_location
+                        );
+                    }
+
+                    // Move volume to render set if it's visible
+                    map::Bsp::Volume(id) => {
+                        if visible_set.remove(id) {
+                            render_set.push(*id);
+                        }
+                    }
+
+                    // Just ignore this case)
+                    map::Bsp::Void => {}
+                }
             }
 
-            impl<'t> RenderContext<'t> {
+            fn clip_screenspace_polygon(&self, mut points: Vec<Vec3f>) -> Vec<Vec3f> {
+                let mut result = Vec::new();
 
-                /// Build correct volume set rendering order
-                fn order_rendered_volume_set(
-                    bsp: &map::Bsp,
-                    visible_set: &mut BTreeSet<map::VolumeId>,
-                    render_set: &mut Vec<map::VolumeId>,
-                    camera_location: Vec3f
-                ) {
-                    match bsp {
+                for index in 0..points.len() {
+                    let curr = points[index];
+                    let next = points[(index + 1) % points.len()];
 
-                        // Handle space partition
-                        map::Bsp::Partition {
-                            splitter_plane,
-                            front,
-                            back
-                        } => {
-                            let (first, second) = match splitter_plane.get_point_relation(camera_location) {
-                                geom::PointRelation::Front | geom::PointRelation::OnPlane => (front, back),
-                                geom::PointRelation::Back => (back, front)
-                            };
+                    if curr.x > 0.5 - geom::GEOM_EPSILON {
+                        result.push(curr);
 
-                            Self::order_rendered_volume_set(
-                                second,
-                                visible_set,
-                                render_set,
-                                camera_location
-                            );
+                        if next.x < 0.5 + geom::GEOM_EPSILON {
+                            let t = (0.5 - curr.x) / (next.x - curr.x);
 
-                            Self::order_rendered_volume_set(
-                                &first,
-                                visible_set,
-                                render_set,
-                                camera_location
-                            );
+                            result.push((next - curr) * t + curr);
                         }
+                    } else if next.x > 0.5 - geom::GEOM_EPSILON {
+                        let t = (0.5 - curr.x) / (next.x - curr.x);
 
-                        // Move volume to render set if it's visible
-                        map::Bsp::Volume(id) => {
-                            if visible_set.remove(id) {
-                                render_set.push(*id);
-                            }
-                        }
-
-                        // Just ignore this case)
-                        map::Bsp::Void => {}
+                        result.push((next - curr) * t + curr);
                     }
                 }
 
-                /// Render single polygon with flat fill
-                fn render_polygon(&mut self, polygon: &geom::Polygon, color: [u8; 3]) {
-                    // This rasterization process uses OpenGL as backend,
-                    // I guess, rasterizer will be moved to separate object
+                std::mem::swap(&mut points, &mut result);
+                
+                result.clear();
+                for index in 0..points.len() {
+                    let curr = points[index];
+                    let next = points[(index + 1) % points.len()];
+
+                    if curr.y > 0.5 - geom::GEOM_EPSILON {
+                        result.push(curr);
+
+                        if next.y < 0.5 + geom::GEOM_EPSILON {
+                            let t = (0.5 - curr.y) / (next.y - curr.y);
+
+                            result.push((next - curr) * t + curr);
+                        }
+                    } else if next.y > 0.5 - geom::GEOM_EPSILON {
+                        let t = (0.5 - curr.y) / (next.y - curr.y);
+
+                        result.push((next - curr) * t + curr);
+                    }
+                }
+
+                std::mem::swap(&mut points, &mut result);
+
+                let frame_w = self.frame_width as f32 - 1.0;
+                let frame_h = self.frame_height as f32 - 1.0;
+
+                result.clear();
+                for index in 0..points.len() {
+                    let curr = points[index];
+                    let next = points[(index + 1) % points.len()];
+
+                    if curr.x < frame_w - 0.5 + geom::GEOM_EPSILON {
+                        result.push(curr);
+
+                        if next.x > frame_w - 0.5 - geom::GEOM_EPSILON {
+                            let t = (frame_w - 0.5 - curr.x) / (next.x - curr.x);
+
+                            result.push((next - curr) * t + curr);
+                        }
+                    } else if next.x < frame_w - 0.5 + geom::GEOM_EPSILON {
+                        let t = (frame_w - 0.5 - curr.x) / (next.x - curr.x);
+
+                        result.push((next - curr) * t + curr);
+                    }
+                }
+
+                std::mem::swap(&mut points, &mut result);
+
+                result.clear();
+                for index in 0..points.len() {
+                    let curr = points[index];
+                    let next = points[(index + 1) % points.len()];
+
+                    if curr.y < frame_h - 0.5 + geom::GEOM_EPSILON {
+                        result.push(curr);
+
+                        if next.y > frame_h - 0.5 - geom::GEOM_EPSILON {
+                            let t = (frame_h - 0.5 - curr.y) / (next.y - curr.y);
+
+                            result.push((next - curr) * t + curr);
+                        }
+                    } else if next.y < frame_h - 0.5 + geom::GEOM_EPSILON {
+                        let t = (frame_h - 0.5 - curr.y) / (next.y - curr.y);
+
+                        result.push((next - curr) * t + curr);
+                    }
+                }
+
+                result
+            }
+
+            fn render_polygon_frame(&mut self, polygon: &geom::Polygon, color: [u8; 3]) {
+                // This rasterization process uses OpenGL as backend,
+                // I guess, rasterizer will be moved to separate object
+
+                let color_u32 = u32::from_le_bytes([color[2], color[1], color[0], 0]);
+
+                let points = {
 
                     let proj_polygon = geom::Polygon::from_ccw(polygon
                         .points
@@ -458,157 +570,347 @@ fn main() {
                         .map(|point| self.view_projection_matrix.transform_point(*point))
                         .collect::<Vec<_>>()
                     );
-
+    
+                    // Clip polygon back in viewspace
                     let clip_polygon = proj_polygon.clip_viewspace_back();
+    
+                    let width = self.frame_width as f32;
+                    let height = self.frame_height as f32;
+    
+                    // Projected points
+                    let screenspace_polygon = clip_polygon.points
+                        .iter()
+                        .map(|v| {
+                            Vec3f::new(
+                                (1.0 + v.x / v.z) * 0.5 * width + 0.5,
+                                (1.0 - v.y / v.z) * 0.5 * height + 0.5,
+                                1.0 / v.z
+                            )
+                        })
+                        .collect::<Vec<_>>();
 
-                    unsafe {
-                        glu_sys::glColor3ub(color[0], color[1], color[2]);
+                    let screenspace_polygon = self
+                        .clip_screenspace_polygon(screenspace_polygon);
 
-                        glu_sys::glBegin(glu_sys::GL_POLYGON);
+                    for pt in &screenspace_polygon {
+                        // if pt.x >= width || pt.y >= height {
+                        //     eprintln!("Positive point after clip!");
+                        //     return;
+                        // }
+                        // if pt.x <= 0.0 || pt.y <= 0.0 {
+                        //     eprintln!("Negative point after clip!");
+                        //     return;
+                        // }
 
-                        for point in &clip_polygon.points {
-                            glu_sys::glVertex2f(point.x / point.z, point.y / point.z);
+                        // It's completely ok
+                        if !pt.x.is_finite() || !pt.y.is_finite() {
+                            return;
                         }
-                        glu_sys::glEnd();
                     }
+
+                    screenspace_polygon
+                };
+
+                if points.len() < 3 {
+                    return;
                 }
 
-                /// Render single volume
-                fn render_volume(&mut self, id: map::VolumeId) {
-                    let volume = self.map.get_volume(id).unwrap();
+                let (start_index, end_index) = {
+                    let mut min_y_index = !0usize;
+                    let mut max_y_index = !0usize;
 
-                    'polygon_rendering: for surface in volume.get_surfaces() {
-                        let polygon = self.map.get_polygon(surface.polygon_id).unwrap();
+                    let mut min_y = f32::MAX;
+                    let mut max_y = f32::MIN;
 
-                        // Perform backface culling
-                        if (polygon.plane.normal ^ self.camera_location) - polygon.plane.distance <= 0.0 {
-                            continue 'polygon_rendering;
+                    for index in 0..points.len() {
+                        let y = points[index].y;
+
+                        if y < min_y {
+                            min_y_index = index;
+                            min_y = y;
                         }
 
-                        // Get surface material
-                        let material = self.map.get_material(surface.material_id).unwrap();
+                        if y > max_y {
+                            max_y_index = index;
+                            max_y = y;
+                        }
+                    }
 
-                        // Calculate simple per-face diffuse light
-                        let light_diffuse = Vec3f::new(0.30, 0.47, 0.80)
-                            .normalized()
-                            .dot(polygon.plane.normal)
-                            .abs()
-                            .min(0.99);
+                    (min_y_index, max_y_index)
+                };
 
-                        // Add ambient)
-                        let light = light_diffuse * 0.9 + 0.09;
+                let (left_index_delta, right_index_delta) = {
+                    if points[start_index].x > points[(start_index + 1) % points.len()].x {
+                        (1usize.wrapping_neg(), 1)
+                    } else {
+                        (1, 1usize.wrapping_neg())
+                    }
+                };
 
-                        // Calculate color, based on material and light
-                        let color = [
-                            (material.color.r as f32 * light) as u8,
-                            (material.color.g as f32 * light) as u8,
-                            (material.color.b as f32 * light) as u8,
-                        ];
+                unsafe {
+                    let line_end = points[end_index].y.ceil().to_int_unchecked::<usize>();
 
-                        self.render_polygon(&polygon, color);
+                    let mut line = points[start_index].y.ceil().to_int_unchecked::<usize>();
+
+                    let mut left_index = start_index;
+                    let mut left_dx = 0.0f32;
+                    let mut left_point = points[start_index];
+                    let mut left_x = left_point.x;
+                    let mut left_end_line = left_point.y.ceil().to_int_unchecked::<usize>();
+
+                    let mut right_index = start_index;
+                    let mut right_dx = 0.0f32;
+                    let mut right_point = points[start_index];
+                    let mut right_x = right_point.x;
+                    let mut right_end_line = right_point.y.ceil().to_int_unchecked::<usize>();
+
+                    while line <= line_end {
+                        if line >= left_end_line {
+                            left_index = (left_index + points.len())
+                                .wrapping_add(left_index_delta) % points.len();
+
+                            left_x = left_point.x;
+
+                            let new_left_point = points[left_index];
+
+                            left_dx = (new_left_point.x - left_point.x) / (new_left_point.y - left_point.y);
+                            left_end_line = new_left_point.y.ceil().to_int_unchecked::<usize>();
+                            left_point = new_left_point;
+                        } else {
+                            left_x += left_dx;
+                        }
+                        
+                        if line >= right_end_line {
+                            right_index = (right_index + points.len())
+                                .wrapping_add(right_index_delta) % points.len();
+
+                            right_x = right_point.x;
+
+                            let new_right_point = points[right_index];
+
+                            right_dx = (new_right_point.x - right_point.x) / (new_right_point.y - right_point.y);
+                            right_end_line = new_right_point.y.ceil().to_int_unchecked::<usize>();
+                            right_point = new_right_point;
+                        } else {
+                            right_x += right_dx;
+                        }
+
+                        let (start, end) = if left_x < right_x {
+                            (
+                                left_x.floor().to_int_unchecked::<usize>(),
+                                right_x.ceil().to_int_unchecked::<usize>()
+                            )
+                        } else {
+                            (
+                                right_x.floor().to_int_unchecked::<usize>(),
+                                left_x.ceil().to_int_unchecked::<usize>()
+                            )
+                        };
+
+                        let mut pixel_ptr = self.frame_pixels.add(self.frame_stride * line + start);
+                        let pixel_ptr_end = self.frame_pixels.add(self.frame_stride * line + end);
+
+                        while pixel_ptr <= pixel_ptr_end {
+                            *pixel_ptr = color_u32;
+                            pixel_ptr = pixel_ptr.add(1);
+                        }
+
+                        line += 1;
                     }
                 }
+            }
 
-                /// Render all volumes starting from
-                pub fn render(&mut self, start_volume_id: map::VolumeId) {
-                    let mut visible_set = BTreeSet::<map::VolumeId>::new();
+            /// Render single polygon with flat fill
+            fn _render_polygon_gl(&mut self, polygon: &geom::Polygon, color: [u8; 3]) {
+                // This rasterization process uses OpenGL as backend,
+                // I guess, rasterizer will be moved to separate object
 
-                    // Visible set DFS edge
-                    let mut visible_set_edge = BTreeSet::new();
+                let proj_polygon = geom::Polygon::from_ccw(polygon
+                    .points
+                    .iter()
+                    .map(|point| self.view_projection_matrix.transform_point(*point))
+                    .collect::<Vec<_>>()
+                );
 
-                    visible_set_edge.insert(start_volume_id);
+                // Clip polygon back in viewspace
+                let clip_polygon = proj_polygon.clip_viewspace_back();
 
-                    while !visible_set_edge.is_empty() {
-                        let mut new_edge = BTreeSet::new();
+                unsafe {
+                    glu_sys::glColor3ub(color[0], color[1], color[2]);
 
-                        for volume_id in visible_set_edge.iter().copied() {
-                            visible_set.insert(volume_id);
+                    glu_sys::glBegin(glu_sys::GL_POLYGON);
+                    for point in &clip_polygon.points {
+                        glu_sys::glVertex2f(point.x / point.z, point.y / point.z);
+                    }
+                    glu_sys::glEnd();
+                }
+            }
 
-                            let volume = self.map.get_volume(volume_id).unwrap();
+            /// Render single volume
+            fn render_volume(&mut self, id: map::VolumeId) {
+                let volume = self.map.get_volume(id).unwrap();
 
-                            'portal_rendering: for portal in volume.get_portals() {
-                                let portal_polygon = self.map
-                                    .get_polygon(portal.polygon_id)
-                                    .unwrap();
+                'polygon_rendering: for surface in volume.get_surfaces() {
+                    let polygon = self.map.get_polygon(surface.polygon_id).unwrap();
 
-                                // Perform standard backface culling
-                                let backface_cull_result =
-                                    (portal_polygon.plane.normal ^ self.camera_location) - portal_polygon.plane.distance
-                                    >= 0.0
-                                ;
+                    // Perform backface culling
+                    if (polygon.plane.normal ^ self.camera_location) - polygon.plane.distance <= 0.0 {
+                        continue 'polygon_rendering;
+                    }
 
-                                if false
-                                    // Perform modified backface culling
-                                    || backface_cull_result != portal.is_facing_front
+                    // Get surface material
+                    let material = self.map.get_material(surface.material_id).unwrap();
 
-                                    // Check visibility
-                                    || self.camera_plane.get_polygon_relation(&portal_polygon) == geom::PolygonRelation::Back
+                    // Calculate simple per-face diffuse light
+                    let light_diffuse = Vec3f::new(0.30, 0.47, 0.80)
+                        .normalized()
+                        .dot(polygon.plane.normal)
+                        .abs()
+                        .min(0.99);
 
-                                    // Check set
-                                    || visible_set.contains(&portal.dst_volume_id)
-                                    || visible_set_edge.contains(&portal.dst_volume_id)
-                                {
-                                    continue 'portal_rendering;
-                                }
+                    // Add ambient)
+                    let light = light_diffuse * 0.9 + 0.09;
 
-                                new_edge.insert(portal.dst_volume_id);
+                    // Calculate color, based on material and light
+                    let color = [
+                        (material.color.r as f32 * light) as u8,
+                        (material.color.g as f32 * light) as u8,
+                        (material.color.b as f32 * light) as u8,
+                    ];
+
+                    self.render_polygon_frame(&polygon, color);
+                }
+            }
+
+            /// Render all volumes starting from
+            pub fn render(&mut self, start_volume_id: map::VolumeId) {
+                let mut visible_set = BTreeSet::<map::VolumeId>::new();
+
+                // Visible set DFS edge
+                let mut visible_set_edge = BTreeSet::new();
+
+                visible_set_edge.insert(start_volume_id);
+
+                while !visible_set_edge.is_empty() {
+                    let mut new_edge = BTreeSet::new();
+
+                    for volume_id in visible_set_edge.iter().copied() {
+                        visible_set.insert(volume_id);
+
+                        let volume = self.map.get_volume(volume_id).unwrap();
+
+                        'portal_rendering: for portal in volume.get_portals() {
+                            let portal_polygon = self.map
+                                .get_polygon(portal.polygon_id)
+                                .unwrap();
+
+                            // Perform standard backface culling
+                            let backface_cull_result =
+                                (portal_polygon.plane.normal ^ self.camera_location) - portal_polygon.plane.distance
+                                >= 0.0
+                            ;
+
+                            if false
+                                // Perform modified backface culling
+                                || backface_cull_result != portal.is_facing_front
+
+                                // Check visibility
+                                || self.camera_plane.get_polygon_relation(&portal_polygon) == geom::PolygonRelation::Back
+
+                                // Check set
+                                || visible_set.contains(&portal.dst_volume_id)
+                                || visible_set_edge.contains(&portal.dst_volume_id)
+                            {
+                                continue 'portal_rendering;
                             }
+
+                            new_edge.insert(portal.dst_volume_id);
                         }
-
-                        visible_set_edge = new_edge;
                     }
 
-                    let mut render_set = Vec::new();
-
-                    Self::order_rendered_volume_set(
-                        self.map.get_bsp(),
-                        &mut visible_set,
-                        &mut render_set,
-                        self.camera_location
-                    );
-
-                    for index in render_set {
-                        self.render_volume(index);
-                    }
+                    visible_set_edge = new_edge;
                 }
 
-                /// Display ALL level volumes
-                fn render_all(&mut self) {
-                    let mut visible_set = BTreeSet::from_iter(self.map.all_volume_ids());
-                    let mut render_set = Vec::new();
+                let mut render_set = Vec::new();
 
-                    Self::order_rendered_volume_set(
-                        self.map.get_bsp(),
-                        &mut visible_set,
-                        &mut render_set,
-                        self.camera_location
-                    );
+                Self::order_rendered_volume_set(
+                    self.map.get_bsp(),
+                    &mut visible_set,
+                    &mut render_set,
+                    self.camera_location
+                );
 
-                    for index in render_set {
-                        self.render_volume(index);
-                    }
+                for index in render_set {
+                    self.render_volume(index);
                 }
             }
 
-            let mut render_context = RenderContext {
-                camera_location: logical_camera.location,
-                camera_plane: geom::Plane::from_point_normal(
-                    logical_camera.location,
-                    logical_camera.direction
-                ),
-                view_projection_matrix,
-                map: &compiled_map,
-            };
+            /// Display ALL level volumes
+            fn render_all(&mut self) {
+                let mut visible_set = BTreeSet::from_iter(self.map.all_volume_ids());
+                let mut render_set = Vec::new();
 
-            let start_volume_index_opt = compiled_map
-                .get_bsp()
-                .traverse(logical_camera.location);
+                Self::order_rendered_volume_set(
+                    self.map.get_bsp(),
+                    &mut visible_set,
+                    &mut render_set,
+                    self.camera_location
+                );
 
-            if let Some(start_volume_index) = start_volume_index_opt {
-                render_context.render(start_volume_index);
-            } else {
-                render_context.render_all();
+                for index in render_set {
+                    self.render_volume(index);
+                }
             }
+        }
+
+        // Acquire window extent
+        let (window_width, window_height) = {
+            let (w, h) = window.size();
+
+            (w as usize, h as usize)
+        };
+        
+        // Resize frame buffer to fit window's size
+        frame_buffer.resize(window_width * window_height, 0);
+
+        let mut render_context = RenderContext {
+            camera_location: logical_camera.location,
+            camera_plane: geom::Plane::from_point_normal(
+                logical_camera.location,
+                logical_camera.direction
+            ),
+            view_projection_matrix,
+            map: &compiled_map,
+
+            // Build software-rendered frame
+            frame_pixels: frame_buffer.as_mut_ptr(),
+            frame_width: window_width,
+            frame_height: window_height,
+            frame_stride: window_width,
+        };
+
+        let start_volume_index_opt = compiled_map
+            .get_bsp()
+            .traverse(logical_camera.location);
+
+        if let Some(start_volume_index) = start_volume_index_opt {
+            render_context.render(start_volume_index);
+        } else {
+            frame_buffer.fill(0);
+            render_context.render_all();
+        }
+
+        // Render frame by gl functions
+        unsafe {
+            glu_sys::glRasterPos2f(-1.0, 1.0);
+            glu_sys::glPixelZoom(1.0, -1.0);
+            glu_sys::glDrawPixels(
+                window_width as i32,
+                window_height as i32,
+                glu_sys::GL_BGRA,
+                glu_sys::GL_UNSIGNED_BYTE,
+                frame_buffer.as_ptr() as *const std::ffi::c_void,
+            );
         }
 
         window.gl_swap_window();

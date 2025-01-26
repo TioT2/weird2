@@ -67,6 +67,7 @@ macro_rules! impl_vecn_base {
             }
 
             $(
+                #[inline]
                 pub fn $x(self) -> $value_type {
                     self.$x
                 }
@@ -941,32 +942,25 @@ impl Mat4<f32> {
         }
     } // fn translate
 
+    /// Transform interpreting this matrix as 3x3.
     pub fn transform_vector(&self, v: Vec3<f32>) -> Vec3<f32> {
         Vec3 {
             x: v.x * self.data[0][0] + v.y * self.data[1][0] + v.z * self.data[2][0],
             y: v.x * self.data[0][1] + v.y * self.data[1][1] + v.z * self.data[2][1],
             z: v.x * self.data[0][2] + v.y * self.data[1][2] + v.z * self.data[2][2],
         }
-    } // fn transform_vector
+    }
 
+    /// Transform without calculating W coordinate
     pub fn transform_point(&self, v: Vec3<f32>) -> Vec3<f32> {
         Vec3 {
-            x: v.x * self.data[0][0]
-                + v.y * self.data[1][0]
-                + v.z * self.data[2][0]
-                + self.data[3][0],
-            y: v.x * self.data[0][1]
-                + v.y * self.data[1][1]
-                + v.z * self.data[2][1]
-                + self.data[3][1],
-            z: v.x * self.data[0][2]
-                + v.y * self.data[1][2]
-                + v.z * self.data[2][2]
-                + self.data[3][2],
+            x: v.x * self.data[0][0] + v.y * self.data[1][0] + v.z * self.data[2][0] + self.data[3][0],
+            y: v.x * self.data[0][1] + v.y * self.data[1][1] + v.z * self.data[2][1] + self.data[3][1],
+            z: v.x * self.data[0][2] + v.y * self.data[1][2] + v.z * self.data[2][2] + self.data[3][2],
         }
-    } // fn transform_point
+    }
 
-    /// Transform 4x4 matrix
+    /// Standard transformation
     pub fn transform(&self, v: Vec4<f32>) -> Vec4<f32> {
         Vec4 {
             x: v.x * self.data[0][0] + v.y * self.data[1][0] + v.z * self.data[2][0] + v.w * self.data[3][0],

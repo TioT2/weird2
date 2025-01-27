@@ -283,7 +283,7 @@ struct RenderContext<'t> {
 
 impl<'t> RenderContext<'t> {
     /// Just test rendering function
-    pub fn _test_software_rasterizer(&mut self, time: f32) {
+    pub fn test_software_rasterizer(&mut self, time: f32) {
         let cv = Vec3f::new(
             self.frame_width as f32 / 2.0,
             self.frame_height as f32 / 2.0,
@@ -298,7 +298,7 @@ impl<'t> RenderContext<'t> {
             0.1
         );
 
-        let rotm = math::Mat4f::rotate_z(time / 5.0);
+        let rotm = math::Mat4f::rotate_z(time / 4.0);
 
         let set1 = [
             Vec3f::new(-1.0, -1.0, 0.0),
@@ -577,6 +577,7 @@ impl<'t> RenderContext<'t> {
                 let pixel_ptr_end = self.frame_pixels.add(self.frame_stride * line + end);
 
                 while pixel_ptr <= pixel_ptr_end {
+                    // *pixel_ptr = 0x101010u32.wrapping_add(*pixel_ptr);
                     *pixel_ptr = color;
                     pixel_ptr = pixel_ptr.add(1);
                 }
@@ -919,6 +920,8 @@ fn main() {
             (w as usize, h as usize)
         };
 
+        let (frame_width, frame_height) = (window_width / 1, window_height / 1);
+
         // Compute view matrix
         let view_matrix = Mat4f::view(
             camera.location,
@@ -942,7 +945,7 @@ fn main() {
         let view_projection_matrix = view_matrix * projection_matrix;
 
         // Resize frame buffer to fit window's size
-        frame_buffer.resize(window_width * window_height, 0);
+        frame_buffer.resize(frame_width * frame_height, 0);
 
         let mut render_context = RenderContext {
             camera_location: logical_camera.location,
@@ -954,9 +957,9 @@ fn main() {
             map: &map,
 
             frame_pixels: frame_buffer.as_mut_ptr(),
-            frame_width: window_width,
-            frame_height: window_height,
-            frame_stride: window_width,
+            frame_width: frame_width,
+            frame_height: frame_height,
+            frame_stride: frame_width,
         };
 
         // Render frame by gl functions
@@ -974,10 +977,13 @@ fn main() {
             glu_sys::glViewport(0, 0, window_width as i32, window_height as i32);
 
             glu_sys::glRasterPos2f(-1.0, 1.0);
-            glu_sys::glPixelZoom(1.0, -1.0);
+            glu_sys::glPixelZoom(
+                window_width as f32 / frame_width as f32,
+                -(window_height as f32 / frame_height as f32)
+            );
             glu_sys::glDrawPixels(
-                window_width as i32,
-                window_height as i32,
+                frame_width as i32,
+                frame_height as i32,
                 glu_sys::GL_BGRA,
                 glu_sys::GL_UNSIGNED_BYTE,
                 frame_buffer.as_ptr() as *const std::ffi::c_void,
@@ -1002,6 +1008,8 @@ fn main() {
         let start_volume_index_opt = map
             .get_bsp()
             .traverse(logical_camera.location);
+
+        // render_context.test_software_rasterizer(timer.get_time());
 
         if let Some(start_volume_index) = start_volume_index_opt {
             render_context.render(start_volume_index);

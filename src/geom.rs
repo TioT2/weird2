@@ -5,6 +5,17 @@ use crate::math::{Mat2f, Vec2f, Vec3f};
 /// Geometric epsilon (1 mm)
 pub const GEOM_EPSILON: f32 = 0.001;
 
+/// Float-point comparison
+pub fn f32_relative_equal(lhs: f32, rhs: f32) -> bool {
+    if lhs == rhs {
+        return true;
+    }
+
+    let diff = (lhs - rhs).abs();
+    let norm = f32::min(lhs.abs() + rhs.abs(), f32::MAX);
+    return diff < f32::max(f32::MIN_POSITIVE, 128.0 * f32::EPSILON * norm);
+}
+
 /// Plane represetnation structure
 /// 
 /// ## Equation
@@ -431,8 +442,7 @@ impl Plane {
     }
 }
 
-/// Polygon. Polygon structure contains .
-/// TODO: build convexity-safe polygon.
+/// Polygon
 #[derive(Debug, Clone)]
 pub struct Polygon {
     /// Polygon points

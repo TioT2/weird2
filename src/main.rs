@@ -279,6 +279,9 @@ struct RenderContext<'t> {
 
     /// Frame stride
     frame_stride: usize,
+
+    /// Rasterization mode
+    do_rasterize_overdraw: bool,
 }
 
 impl<'t> RenderContext<'t> {
@@ -313,8 +316,8 @@ impl<'t> RenderContext<'t> {
         ];
 
         unsafe {
-            self.render_clipped_polygon(&set1.map(|v| rotm.transform_vector(v) * ev + cv), 0xFF0000);
-            self.render_clipped_polygon(&set2.map(|v| rotm.transform_vector(v) * ev + cv), 0x0000FF);
+            self.render_clipped_polygon::<false>(&set1.map(|v| rotm.transform_vector(v) * ev + cv), 0xFF0000);
+            self.render_clipped_polygon::<false>(&set2.map(|v| rotm.transform_vector(v) * ev + cv), 0x0000FF);
         }
     }
 
@@ -461,43 +464,7 @@ impl<'t> RenderContext<'t> {
         result
     }
 
-    /// Slow implementation of polygon rendering
-    unsafe fn _render_clipped_polygon_slow(&mut self, points: &[Vec3f], color: u32) {
-        let polygon = geom::Polygon::from_ccw(points.to_vec());
-
-        let bb = geom::BoundBox::for_points(points.iter().copied());
-
-        let (_, min_y, _) = bb.min().into_tuple();
-        let (_, max_y, _) = bb.max().into_tuple();
-
-        for line in min_y as usize..max_y as usize {
-            let plane = geom::Plane {
-                normal: Vec3f::new(0.0, 1.0, 0.0),
-                distance: line as f32,
-            };
-
-            let Some((begin, end)) = plane.intersect_polygon(&polygon) else {
-                continue;
-            };
-
-            let mut start = begin.x as usize;
-            let mut end = end.x as usize;
-
-            if start > end {
-                std::mem::swap(&mut start, &mut end);
-            }
-
-            let mut pixel_ptr = self.frame_pixels.add(self.frame_stride * line + start);
-            let pixel_ptr_end = self.frame_pixels.add(self.frame_stride * line + end);
-
-            while pixel_ptr <= pixel_ptr_end {
-                *pixel_ptr = color;
-                pixel_ptr = pixel_ptr.add(1);
-            }
-        }
-    }
-
-    unsafe fn render_clipped_polygon(&mut self, points: &[Vec3f], color: u32) {
+    unsafe fn render_clipped_polygon<const RENDER_OVERDRAW: bool>(&mut self, points: &[Vec3f], color: u32) {
         let (start_index, end_index) = {
             let mut min_y_index = !0usize;
             let mut max_y_index = !0usize;
@@ -526,9 +493,9 @@ impl<'t> RenderContext<'t> {
         // So left index is changed by +1, and right - by -1
 
         unsafe {
-            let line_end = points[end_index].y.ceil().to_int_unchecked::<usize>();
+            let line_end = points[end_index].y.to_int_unchecked::<usize>();
 
-            let mut line = points[start_index].y.ceil().to_int_unchecked::<usize>();
+            let mut line = points[start_index].y.to_int_unchecked::<usize>();
 
             let mut left_index = start_index;
             let mut left_point = points[start_index];
@@ -549,7 +516,7 @@ impl<'t> RenderContext<'t> {
                     let new_left_point = points[left_index];
 
                     left_dx = (new_left_point.x - left_point.x) / (new_left_point.y - left_point.y);
-                    left_end_line = new_left_point.y.ceil().to_int_unchecked::<usize>();
+                    left_end_line = new_left_point.y.to_int_unchecked::<usize>();
                     left_x = left_point.x - left_dx;
                     left_point = new_left_point;
                 }
@@ -560,7 +527,7 @@ impl<'t> RenderContext<'t> {
                     let new_right_point = points[right_index];
 
                     right_dx = (new_right_point.x - right_point.x) / (new_right_point.y - right_point.y);
-                    right_end_line = new_right_point.y.ceil().to_int_unchecked::<usize>();
+                    right_end_line = new_right_point.y.to_int_unchecked::<usize>();
                     right_x = right_point.x - right_dx;
                     right_point = new_right_point;
                 }
@@ -569,16 +536,19 @@ impl<'t> RenderContext<'t> {
                 right_x += right_dx;
 
                 let (start, end) = (
-                    left_x.to_int_unchecked::<usize>(),
-                    right_x.to_int_unchecked::<usize>()
+                    left_x.floor().to_int_unchecked::<usize>(),
+                    right_x.floor().to_int_unchecked::<usize>()
                 );
 
                 let mut pixel_ptr = self.frame_pixels.add(self.frame_stride * line + start);
                 let pixel_ptr_end = self.frame_pixels.add(self.frame_stride * line + end);
 
-                while pixel_ptr <= pixel_ptr_end {
-                    // *pixel_ptr = 0x101010u32.wrapping_add(*pixel_ptr);
-                    *pixel_ptr = color;
+                while pixel_ptr < pixel_ptr_end {
+                    if RENDER_OVERDRAW {
+                        *pixel_ptr = 0x101010u32.wrapping_add(*pixel_ptr);
+                    } else {
+                        *pixel_ptr = color;
+                    }
                     pixel_ptr = pixel_ptr.add(1);
                 }
 
@@ -636,7 +606,11 @@ impl<'t> RenderContext<'t> {
         }
 
         unsafe {
-            self.render_clipped_polygon(&points, color_u32);
+            if self.do_rasterize_overdraw {
+                self.render_clipped_polygon::<true>(&points, color_u32);
+            } else {
+                self.render_clipped_polygon::<false>(&points, color_u32);
+            }
         }
     }
 
@@ -787,7 +761,7 @@ impl<'t> RenderContext<'t> {
 fn main() {
     print!("\n\n\n\n\n\n\n\n");
 
-    let do_cache_maps = false;
+    let do_cache_maps = true;
 
     // Load map
     let map = {
@@ -858,7 +832,7 @@ fn main() {
     let mut do_enable_depth_test = false;
 
     // Enable rendering with synchronization after some portion of frame pixels renderend
-    let mut do_enable_slow_rendering = false;
+    let mut do_enable_overdraw_rendering = false;
 
     // Camera used for visible set building
     let mut logical_camera = camera;
@@ -901,7 +875,7 @@ fn main() {
         }
 
         if input.is_key_clicked(Scancode::Minus) {
-            do_enable_slow_rendering = !do_enable_slow_rendering;
+            do_enable_overdraw_rendering = !do_enable_overdraw_rendering;
         }
 
         if do_sync_logical_camera {
@@ -917,7 +891,7 @@ fn main() {
                 timer.get_fps(),
                 do_enable_depth_test as u32,
                 do_sync_logical_camera as u32,
-                do_enable_slow_rendering as u32,
+                do_enable_overdraw_rendering as u32,
             );
         }
 
@@ -968,6 +942,7 @@ fn main() {
             frame_width: frame_width,
             frame_height: frame_height,
             frame_stride: frame_width,
+            do_rasterize_overdraw: do_enable_overdraw_rendering,
         };
 
         // Render frame by gl functions

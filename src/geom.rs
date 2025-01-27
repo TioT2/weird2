@@ -185,7 +185,7 @@ pub enum PolygonRelation {
     Back,
 
     /// Polygon located completely on plane
-    OnPlane,
+    Coplanar,
 
     /// Polygon intersects with plane (splitted by plane)
     Intersects,
@@ -213,7 +213,7 @@ pub enum PolygonSplitResult {
     Back,
 
     /// Polygon located back of plane, so it doesn't require splitting
-    OnPlane,
+    Coplanar,
 
     /// Polygon intersects with plane
     Intersects {
@@ -351,7 +351,7 @@ impl Plane {
         }
 
         match (front_occured, back_occured) {
-            (false, false) => PolygonRelation::OnPlane,
+            (false, false) => PolygonRelation::Coplanar,
             (false, true ) => PolygonRelation::Back,
             (true , false) => PolygonRelation::Front,
             (true , true ) => PolygonRelation::Intersects,
@@ -368,7 +368,7 @@ impl Plane {
         match self.get_polygon_relation(polygon) {
             PolygonRelation::Back => return PolygonSplitResult::Back,
             PolygonRelation::Front => return PolygonSplitResult::Front,
-            PolygonRelation::OnPlane => return PolygonSplitResult::OnPlane,
+            PolygonRelation::Coplanar => return PolygonSplitResult::Coplanar,
             PolygonRelation::Intersects => {}
         };
 

@@ -681,7 +681,7 @@ impl HullVolume {
                         stat.back += 1;
                         stat.split += 1;
                     },
-                    geom::PolygonRelation::OnPlane => {
+                    geom::PolygonRelation::Coplanar => {
                         // It's technically **should not** be reached,
                         // but I don't want to have a panic here...
                         eprintln!("Potential splitter plane is incident to face of volume it holds.");
@@ -785,7 +785,7 @@ impl HullVolume {
                                     material_index: physical_polygon.material_index,
                                 });
                             }
-                            geom::PolygonSplitResult::OnPlane => {
+                            geom::PolygonSplitResult::Coplanar => {
                                 // probably panic here...
                                 eprintln!("Physical polygon somehow lies on volume splitter plane...");
                             }
@@ -808,7 +808,7 @@ impl HullVolume {
                         split_reference: hull_polygon.split_reference,
                     });
                 }
-                geom::PolygonSplitResult::OnPlane => {
+                geom::PolygonSplitResult::Coplanar => {
                     eprintln!("Hull face somehow lies on volume splitter plane...");
                 }
             }
@@ -952,7 +952,7 @@ impl Builder {
 
                 match relation {
                     geom::PolygonRelation::Front => current_front += 1,
-                    geom::PolygonRelation::OnPlane => current_on += 1,
+                    geom::PolygonRelation::Coplanar => current_on += 1,
                     geom::PolygonRelation::Back => current_back += 1,
                     geom::PolygonRelation::Intersects => {
                         current_front += 1;
@@ -1014,7 +1014,7 @@ impl Builder {
                 // to back
                 geom::PolygonSplitResult::Back => back_polygons.push(physical_polygon),
                 // to front/back incident
-                geom::PolygonSplitResult::OnPlane => {
+                geom::PolygonSplitResult::Coplanar => {
                     let cos = physical_polygon.polygon.plane.normal ^ splitter_plane.normal;
 
                     // che
@@ -1195,7 +1195,7 @@ impl Builder {
 
                                 new_portal_polygons.push((front, bb));
                             }
-                            geom::PolygonSplitResult::OnPlane => {
+                            geom::PolygonSplitResult::Coplanar => {
                                 // WTF?
                                 // IDK, should I panic here, but...
                                 eprintln!("Edgeplane of first of coplanar polygons somehow contains another one...");
@@ -1298,7 +1298,7 @@ impl Builder {
                                 _ = front;
                             }
                             // Polygon is degenerate
-                            geom::PolygonSplitResult::OnPlane => {
+                            geom::PolygonSplitResult::Coplanar => {
                                 continue 'back_polygon_loop;
                                 // Something strange happened...
                                 // eprintln!("Something strange happened because I don't want to use planar geometry...");

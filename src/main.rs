@@ -10,9 +10,6 @@ pub mod math;
 /// Random number generator
 pub mod rand;
 
-/// Binary space partition implementation
-pub mod bsp;
-
 /// Basic geometry
 pub mod geom;
 
@@ -271,9 +268,6 @@ struct RenderContext<'t> {
     /// Map reference
     map: &'t map::Map,
 
-    /// Current time
-    time: f32,
-
     /// Frame pixel array pointer
     frame_pixels: *mut u32,
 
@@ -289,7 +283,7 @@ struct RenderContext<'t> {
 
 impl<'t> RenderContext<'t> {
     /// Just test rendering function
-    pub fn test_software_rasterizer(&mut self) {
+    pub fn _test_software_rasterizer(&mut self, time: f32) {
         let cv = Vec3f::new(
             self.frame_width as f32 / 2.0,
             self.frame_height as f32 / 2.0,
@@ -304,7 +298,7 @@ impl<'t> RenderContext<'t> {
             0.1
         );
 
-        let rotm = math::Mat4f::rotate_z(self.time / 5.0);
+        let rotm = math::Mat4f::rotate_z(time / 5.0);
 
         let set1 = [
             Vec3f::new(-1.0, -1.0, 0.0),
@@ -467,6 +461,42 @@ impl<'t> RenderContext<'t> {
         result
     }
 
+    /// Slow implementation of polygon rendering
+    unsafe fn _render_clipped_polygon_slow(&mut self, points: &[Vec3f], color: u32) {
+        let polygon = geom::Polygon::from_ccw(points.to_vec());
+
+        let bb = geom::BoundBox::for_points(points.iter().copied());
+
+        let (_, min_y, _) = bb.min().into_tuple();
+        let (_, max_y, _) = bb.max().into_tuple();
+
+        for line in min_y as usize..max_y as usize {
+            let plane = geom::Plane {
+                normal: Vec3f::new(0.0, 1.0, 0.0),
+                distance: line as f32,
+            };
+
+            let Some((begin, end)) = plane.intersect_polygon(&polygon) else {
+                continue;
+            };
+
+            let mut start = begin.x as usize;
+            let mut end = end.x as usize;
+
+            if start > end {
+                std::mem::swap(&mut start, &mut end);
+            }
+
+            let mut pixel_ptr = self.frame_pixels.add(self.frame_stride * line + start);
+            let pixel_ptr_end = self.frame_pixels.add(self.frame_stride * line + end);
+
+            while pixel_ptr <= pixel_ptr_end {
+                *pixel_ptr = color;
+                pixel_ptr = pixel_ptr.add(1);
+            }
+        }
+    }
+
     unsafe fn render_clipped_polygon(&mut self, points: &[Vec3f], color: u32) {
         let (start_index, end_index) = {
             let mut min_y_index = !0usize;
@@ -528,7 +558,7 @@ impl<'t> RenderContext<'t> {
                     right_index = (right_index + points.len() - 1) % points.len();
 
                     let new_right_point = points[right_index];
-                    
+
                     right_dx = (new_right_point.x - right_point.x) / (new_right_point.y - right_point.y);
                     right_end_line = new_right_point.y.ceil().to_int_unchecked::<usize>();
                     right_x = right_point.x - right_dx;
@@ -610,7 +640,7 @@ impl<'t> RenderContext<'t> {
     }
 
     /// Render single polygon with flat fill
-    fn render_polygon_gl(&mut self, polygon: &geom::Polygon, color: [u8; 3]) {
+    fn _render_polygon_gl(&mut self, polygon: &geom::Polygon, color: [u8; 3]) {
         // This rasterization process uses OpenGL as backend,
         // I guess, rasterizer will be moved to separate object
 
@@ -756,16 +786,43 @@ impl<'t> RenderContext<'t> {
 fn main() {
     print!("\n\n\n\n\n\n\n\n");
 
-    // yay, this code will not compile on non-local builds)))
-    // --
-    let location_map = map::builder::Map::parse(include_str!("../temp/e1m1.map")).unwrap();
+    // Load map
+    let map = {
+        // yay, this code will not compile on non-local builds)))
+        // --
+        let map_name = "e1m1";
+        let data_path = "temp/";
 
+        let wbsp_path = format!("{}wbsp/{}.wbsp", data_path, map_name);
+        let map_path = format!("{}{}.map", data_path, map_name);
+
+        match std::fs::File::open(&wbsp_path) {
+            Ok(mut bsp_file) => {
+                map::Map::load(&mut bsp_file).unwrap()
+            }
+            Err(_) => {
+                let source = std::fs::read_to_string(&map_path).unwrap();
+
+                let location_map = map::builder::Map::parse(&source).unwrap();
+
+                let compiled_map = map::builder::build(&location_map);
+
+                if let Ok(mut file) = std::fs::File::create(&wbsp_path) {
+                    compiled_map.save(&mut file).unwrap();
+                }
+        
+                compiled_map
+            }
+        }
+    };
+
+    // Setup render
     let sdl = sdl2::init().unwrap();
     let video = sdl.video().unwrap();
     let mut event_pump = sdl.event_pump().unwrap();
 
     let window = video
-        .window("WEIRD-2", 1024, 768)
+        .window("WEIRD-2", 800, 600)
         .opengl()
         .build()
         .unwrap()
@@ -780,10 +837,10 @@ fn main() {
     let mut input = Input::new();
     let mut camera = Camera::new();
 
+    camera.location = Vec3f::new(-174.0, 2114.6, -64.5);
+    camera.direction = Vec3f::new(-0.4, 0.9, 0.1);
     // camera.location = Vec3f::new(-200.0, 2000.0, -50.0);
-    camera.location = Vec3f::new(30.0, 40.0, 50.0);
-
-    let compiled_map = map::builder::build(&location_map);
+    // camera.location = Vec3f::new(30.0, 40.0, 50.0);
 
     // Synchronize visible-set-building and projection cameras
     let mut do_sync_logical_camera = true;
@@ -844,6 +901,9 @@ fn main() {
 
         // Display some statistics
         if timer.get_frame_count() % 100 == 0 {
+
+            println!("{:?} {:?}", camera.location, camera.direction);
+
             println!("FPS: {}, DB={}, SL={}, SR={}",
                 timer.get_fps(),
                 do_enable_depth_test as u32,
@@ -852,6 +912,13 @@ fn main() {
             );
         }
 
+        // Acquire window extent
+        let (window_width, window_height) = {
+            let (w, h) = window.size();
+
+            (w as usize, h as usize)
+        };
+
         // Compute view matrix
         let view_matrix = Mat4f::view(
             camera.location,
@@ -859,22 +926,21 @@ fn main() {
             Vec3f::new(0.0, 0.0, 1.0)
         );
 
+        let (aspect_x, aspect_y) = if window_width > window_height {
+            (window_width as f32 / window_height as f32, 1.0)
+        } else {
+            (1.0, window_height as f32 / window_width as f32)
+        };
+
         // Compute projection matrix
         let projection_matrix = Mat4f::projection_frustum(
-            -0.5 * 8.0 / 6.0, 0.5 * 8.0 / 6.0,
-            -0.5, 0.5,
+            -0.5 * aspect_x, 0.5 * aspect_x,
+            -0.5 * aspect_y, 0.5 * aspect_y,
             0.66, 100.0
         );
-        
+
         let view_projection_matrix = view_matrix * projection_matrix;
 
-        // Acquire window extent
-        let (window_width, window_height) = {
-            let (w, h) = window.size();
-
-            (w as usize, h as usize)
-        };
-        
         // Resize frame buffer to fit window's size
         frame_buffer.resize(window_width * window_height, 0);
 
@@ -885,9 +951,7 @@ fn main() {
                 logical_camera.direction
             ),
             view_projection_matrix,
-            map: &compiled_map,
-
-            time: timer.get_time(),
+            map: &map,
 
             frame_pixels: frame_buffer.as_mut_ptr(),
             frame_width: window_width,
@@ -935,7 +999,7 @@ fn main() {
 
         // render_context.test_software_rasterizer();
 
-        let start_volume_index_opt = compiled_map
+        let start_volume_index_opt = map
             .get_bsp()
             .traverse(logical_camera.location);
 

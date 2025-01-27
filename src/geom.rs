@@ -360,9 +360,7 @@ impl Plane {
 
     // Get intersection of the plane and line
     pub fn intersect_line(&self, line: Line) -> Vec3f {
-        let t = (self.distance - (line.base ^ self.normal)) / (line.direction ^ self.normal);
-
-        line.base + line.direction * t
+        line.base + line.direction * (self.distance - (line.base ^ self.normal)) / (line.direction ^ self.normal)
     }
 
     /// Split polygon by the plane

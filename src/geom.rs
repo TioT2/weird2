@@ -238,7 +238,9 @@ pub enum PolygonSplitResult {
 
 impl PartialEq for Plane {
     fn eq(&self, other: &Self) -> bool {
-        (self.normal % other.normal).length2() <= GEOM_EPSILON && (self.distance - other.distance).abs() <= GEOM_EPSILON
+        true
+            && (self.normal % other.normal).length() <= GEOM_EPSILON
+            && (self.normal * self.distance - other.normal * other.distance).length() <= GEOM_EPSILON
     }
 }
 
@@ -350,6 +352,10 @@ impl Plane {
 
     // Get relation of plane and polygon
     pub fn get_polygon_relation(&self, polygon: &Polygon) -> PolygonRelation {
+        if *self == polygon.plane {
+            return PolygonRelation::Coplanar;
+        }
+
         let mut front_occured = false;
         let mut back_occured = false;
 

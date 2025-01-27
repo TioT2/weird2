@@ -710,7 +710,7 @@ impl HullVolume {
         intersection_points = geom::deduplicate_points(intersection_points);
 
         if intersection_points.len() < 3 {
-            eprintln!("Something strange happend...");
+            eprintln!("Something strange happened...");
             None
         } else {
             Some(geom::Polygon {
@@ -718,9 +718,6 @@ impl HullVolume {
                 plane
             })
         }
-
-
-        // Build intersection polygon
     }
 
     /// Split hull volume by plane

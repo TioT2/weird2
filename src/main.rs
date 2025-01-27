@@ -787,6 +787,8 @@ impl<'t> RenderContext<'t> {
 fn main() {
     print!("\n\n\n\n\n\n\n\n");
 
+    let do_cache_maps = false;
+
     // Load map
     let map = {
         // yay, this code will not compile on non-local builds)))
@@ -797,23 +799,29 @@ fn main() {
         let wbsp_path = format!("{}wbsp/{}.wbsp", data_path, map_name);
         let map_path = format!("{}{}.map", data_path, map_name);
 
-        match std::fs::File::open(&wbsp_path) {
-            Ok(mut bsp_file) => {
-                map::Map::load(&mut bsp_file).unwrap()
-            }
-            Err(_) => {
-                let source = std::fs::read_to_string(&map_path).unwrap();
-
-                let location_map = map::builder::Map::parse(&source).unwrap();
-
-                let compiled_map = map::builder::build(&location_map);
-
-                if let Ok(mut file) = std::fs::File::create(&wbsp_path) {
-                    compiled_map.save(&mut file).unwrap();
+        if do_cache_maps {
+            match std::fs::File::open(&wbsp_path) {
+                Ok(mut bsp_file) => {
+                    map::Map::load(&mut bsp_file).unwrap()
                 }
-        
-                compiled_map
+                Err(_) => {
+                    let source = std::fs::read_to_string(&map_path).unwrap();
+    
+                    let location_map = map::builder::Map::parse(&source).unwrap();
+    
+                    let compiled_map = map::builder::build(&location_map);
+    
+                    if let Ok(mut file) = std::fs::File::create(&wbsp_path) {
+                        compiled_map.save(&mut file).unwrap();
+                    }
+            
+                    compiled_map
+                }
             }
+        } else {
+            let source = std::fs::read_to_string(&map_path).unwrap();
+            let location_map = map::builder::Map::parse(&source).unwrap();
+            map::builder::build(&location_map)
         }
     };
 

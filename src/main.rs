@@ -183,15 +183,15 @@ impl geom::Polygon {
             let curr = self.points[index];
             let next = self.points[(index + 1) % self.points.len()];
 
-            if curr.z > 1.0 - geom::GEOM_EPSILON {
+            if curr.z > 1.0 {
                 result.push(curr);
 
-                if next.z < 1.0 + geom::GEOM_EPSILON {
+                if next.z < 1.0 {
                     let t = (1.0 - curr.z) / (next.z - curr.z);
 
                     result.push((next - curr) * t + curr);
                 }
-            } else if next.z > 1.0 - geom::GEOM_EPSILON {
+            } else if next.z > 1.0 {
                 let t = (1.0 - curr.z) / (next.z - curr.z);
 
                 result.push((next - curr) * t + curr);
@@ -286,7 +286,7 @@ struct RenderContext<'t> {
 
 impl<'t> RenderContext<'t> {
     /// Just test rendering function
-    pub fn test_software_rasterizer(&mut self, time: f32) {
+    pub fn _test_software_rasterizer(&mut self, time: f32) {
         let cv = Vec3f::new(
             self.frame_width as f32 / 2.0,
             self.frame_height as f32 / 2.0,
@@ -377,15 +377,15 @@ impl<'t> RenderContext<'t> {
             let curr = points[index];
             let next = points[(index + 1) % points.len()];
 
-            if curr.x > OFFSET - geom::GEOM_EPSILON {
+            if curr.x > OFFSET {
                 result.push(curr);
 
-                if next.x < OFFSET + geom::GEOM_EPSILON {
+                if next.x < OFFSET {
                     let t = (OFFSET - curr.x) / (next.x - curr.x);
 
                     result.push((next - curr) * t + curr);
                 }
-            } else if next.x > OFFSET - geom::GEOM_EPSILON {
+            } else if next.x > OFFSET {
                 let t = (OFFSET - curr.x) / (next.x - curr.x);
 
                 result.push((next - curr) * t + curr);
@@ -399,15 +399,15 @@ impl<'t> RenderContext<'t> {
             let curr = points[index];
             let next = points[(index + 1) % points.len()];
 
-            if curr.y > OFFSET - geom::GEOM_EPSILON {
+            if curr.y > OFFSET {
                 result.push(curr);
 
-                if next.y < OFFSET + geom::GEOM_EPSILON {
+                if next.y < OFFSET {
                     let t = (OFFSET - curr.y) / (next.y - curr.y);
 
                     result.push((next - curr) * t + curr);
                 }
-            } else if next.y > OFFSET - geom::GEOM_EPSILON {
+            } else if next.y > OFFSET {
                 let t = (OFFSET - curr.y) / (next.y - curr.y);
 
                 result.push((next - curr) * t + curr);
@@ -424,15 +424,15 @@ impl<'t> RenderContext<'t> {
             let curr = points[index];
             let next = points[(index + 1) % points.len()];
 
-            if curr.x < frame_w - OFFSET + geom::GEOM_EPSILON {
+            if curr.x < frame_w - OFFSET {
                 result.push(curr);
 
-                if next.x > frame_w - OFFSET - geom::GEOM_EPSILON {
+                if next.x > frame_w - OFFSET {
                     let t = (frame_w - OFFSET - curr.x) / (next.x - curr.x);
 
                     result.push((next - curr) * t + curr);
                 }
-            } else if next.x < frame_w - OFFSET + geom::GEOM_EPSILON {
+            } else if next.x < frame_w - OFFSET {
                 let t = (frame_w - OFFSET - curr.x) / (next.x - curr.x);
 
                 result.push((next - curr) * t + curr);
@@ -446,15 +446,15 @@ impl<'t> RenderContext<'t> {
             let curr = points[index];
             let next = points[(index + 1) % points.len()];
 
-            if curr.y < frame_h - OFFSET + geom::GEOM_EPSILON {
+            if curr.y < frame_h - OFFSET {
                 result.push(curr);
 
-                if next.y > frame_h - OFFSET - geom::GEOM_EPSILON {
+                if next.y > frame_h - OFFSET {
                     let t = (frame_h - OFFSET - curr.y) / (next.y - curr.y);
 
                     result.push((next - curr) * t + curr);
                 }
-            } else if next.y < frame_h - OFFSET + geom::GEOM_EPSILON {
+            } else if next.y < frame_h - OFFSET {
                 let t = (frame_h - OFFSET - curr.y) / (next.y - curr.y);
 
                 result.push((next - curr) * t + curr);
@@ -492,16 +492,17 @@ impl<'t> RenderContext<'t> {
         // Visible polygon should be ccw-oriented in screen space
         // So left index is changed by +1, and right - by -1
 
-        unsafe {
-            let line_end = points[end_index].y.to_int_unchecked::<usize>();
 
-            let mut line = points[start_index].y.to_int_unchecked::<usize>();
+        unsafe {
+            let line_end = points[end_index].y.floor().to_int_unchecked::<usize>();
+
+            let mut line = points[start_index].y.floor().to_int_unchecked::<usize>();
 
             let mut left_index = start_index;
             let mut left_point = points[start_index];
             let mut left_end_line = line;
-            let mut left_x = 0.0;
             let mut left_dx = 0.0;
+            let mut left_x = 0.0;
 
             let mut right_index = start_index;
             let mut right_point = points[start_index];
@@ -516,9 +517,11 @@ impl<'t> RenderContext<'t> {
                     let new_left_point = points[left_index];
 
                     left_dx = (new_left_point.x - left_point.x) / (new_left_point.y - left_point.y);
-                    left_end_line = new_left_point.y.to_int_unchecked::<usize>();
-                    left_x = left_point.x - left_dx;
+                    left_x = left_point.x;
                     left_point = new_left_point;
+                    left_end_line = left_point.y.floor().to_int_unchecked::<usize>();
+                } else {
+                    left_x += left_dx;
                 }
 
                 if line >= right_end_line {
@@ -527,13 +530,12 @@ impl<'t> RenderContext<'t> {
                     let new_right_point = points[right_index];
 
                     right_dx = (new_right_point.x - right_point.x) / (new_right_point.y - right_point.y);
-                    right_end_line = new_right_point.y.to_int_unchecked::<usize>();
-                    right_x = right_point.x - right_dx;
+                    right_x = right_point.x;
                     right_point = new_right_point;
+                    right_end_line = right_point.y.floor().to_int_unchecked::<usize>();
+                } else {
+                    right_x += right_dx;
                 }
-
-                left_x += left_dx;
-                right_x += right_dx;
 
                 let (start, end) = (
                     left_x.floor().to_int_unchecked::<usize>(),
@@ -558,10 +560,7 @@ impl<'t> RenderContext<'t> {
     }
 
     fn render_polygon_frame(&mut self, polygon: &geom::Polygon, color: [u8; 3]) {
-        // This rasterization process uses OpenGL as backend,
-        // I guess, rasterizer will be moved to separate object
-
-        let color_u32 = u32::from_le_bytes([color[2], color[1], color[0], 0]);
+        let color_u32 = u32::from_le_bytes([color[0], color[1], color[2], 0]);
 
         let points = {
             let proj_polygon = geom::Polygon::from_ccw(polygon
@@ -614,32 +613,6 @@ impl<'t> RenderContext<'t> {
         }
     }
 
-    /// Render single polygon with flat fill
-    fn _render_polygon_gl(&mut self, polygon: &geom::Polygon, color: [u8; 3]) {
-        // This rasterization process uses OpenGL as backend,
-        // I guess, rasterizer will be moved to separate object
-
-        let proj_polygon = geom::Polygon::from_ccw(polygon
-            .points
-            .iter()
-            .map(|point| self.view_projection_matrix.transform_point(*point))
-            .collect::<Vec<_>>()
-        );
-
-        // Clip polygon back in viewspace
-        let clip_polygon = proj_polygon.clip_viewspace_back();
-
-        unsafe {
-            glu_sys::glColor3ub(color[0], color[1], color[2]);
-
-            glu_sys::glBegin(glu_sys::GL_POLYGON);
-            for point in &clip_polygon.points {
-                glu_sys::glVertex2f(point.x / point.z, point.y / point.z);
-            }
-            glu_sys::glEnd();
-        }
-    }
-
     /// Render single volume
     fn render_volume(&mut self, id: map::VolumeId) {
         let volume = self.map.get_volume(id).unwrap();
@@ -673,7 +646,6 @@ impl<'t> RenderContext<'t> {
             ];
 
             self.render_polygon_frame(&polygon, color);
-            // self.render_polygon_gl(&polygon, color);
         }
     }
 
@@ -805,16 +777,10 @@ fn main() {
     let mut event_pump = sdl.event_pump().unwrap();
 
     let window = video
-        .window("WEIRD-2", 800, 600)
-        .opengl()
+        .window("WEIRD-2", 1280, 800)
         .build()
         .unwrap()
     ;
-
-    let gl_context = window.gl_create_context().unwrap();
-    // Disable vsync
-    _ = video.gl_set_swap_interval(0);
-    window.gl_make_current(&gl_context).unwrap();
 
     let mut timer = Timer::new();
     let mut input = Input::new();
@@ -902,7 +868,7 @@ fn main() {
             (w as usize, h as usize)
         };
 
-        let (frame_width, frame_height) = (window_width / 1, window_height / 1);
+        let (frame_width, frame_height) = (window_width / 4, window_height / 4);
 
         // Compute view matrix
         let view_matrix = Mat4f::view(
@@ -945,43 +911,45 @@ fn main() {
             do_rasterize_overdraw: do_enable_overdraw_rendering,
         };
 
-        // Render frame by gl functions
-        unsafe {
-            if do_enable_depth_test {
-                glu_sys::glEnable(glu_sys::GL_DEPTH_TEST);
-                glu_sys::glClear(glu_sys::GL_COLOR_BUFFER_BIT | glu_sys::GL_DEPTH_BUFFER_BIT);
-            } else {
-                glu_sys::glDisable(glu_sys::GL_DEPTH_TEST);
-                glu_sys::glClear(glu_sys::GL_COLOR_BUFFER_BIT);
+        'blit_surface: {
+            let mut window_surface = match window.surface(&event_pump) {
+                Ok(window_surface) => window_surface,
+                Err(err) => {
+                    eprintln!("Cannot get window surface: {}", err);
+                    break 'blit_surface;
+                }
+            };
+
+            let mut render_surface = match sdl2::surface::Surface::from_data(
+                bytemuck::cast_slice_mut::<u32, u8>(frame_buffer.as_mut_slice()),
+                frame_width as u32,
+                frame_height as u32,
+                frame_width as u32 * 4,
+                sdl2::pixels::PixelFormatEnum::ABGR8888
+            ) {
+                Ok(surface) => surface,
+                Err(err) => {
+                    eprintln!("Source surface create error: {}", err);
+                    break 'blit_surface;
+                }
+            };
+
+            // Disable alpha blending
+            if let Err(err) = render_surface.set_blend_mode(sdl2::render::BlendMode::None) {
+                eprintln!("Cannot disable render surface blending: {}", err);
+            };
+
+            // Perform render surface blit
+            let src_rect = sdl2::rect::Rect::new(0, 0, frame_width as u32, frame_height as u32);
+            let dst_rect = sdl2::rect::Rect::new(0, 0, window_width as u32, window_height as u32);
+
+            if let Err(err) = render_surface.blit_scaled(src_rect, &mut window_surface, dst_rect) {
+                eprintln!("Surface blit failed: {}", err);
             }
 
-            glu_sys::glLoadIdentity();
-
-            glu_sys::glViewport(0, 0, window_width as i32, window_height as i32);
-
-            glu_sys::glRasterPos2f(-1.0, 1.0);
-            glu_sys::glPixelZoom(
-                window_width as f32 / frame_width as f32,
-                -(window_height as f32 / frame_height as f32)
-            );
-            glu_sys::glDrawPixels(
-                frame_width as i32,
-                frame_height as i32,
-                glu_sys::GL_BGRA,
-                glu_sys::GL_UNSIGNED_BYTE,
-                frame_buffer.as_ptr() as *const std::ffi::c_void,
-            );
-
-            // glu_sys::glViewport(0, 0, window_width as i32 / 2, window_height as i32);
-            // glu_sys::glTranslatef(1.0, 0.0, 0.0);
-            // glu_sys::glScalef(2.0, 1.0, 1.0);
-            // glu_sys::glColor3f(0.30, 0.47, 0.80);
-            // glu_sys::glBegin(glu_sys::GL_POLYGON);
-            // glu_sys::glVertex2f(-1.0, -1.0);
-            // glu_sys::glVertex2f(-1.0, 1.0);
-            // glu_sys::glVertex2f(0.0, 1.0);
-            // glu_sys::glVertex2f(0.0, -1.0);
-            // glu_sys::glEnd();
+            if let Err(err) = window_surface.update_window() {
+                eprintln!("Window update failed: {}", err);
+            }
         }
 
         frame_buffer.fill(0);
@@ -999,12 +967,6 @@ fn main() {
         } else {
             render_context.render_all();
         }
-
-        unsafe {
-            glu_sys::glFinish();
-        }
-
-        window.gl_swap_window();
     }
 }
 

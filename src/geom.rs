@@ -1,6 +1,6 @@
-/// Standard geometry primitive module
+///! Standard geometry primitive implementation module
 
-use crate::math::{Mat2f, Vec2f, Vec3f};
+use crate::math::Vec3f;
 
 /// Geometric epsilon (1 mm)
 pub const GEOM_EPSILON: f32 = 0.001;
@@ -268,36 +268,15 @@ impl Plane {
     // Intersect this plane with another one
     pub fn intersect_plane(&self, rhs: Plane) -> Line {
         let direction = (self.normal % rhs.normal).normalized();
+        let dot = self.normal ^ rhs.normal;
+        let base = 
+        (
+            (self.normal * self.distance + rhs.normal *  rhs.distance) -
+            (self.normal *  rhs.distance + rhs.normal * self.distance) * dot
+        ) /
+        (1.0 - dot * dot);
 
-        let npvec = Vec2f::new(
-            -self.distance,
-            -rhs.distance
-        );
-        
-        let res;
-
-        macro_rules! for_direction {
-            ($c1: ident, $c2: ident, $vx: expr, $vy: expr, $vz: expr) => {
-                if let Some(inv) = Mat2f::new(
-                    self.normal.$c1,
-                    self.normal.$c2,
-                    rhs.normal.$c1,
-                    rhs.normal.$c2,
-                ).inversed() {
-                    res = inv * npvec;
-                    return Line {
-                        direction,
-                        base: Vec3f::new($vx, $vy, $vz)
-                    };
-                }
-            };
-        }
-
-        for_direction!(y, z, 0.0,   res.x, res.y);
-        for_direction!(x, z, res.x, 0.0,   res.y);
-        for_direction!(x, y, res.x, res.y,   0.0);
-
-        panic!("Maths is broken - line MUST intersect at least one coodrinate plane.");
+        Line { base, direction }
     }
 
     /// Get intersection line of plane and the polygon

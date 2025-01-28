@@ -554,23 +554,6 @@ pub enum VolumeBsp {
     Leaf(usize),
 }
 
-impl VolumeBsp {
-    /// Traverse volume BSP
-    pub fn traverse(&self, point: Vec3f) -> Option<usize> {
-        match self {
-            Self::Node { plane, front, back } => {
-                let side = match plane.get_point_relation(point) {
-                    geom::PointRelation::Front | geom::PointRelation::OnPlane => front,
-                    geom::PointRelation::Back => back,
-                };
-
-                side.as_ref()?.traverse(point)
-            }
-            Self::Leaf(volume_id) => Some(*volume_id),
-        }
-    }
-}
-
 /// Statistics about volume split, used during splitter selection process to
 /// find best fitting splitter
 pub struct VolumeSplitStat {
@@ -733,6 +716,10 @@ impl HullVolume {
     /// - front hull
     /// - back hull
     /// - split polygon (polygon normal directed as plane)
+    /// 
+    /// # Note
+    /// This function is one of the main BSP building functions - it,
+    /// actually, performs polygon volume split.
     pub fn split(
         self,
         plane: geom::Plane,
@@ -841,8 +828,9 @@ impl HullVolume {
     }
 }
 
+/// Information about split operation
 pub struct SplitInfo {
-    /// Polygon used to split
+    /// Polygon all splitter polygons (should be) contained in
     pub split_polygon: geom::Polygon,
 
     /// Split Id
@@ -898,6 +886,7 @@ impl Builder {
         }
     }
 
+    // Generate new split id
     fn get_next_split_id(&self) -> SplitId {
         SplitId(NonZeroU32::try_from(self.split_infos.len() as u32 + 1).unwrap())
     }
@@ -923,9 +912,6 @@ impl Builder {
             return VolumeBsp::Leaf(self.volumes.len() - 1);
         }
 
-        // if physical_polygons.len() == 1 && (physical_polygons[0].polygon.plane.distance + 715.0).abs() < 2.0 {
-        //     eprintln!("Nachalosz");
-        // }
 
         // try to find optimal splitter
         let mut best_splitter_rate: f32 = std::f32::MAX;
@@ -1075,6 +1061,7 @@ impl Builder {
                 .iter()
                 .copied()
             )
+        // Extend volumes by 200
         ).extend(Vec3f::new(200.0, 200.0, 200.0));
 
         // calculate hull volume
@@ -1236,19 +1223,14 @@ impl Builder {
         // Build portal resolution 'tasks'
         let resolve_tasks = self.build_resolve_tasks();
 
+        /*
         for (id, task_contents) in &resolve_tasks {
             let info = &self.split_infos[id.0.get() as usize - 1];
             let split_polygon = &info.split_polygon;
-        
-            std::hint::black_box(&split_polygon);
-        
             let plane = split_polygon.plane;
-        
             for (volume_id, face_id) in task_contents.iter().copied() {
                 let face_polygon = &self.volumes[volume_id].faces[face_id].polygon;
                 let face_plane = face_polygon.plane;
-                
-                std::hint::black_box(&face_polygon);
                 if face_plane != plane && face_plane.negate_direction() != plane {
                     panic!("Task face coplanarity check failed!\n First plane: {:?}\nSecond plane: {:?}",
                         plane, face_plane
@@ -1256,6 +1238,7 @@ impl Builder {
                 }
             }
         }
+         */
 
         // process tasks into polygon set
         'task_loop: for (_, task) in resolve_tasks {
@@ -1296,9 +1279,9 @@ impl Builder {
                             }
                             // Polygon is degenerate
                             geom::PolygonSplitResult::Coplanar => {
-                                continue 'back_polygon_loop;
                                 // Something strange happened...
                                 // eprintln!("Something strange happened because I don't want to use planar geometry...");
+                                continue 'back_polygon_loop;
                             }
                         }
                     }
@@ -1548,11 +1531,11 @@ impl Builder {
     /// Start map building
     pub fn start_build_map(self) -> super::Map {
         fn map_bsp(vbsp: Option<Box<VolumeBsp>>) -> super::Bsp {
-            let Some(vbsp) = vbsp else {
+            let Some(bsp) = vbsp else {
                 return super::Bsp::Void;
             };
 
-            match *vbsp {
+            match *bsp {
                 VolumeBsp::Node {
                     plane,
                     front,

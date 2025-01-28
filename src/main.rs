@@ -1,6 +1,6 @@
 use std::collections::{BTreeSet, HashMap};
 
-use math::{Mat4f, Vec3f};
+use math::{Mat4f, Vec2f, Vec3f};
 use sdl2::keyboard::Scancode;
 
 /// Basic math utility
@@ -284,6 +284,109 @@ struct RenderContext<'t> {
     do_rasterize_overdraw: bool,
 }
 
+/// Horizontal line structure used during rasterization process, helper structure
+#[derive(Copy, Clone)]
+struct HLine {
+    /// Line begin
+    pub begin: usize,
+
+    /// Line (exclusive) end
+    pub end: usize,
+}
+
+/// HLine-based implementation
+impl<'t> RenderContext<'t> {
+    /// Build polygon horizontal line set
+    pub fn build_polygon_hline_set(vertices: &[Vec3f]) -> Vec<HLine> {
+        if vertices.len() < 3 {
+            return Vec::new();
+        }
+
+        macro_rules! vi_next { ($index: ident) => { { $index = ($index + 1) % vertices.len() } }; }
+        macro_rules! vi_prev { ($index: ident) => { { $index = ($index + vertices.len() - 1) % vertices.len() } }; }
+        macro_rules! vi_move {
+            ($index: ident, $dir: expr) => {
+                if $dir > 0 {
+                    vi_next!($index);
+                } else {
+                    vi_prev!($index);
+                }
+            };
+        }
+
+        let (min_y_index, max_y_index) = {
+            let mut min_y_index = !0usize;
+            let mut max_y_index = !0usize;
+
+            let mut min_y = f32::MAX;
+            let mut max_y = f32::MIN;
+
+            for index in 0..vertices.len() {
+                let y = vertices[index].y;
+
+                if y < min_y {
+                    min_y_index = index;
+                    min_y = y;
+                }
+
+                if y > max_y {
+                    max_y_index = index;
+                    max_y = y;
+                }
+            }
+
+            (min_y_index, max_y_index)
+        };
+        let min_y_value = vertices[min_y_index].y;
+        let max_y_value = vertices[max_y_index].y;
+
+        if (min_y_value - max_y_value).abs() <= geom::GEOM_EPSILON {
+            return Vec::new();
+        }
+
+        let mut min_index_l = min_y_index;
+        let mut min_index_r = min_index_l;
+
+        while (vertices[min_index_r].y - min_y_value).abs() <= geom::GEOM_EPSILON {
+            vi_next!(min_index_r);
+        }
+        vi_prev!(min_index_r);
+
+        while (vertices[min_index_l].y - min_y_value).abs() <= geom::GEOM_EPSILON {
+            vi_prev!(min_index_l);
+        }
+        vi_next!(min_index_l);
+
+        let left_edge_dir = -1;
+
+        let top_is_flat = (vertices[min_index_l].x - vertices[min_index_r].x).abs() <= geom::GEOM_EPSILON;
+
+        let hline_list_length = 0
+            + max_y_value.ceil() as usize
+            - min_y_value.ceil() as usize
+            + 1
+            - top_is_flat as usize;
+
+        if hline_list_length <= 0 {
+            return Vec::new();
+        }
+
+        let mut hline_list = Vec::<HLine>::new();
+
+        hline_list.resize(hline_list_length, HLine { begin: 0, end: 0 });
+
+        let mut previous_index = min_index_l;
+        let mut current_index = min_index_l;
+        let mut skip_first = !top_is_flat;
+
+        loop {
+            vi_move!(current_index, left_edge_dir);
+        }
+
+        todo!()
+    }
+}
+
 impl<'t> RenderContext<'t> {
     /// Just test rendering function
     pub fn _test_software_rasterizer(&mut self, time: f32) {
@@ -316,8 +419,8 @@ impl<'t> RenderContext<'t> {
         ];
 
         unsafe {
-            self.render_clipped_polygon::<false>(&set1.map(|v| rotm.transform_vector(v) * ev + cv), 0xFF0000);
-            self.render_clipped_polygon::<false>(&set2.map(|v| rotm.transform_vector(v) * ev + cv), 0x0000FF);
+            self.render_clipped_polygon_slow::<false>(&set1.map(|v| rotm.transform_vector(v) * ev + cv), 0xFF0000);
+            self.render_clipped_polygon_slow::<false>(&set2.map(|v| rotm.transform_vector(v) * ev + cv), 0x0000FF);
         }
     }
 
@@ -464,6 +567,91 @@ impl<'t> RenderContext<'t> {
         result
     }
 
+    /// Split polygon by triangles and render'em
+    fn render_clipped_triangle<const RENDER_OVERDRAW: bool>(
+        &mut self,
+        p0: Vec3f,
+        p1: Vec3f,
+        p2: Vec3f,
+        color: u32
+    ) {
+        let min_x = f32::min(f32::min(p0.x, p1.x), p2.x);
+        let max_x = f32::max(f32::max(p0.x, p1.x), p2.x);
+        let min_y = f32::min(f32::min(p0.y, p1.y), p2.y);
+        let max_y = f32::max(f32::max(p0.y, p1.y), p2.y);
+
+        let va = Vec2f::new(p0.x, p0.y);
+        let vb = Vec2f::new(p1.x, p1.y);
+        let vc = Vec2f::new(p2.x, p2.y);
+
+        fn fdet(a: Vec2f, b: Vec2f, c: Vec2f) -> f32 {
+            let ab = b - a;
+            let ac = c - a;
+
+            ab.y * ac.x - ab.x * ac.y
+        }
+
+        fn is_left_or_top(beg: Vec2f, end: Vec2f) -> bool {
+            let edge = end - beg;
+
+            false
+                || edge.y > 0.0
+                || edge.y == 0.0 && edge.x < 0.0
+        }
+
+        let mut y = min_y;
+
+        while y <= max_y {
+            let mut x = min_x;
+            let mut pixel_ptr = unsafe {
+                self.frame_pixels.add(y.floor() as usize * self.frame_stride + min_x.floor() as usize)
+            };
+
+            while x <= max_x {
+                let p = Vec2f::new(x as f32 + 0.5, y as f32 + 0.5);
+
+                let mut w0 = fdet(vb, vc, p);
+                let mut w1 = fdet(vc, va, p);
+                let mut w2 = fdet(va, vb, p);
+
+                if is_left_or_top(vb, vc) { w0 -= 1.0; }
+                if is_left_or_top(vc, va) { w1 -= 1.0; }
+                if is_left_or_top(va, vb) { w2 -= 1.0; }
+
+                if w0 >= 0.0 && w1 >= 0.0 && w2 >= 0.0 {
+                    unsafe {
+                        if RENDER_OVERDRAW {
+                            *pixel_ptr = 0x0101010u32.wrapping_add(*pixel_ptr);
+                        } else {
+                            *pixel_ptr = color;
+                        }
+                    }
+                }
+
+                x += 1.0;
+                unsafe {
+                    pixel_ptr = pixel_ptr.add(1);
+                }
+            }
+
+            y += 1.0;
+        }
+    }
+
+    unsafe fn render_clipped_polygon_slow<const RENDER_OVERDRAW: bool>(&mut self, points: &[Vec3f], color: u32) {
+
+        let base_point = points[0];
+
+        for index in 1..points.len() - 1 {
+            self.render_clipped_triangle::<RENDER_OVERDRAW>(
+                base_point,
+                points[index],
+                points[index + 1],
+                color
+            );
+        }
+    }
+
     unsafe fn render_clipped_polygon<const RENDER_OVERDRAW: bool>(&mut self, points: &[Vec3f], color: u32) {
         let (start_index, end_index) = {
             let mut min_y_index = !0usize;
@@ -547,7 +735,7 @@ impl<'t> RenderContext<'t> {
 
                 while pixel_ptr < pixel_ptr_end {
                     if RENDER_OVERDRAW {
-                        *pixel_ptr = 0x101010u32.wrapping_add(*pixel_ptr);
+                        *pixel_ptr = 0x0101010u32.wrapping_add(*pixel_ptr);
                     } else {
                         *pixel_ptr = color;
                     }
@@ -794,9 +982,6 @@ fn main() {
     // Synchronize visible-set-building and projection cameras
     let mut do_sync_logical_camera = true;
 
-    // Enable depth test (will be removed after software rasterizer implementation)
-    let mut do_enable_depth_test = false;
-
     // Enable rendering with synchronization after some portion of frame pixels renderend
     let mut do_enable_overdraw_rendering = false;
 
@@ -832,15 +1017,11 @@ fn main() {
         camera.response(&timer, &input);
 
         // Synchronize logical camera with physical one
-        if input.is_key_clicked(Scancode::Backslash) {
+        if input.is_key_clicked(Scancode::Num9) {
             do_sync_logical_camera = !do_sync_logical_camera;
         }
 
         if input.is_key_clicked(Scancode::Num0) {
-            do_enable_depth_test = !do_enable_depth_test;
-        }
-
-        if input.is_key_clicked(Scancode::Minus) {
             do_enable_overdraw_rendering = !do_enable_overdraw_rendering;
         }
 
@@ -850,12 +1031,10 @@ fn main() {
 
         // Display some statistics
         if timer.get_frame_count() % 100 == 0 {
+            // println!("{:?} {:?}", camera.location, camera.direction);
 
-            println!("{:?} {:?}", camera.location, camera.direction);
-
-            println!("FPS: {}, DB={}, SL={}, SR={}",
+            println!("FPS: {}, SL={}, OV={}",
                 timer.get_fps(),
-                do_enable_depth_test as u32,
                 do_sync_logical_camera as u32,
                 do_enable_overdraw_rendering as u32,
             );
@@ -953,8 +1132,6 @@ fn main() {
         }
 
         frame_buffer.fill(0);
-
-        // render_context.test_software_rasterizer();
 
         let start_volume_index_opt = map
             .get_bsp()

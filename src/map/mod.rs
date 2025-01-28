@@ -1,3 +1,5 @@
+///! Main map structure declaration module
+
 use std::num::NonZeroU32;
 
 use bytemuck::Zeroable;
@@ -10,7 +12,7 @@ pub mod builder;
 /// WBSP description module
 pub mod wbsp;
 
-/// Id generic implementation
+/// Generic id implementation
 macro_rules! impl_id {
     ($name: ident) => {
         /// Unique identifier
@@ -149,11 +151,11 @@ impl Bsp {
         }
     }
 
-    /// Get BSP tree depth
-    pub fn get_depth(&self) -> usize {
+    /// Calculate BSP tree depth
+    pub fn depth(&self) -> usize {
         match self {
             Bsp::Partition { splitter_plane: _, front, back } =>
-                usize::max(front.get_depth(), back.get_depth()) + 1,
+                usize::max(front.depth(), back.depth()) + 1,
             _ =>
                 1,
         }
@@ -276,6 +278,7 @@ impl From<std::io::Error> for MapLoadingError {
 }
 
 impl Map {
+    /// Load map from WBSP file
     pub fn load(src: &mut dyn std::io::Read) -> Result<Self, MapLoadingError> {
         let mut header = wbsp::Header::zeroed();
 
@@ -500,7 +503,7 @@ impl Map {
         })
     }
 
-    /// Save BSP to some binary destination
+    /// Save map in WBSP format
     pub fn save(&self, dst: &mut dyn std::io::Write) -> Result<(), std::io::Error> {
 
         // Construct WBSP file header
@@ -553,7 +556,11 @@ impl Map {
             .polygon_set
             .iter()
             .flat_map(|polygon| polygon.points.iter())
-            .map(|point| wbsp::Vec3 { x: point.x, y: point.y, z: point.z })
+            .map(|point| wbsp::Vec3 {
+                x: point.x,
+                y: point.y,
+                z: point.z,
+            })
         )?;
 
         // Write materials

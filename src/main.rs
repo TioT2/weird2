@@ -1,7 +1,8 @@
-use std::{collections::{BTreeSet, HashMap}, thread::current};
+/// Main project module
 
-use math::{Mat4f, Vec2f, Vec3f};
-use sdl2::{keyboard::Scancode, rect::min_int_value};
+use std::collections::{BTreeSet, HashMap};
+use math::{Mat4f, Vec3f};
+use sdl2::keyboard::Scancode;
 
 /// Basic math utility
 #[macro_use]
@@ -284,229 +285,6 @@ struct RenderContext<'t> {
     do_rasterize_overdraw: bool,
 }
 
-/// Horizontal line structure used during rasterization process, helper structure
-#[derive(Copy, Clone)]
-struct HLine {
-    /// Line begin
-    pub begin: usize,
-
-    /// Line (exclusive) end
-    pub end: usize,
-}
-
-/// HLine-based implementation
-impl<'t> RenderContext<'t> {
-    pub fn scan_edge_hlines(
-        x1: f32, y1: usize,
-        x2: f32, y2: usize,
-        set_x_start: bool,
-        skip_first: bool,
-        hlines: &mut [HLine],
-        hline_index: &mut usize,
-    ) {
-        if y2 <= y1 {
-            return;
-        }
-
-        let delta_x = x2 - x1;
-        let delta_y = y2 as f32 - y1 as f32;
-
-        let inv_slope = delta_x as f64 / delta_y as f64;
-
-        let mut index = *hline_index;
-
-        for y in y1 + skip_first as usize..y2 {
-            let value = (x1.ceil() as f64 + (y - y1) as f64 * inv_slope).ceil() as usize;
-
-            if set_x_start {
-                hlines[index].begin = value;
-            } else {
-                hlines[index].end = value;
-            }
-
-            index += 1;
-        }
-
-        *hline_index = index;
-    }
-
-    /// Build polygon horizontal line set
-    pub fn build_polygon_hline_set(vertices: &[Vec3f]) -> Option<(usize, Vec<HLine>)> {
-        if vertices.len() < 3 {
-            return None;
-        }
-
-        macro_rules! vi_next { ($index: ident) => { { $index = ($index + 1) % vertices.len() } }; }
-        macro_rules! vi_prev { ($index: ident) => { { $index = ($index + vertices.len() - 1) % vertices.len() } }; }
-        macro_rules! vi_move {
-            ($index: ident, $dir: expr) => {
-                if $dir > 0 {
-                    vi_next!($index);
-                } else {
-                    vi_prev!($index);
-                }
-            };
-        }
-
-        let (min_y_index, max_y_index) = {
-            let mut min_y_index = !0usize;
-            let mut max_y_index = !0usize;
-
-            let mut min_y = f32::MAX;
-            let mut max_y = f32::MIN;
-
-            for index in 0..vertices.len() {
-                let y = vertices[index].y;
-
-                if y < min_y {
-                    min_y_index = index;
-                    min_y = y;
-                }
-
-                if y > max_y {
-                    max_y_index = index;
-                    max_y = y;
-                }
-            }
-
-            (min_y_index, max_y_index)
-        };
-        let min_y_value = vertices[min_y_index].y.ceil() as usize;
-        let max_y_value = vertices[max_y_index].y.ceil() as usize;
-
-        if max_y_value <= min_y_value {
-            return None;
-        }
-
-        let mut min_index_r = min_y_index;
-        while vertices[min_index_r].y.ceil() as usize == min_y_value {
-            vi_next!(min_index_r);
-        }
-        vi_prev!(min_index_r);
-        
-        let mut min_index_l = min_y_index;
-        while vertices[min_index_l].y.ceil() as usize == min_y_value {
-            vi_prev!(min_index_l);
-        }
-        vi_next!(min_index_l);
-        
-        let top_is_flat = (vertices[min_index_l].x - vertices[min_index_r].x).abs() >= geom::GEOM_EPSILON;
-        
-        let mut left_edge_dir = -1;
-        
-        if top_is_flat {
-            if vertices[min_index_l].x > vertices[min_index_r].x {
-                left_edge_dir = 1;
-                std::mem::swap(&mut min_index_l, &mut min_index_r);
-            }
-        } else {
-            let mut next_index = min_index_r;
-            vi_next!(next_index);
-
-            let mut prev_index = min_index_l;
-            vi_prev!(prev_index);
-
-            let delta_xn = vertices[next_index].x - vertices[min_index_l].x;
-            let delta_yn = vertices[next_index].y - vertices[min_index_l].y;
-            let delta_xp = vertices[prev_index].x - vertices[min_index_l].x;
-            let delta_yp = vertices[prev_index].y - vertices[min_index_l].y;
-
-            if delta_xn * delta_yp - delta_yn * delta_xp < 0.0 {
-                left_edge_dir = 1;
-                std::mem::swap(&mut min_index_l, &mut min_index_r);
-            }
-        }
-
-        let hline_list_length = 0
-            + max_y_value
-            - min_y_value
-            - 1
-            + top_is_flat as usize;
-
-        let hline_list_y0 = min_y_value + 1 - top_is_flat as usize;
-
-        if hline_list_length <= 0 {
-            return None;
-        }
-
-        let mut hline_list = Vec::<HLine>::new();
-
-        hline_list.resize(hline_list_length, HLine { begin: 0, end: 0 });
-
-        let mut working_hline_index = 0;
-        let mut previous_index = min_index_l;
-        let mut current_index = min_index_l;
-        let mut skip_first = !top_is_flat;
-
-        loop {
-            vi_move!(current_index, left_edge_dir);
-
-            Self::scan_edge_hlines(
-                vertices[previous_index].x, vertices[previous_index].y.ceil() as usize,
-                vertices[current_index].x, vertices[current_index].y.ceil() as usize,
-                true,
-                skip_first,
-                hline_list.as_mut_slice(),
-                &mut working_hline_index
-            );
-            previous_index = current_index;
-            skip_first = false;
-
-            if current_index == max_y_index {
-                break;
-            }
-        }
-
-        let mut working_hline_index = 0;
-        let mut previous_index = min_index_r;
-        let mut current_index = min_index_r;
-        let mut skip_first = !top_is_flat;
-
-        loop {
-            vi_move!(current_index, -left_edge_dir);
-
-            Self::scan_edge_hlines(
-                vertices[previous_index].x - 1.0, vertices[previous_index].y.ceil() as usize,
-                vertices[current_index].x - 1.0, vertices[current_index].y.ceil() as usize,
-                false,
-                skip_first,
-                hline_list.as_mut_slice(),
-                &mut working_hline_index
-            );
-            previous_index = current_index;
-            skip_first = false;
-
-            if current_index == max_y_index {
-                break;
-            }
-        }
-
-        return Some((hline_list_y0, hline_list))
-    }
-
-    fn render_hline_set<const RENDER_OVERDRAW: bool>(&mut self, y0: usize, hline_list: &[HLine], color: u32) {
-        unsafe {
-            let mut line_ptr = self.frame_pixels.add(y0 * self.frame_stride);
-    
-            for hline in hline_list.iter().copied() {
-                let mut pixel_ptr = line_ptr.add(hline.begin);
-                let end_ptr = line_ptr.add(hline.end);
-
-                while pixel_ptr <= end_ptr {
-                    if RENDER_OVERDRAW {
-                        *pixel_ptr = 0x0101010u32.wrapping_add(*pixel_ptr);
-                    } else {
-                        *pixel_ptr = color;
-                    }
-                    pixel_ptr = pixel_ptr.add(1);
-                }
-
-                line_ptr = line_ptr.add(self.frame_stride);
-            }
-        }
-    }
-}
-
 impl<'t> RenderContext<'t> {
     /// Just test rendering function
     pub fn _test_software_rasterizer(&mut self, time: f32) {
@@ -687,25 +465,22 @@ impl<'t> RenderContext<'t> {
         result
     }
 
-    unsafe fn render_clipped_polygon_hline<const RENDER_OVERDRAW: bool>(&mut self, points: &[Vec3f], color: u32) {
-        let points = points
-            .iter()
-            .map(|point| Vec3f {
-                x: point.x.ceil(),
-                y: point.y.ceil(),
-                z: point.z.ceil(),
-            })
-            .collect::<Vec<_>>();
+    unsafe fn render_clipped_polygon<const RENDER_OVERDRAW: bool>(&mut self, points: &[Vec3f], color: u32) {
+        /// Index forward by point list
+        macro_rules! ind_prev {
+            ($index: expr) => {
+                ((($index) + points.len() - 1) % points.len())
+            };
+        }
 
-        let (y0, hline_list) = match Self::build_polygon_hline_set(points.as_slice()) {
-            Some((y0, hline_list)) => (y0, hline_list),
-            None => return,
-        };
+        /// Index backward by point list
+        macro_rules! ind_next {
+            ($index: expr) => {
+                (($index + 1) % points.len())
+            };
+        }
 
-        self.render_hline_set::<RENDER_OVERDRAW>(y0, &hline_list, color);
-    }
-
-    unsafe fn render_clipped_polygon_2<const RENDER_OVERDRAW: bool>(&mut self, points: &[Vec3f], color: u32) {
+        // Calculate min/max
         let (min_y_index, min_y_value, max_y_index, max_y_value) = {
             let mut min_y_index = 0;
             let mut max_y_index = 0;
@@ -730,42 +505,75 @@ impl<'t> RenderContext<'t> {
             (min_y_index, min_y, max_y_index, max_y)
         };
 
+        /// Epsilon for dy value
+        const DY_EPSILON: f32 = 0.001;
+
+        // Calculate polygon bounds
         let first_line = min_y_value.floor() as usize;
         let last_line = max_y_value.ceil() as usize;
 
+        let mut left_index = ind_next!(min_y_index);
+        let mut left_prev = points[min_y_index];
+        let mut left_curr = points[left_index];
+        let mut left_inv_slope = (left_curr.x - left_prev.x) / (left_curr.y - left_prev.y);
+
+        let mut right_index = ind_prev!(min_y_index);
+        let mut right_prev = points[min_y_index];
+        let mut right_curr = points[right_index];
+        let mut right_inv_slope = (right_curr.x - right_prev.x) / (right_curr.y - right_prev.y);
+
         // Scan for lines
-        'line_loop: for line in first_line..=last_line {
-            // Get point
+        'line_loop: for line in first_line..last_line {
+            // Get current pixel y
             let y = line as f32 + 0.5;
 
-            let mut left_x_opt: Option<f32> = None;
-            let mut right_x_opt: Option<f32> = None;
-
-            // Calculate intersection with polygon
-            let mut prev = points.last().unwrap();
-            for curr in points {
-                // Check for left edge
-                if prev.y > y && curr.y <= y {
-                    let x = prev.x + (y - prev.y) * (curr.x - prev.x) / (curr.y - prev.y);
-
-                    right_x_opt = Some(x);
-                } else if curr.y > y && prev.y <= y {
-                    let x = prev.x + (y - prev.y) * (curr.x - prev.x) / (curr.y - prev.y);
-
-                    left_x_opt = Some(x);
+            while y > left_curr.y {
+                if left_index == max_y_index {
+                    break 'line_loop;
                 }
 
-                prev = curr;
+                left_index = ind_next!(left_index);
+                left_prev = left_curr;
+                left_curr = points[left_index];
+
+                let left_dy = left_curr.y - left_prev.y;
+
+                // Check if edge is flat
+                if left_dy <= DY_EPSILON {
+                    left_inv_slope = 0.0;
+                } else {
+                    left_inv_slope = (left_curr.x - left_prev.x) / left_dy;
+                }
             }
 
-            let edge_opt = Option::zip(left_x_opt, right_x_opt);
+            while y > right_curr.y {
+                if right_index == max_y_index {
+                    break 'line_loop;
+                }
 
-            let Some((left_x, right_x)) = edge_opt else {
-                continue 'line_loop;
-            };
+                right_index = ind_prev!(right_index);
+                right_prev = right_curr;
+                right_curr = points[right_index];
 
+                let right_dy = right_curr.y - right_prev.y;
+
+                // Check if edge is flat
+                if right_dy <= DY_EPSILON {
+                    right_inv_slope = 0.0;
+                } else {
+                    right_inv_slope = (right_curr.x - right_prev.x) / right_dy;
+                }
+            }
+
+            // Calculate intersection with left edge
+            let left_x = left_prev.x + (y - left_prev.y) * left_inv_slope;
+
+            // Calculate intersection with right edge
+            let right_x = right_prev.x + (y - right_prev.y) * right_inv_slope;
+
+            // Calculate hline start/end, clip it
             let start = usize::min(left_x.floor() as usize, self.frame_width - 1);
-            let end = usize::min(right_x.ceil() as usize, self.frame_width - 1);
+            let end = usize::min(right_x.floor() as usize, self.frame_width - 1);
 
             let mut pixel_ptr = self.frame_pixels.add(self.frame_stride * line + start);
             let pixel_end = self.frame_pixels.add(self.frame_stride * line + end);
@@ -777,102 +585,6 @@ impl<'t> RenderContext<'t> {
                     *pixel_ptr = color;
                 }
                 pixel_ptr = pixel_ptr.add(1);
-            }
-        }
-    }
-
-    /// TODO: Rebuild render to fit topleft rule
-    unsafe fn render_clipped_polygon<const RENDER_OVERDRAW: bool>(&mut self, points: &[Vec3f], color: u32) {
-        let (start_index, end_index) = {
-            let mut min_y_index = !0usize;
-            let mut max_y_index = !0usize;
-
-            let mut min_y = f32::MAX;
-            let mut max_y = f32::MIN;
-
-            for index in 0..points.len() {
-                let y = points[index].y;
-
-                if y < min_y {
-                    min_y_index = index;
-                    min_y = y;
-                }
-
-                if y > max_y {
-                    max_y_index = index;
-                    max_y = y;
-                }
-            }
-
-            (min_y_index, max_y_index)
-        };
-
-        // Visible polygon should be ccw-oriented in screen space
-        // So left index is changed by +1, and right - by -1
-
-
-        unsafe {
-            let line_end = points[end_index].y.floor().to_int_unchecked::<usize>();
-
-            let mut line = points[start_index].y.floor().to_int_unchecked::<usize>();
-
-            let mut left_index = start_index;
-            let mut left_point = points[start_index];
-            let mut left_end_line = line;
-            let mut left_dx = 0.0;
-            let mut left_x = 0.0;
-
-            let mut right_index = start_index;
-            let mut right_point = points[start_index];
-            let mut right_end_line = line;
-            let mut right_dx = 0.0;
-            let mut right_x = 0.0;
-
-            while line <= line_end {
-                if line >= left_end_line {
-                    left_index = (left_index + points.len() + 1) % points.len();
-
-                    let new_left_point = points[left_index];
-
-                    left_dx = (new_left_point.x - left_point.x) / (new_left_point.y - left_point.y);
-                    left_x = left_point.x;
-                    left_point = new_left_point;
-                    left_end_line = left_point.y.floor().to_int_unchecked::<usize>();
-                } else {
-                    left_x += left_dx;
-                }
-
-                if line >= right_end_line {
-                    right_index = (right_index + points.len() - 1) % points.len();
-
-                    let new_right_point = points[right_index];
-
-                    right_dx = (new_right_point.x - right_point.x) / (new_right_point.y - right_point.y);
-                    right_x = right_point.x;
-                    right_point = new_right_point;
-                    right_end_line = right_point.y.floor().to_int_unchecked::<usize>();
-                } else {
-                    right_x += right_dx;
-                }
-
-                let (start, end) = (
-                    usize::min(left_x.floor() as usize, self.frame_width - 1),
-                    usize::min(right_x.floor() as usize, self.frame_width - 1)
-                );
-
-                let mut pixel_ptr = self.frame_pixels.add(self.frame_stride * line + start);
-                let pixel_ptr_end = self.frame_pixels.add(self.frame_stride * line + end);
-
-                while pixel_ptr < pixel_ptr_end {
-                    if RENDER_OVERDRAW {
-                        *pixel_ptr = 0x0101010u32.wrapping_add(*pixel_ptr);
-                    } else {
-                        *pixel_ptr = color;
-                    }
-                    pixel_ptr = pixel_ptr.add(1);
-                }
-
-                line += 1;
             }
         }
     }
@@ -924,9 +636,9 @@ impl<'t> RenderContext<'t> {
 
         unsafe {
             if self.do_rasterize_overdraw {
-                self.render_clipped_polygon_2::<true>(&points, color_u32);
+                self.render_clipped_polygon::<true>(&points, color_u32);
             } else {
-                self.render_clipped_polygon_2::<false>(&points, color_u32);
+                self.render_clipped_polygon::<false>(&points, color_u32);
             }
         }
     }

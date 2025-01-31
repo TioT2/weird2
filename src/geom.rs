@@ -1,6 +1,6 @@
 ///! Standard geometry primitive implementation module
 
-use crate::math::Vec3f;
+use crate::math::{Vec2f, Vec3f};
 
 /// Geometric epsilon (1 mm)
 pub const GEOM_EPSILON: f32 = 0.001;
@@ -316,9 +316,14 @@ impl Plane {
         Self { normal: -self.normal, distance: -self.distance }
     }
 
+    /// Get plane signed distance function
+    pub fn get_signed_distance(&self, point: Vec3f) -> f32 {
+        (point ^ self.normal) - self.distance
+    }
+
     /// Get relation of point and plane
     pub fn get_point_relation(&self, point: Vec3f) -> PointRelation {
-        let metric = (point ^ self.normal) - self.distance;
+        let metric = self.get_signed_distance(point);
 
         if metric > GEOM_EPSILON {
             PointRelation::Front
@@ -340,8 +345,8 @@ impl Plane {
 
         for point in &polygon.points {
             match self.get_point_relation(*point) {
-                PointRelation::Front   => front_occured    = true,
-                PointRelation::Back    => back_occured     = true,
+                PointRelation::Front => front_occured    = true,
+                PointRelation::Back  => back_occured     = true,
                 _ => {}
             }
         }
@@ -556,6 +561,74 @@ impl Polygon {
         // yep, that's very ineffective solution, but I don't care (in this case)
         points.reverse();
         Self::from_ccw(points)
+    }
+}
+
+/// Polygon clipping rectangle
+#[derive(Copy, Clone, Debug)]
+pub struct ClipRect {
+    /// Clipping rectangle start
+    pub min: Vec2f,
+
+    /// Clipping rectangle end
+    pub max: Vec2f,
+}
+
+impl ClipRect {
+    /// Create clipping rectangle from 3D point set XY coordinates.
+    pub fn from_points_xy(points: impl Iterator<Item = Vec3f>) -> Self {
+        let mut min = Vec2f::new(f32::MAX, f32::MAX);
+        let mut max = Vec2f::new(f32::MIN, f32::MIN);
+
+        for point in points {
+            min.x = f32::min(point.x, min.x);
+            min.y = f32::min(point.y, min.y);
+
+            max.x = f32::max(point.x, max.x);
+            max.y = f32::max(point.y, max.y);
+        }
+
+        Self { min, max }
+    }
+
+    /// Construct intersection clip rectangle
+    pub fn intersection(self, rhs: Self) -> Option<Self> {
+        let min = Vec2f::new(
+            f32::max(self.min.x, rhs.min.x),
+            f32::max(self.min.y, rhs.min.y),
+        );
+        let max = Vec2f::new(
+            f32::min(self.max.x, rhs.max.x),
+            f32::min(self.max.y, rhs.max.y),
+        );
+
+        if max.x >= min.x && max.y >= min.y {
+            Some(Self { min, max })
+        } else {
+            None
+        }
+    }
+
+    /// Get clip rectangle union
+    pub fn union(self, rhs: Self) -> Self {
+        Self {
+            min: Vec2f::new(
+                f32::min(self.min.x, rhs.min.x),
+                f32::min(self.min.y, rhs.min.y),
+            ),
+            max: Vec2f::new(
+                f32::max(self.max.x, rhs.max.x),
+                f32::max(self.max.y, rhs.max.y),
+            )
+        }
+    }
+
+    /// Extend clipping rectangle for some vector
+    pub fn extend(self, v: Vec2f) -> Self {
+        Self {
+            min: self.min - v,
+            max: self.max + v,
+        }
     }
 }
 

@@ -39,7 +39,10 @@ unsafe impl NoUninit for Header {}
 #[repr(C, packed)]
 #[derive(Copy, Clone)]
 pub struct Surface {
+    /// Index of surface material in material set
     pub material_index: u32,
+
+    /// Index of surface polygon in polygon set
     pub polygon_index: u32,
 }
 
@@ -51,7 +54,7 @@ unsafe impl NoUninit for Surface {}
 #[repr(C, packed)]
 #[derive(Copy, Clone)]
 pub struct Portal {
-    /// Polygon index
+    /// Index of portal polygon in polygon set
     pub polygon_index: u32,
 
     /// Index of destination volume in volume set
@@ -79,6 +82,7 @@ unsafe impl Zeroable for Volume {}
 unsafe impl AnyBitPattern for Volume {}
 unsafe impl NoUninit for Volume {}
 
+/// Material
 #[repr(C, packed)]
 #[derive(Copy, Clone)]
 pub struct Material {

@@ -1,7 +1,10 @@
 /// Main project module
 
-use std::collections::{BTreeSet, HashMap};
-use math::{Mat4f, Vec3f};
+/// Resources:
+// [WMAP -> WBSP], WRES -> WDAT/WRES
+
+use std::collections::{BTreeMap, HashMap};
+use math::{Mat4f, Vec2f, Vec3f};
 use sdl2::keyboard::Scancode;
 
 /// Basic math utility
@@ -14,7 +17,10 @@ pub mod rand;
 /// Basic geometry
 pub mod geom;
 
-/// New map implementation
+/// Compiled map implementation
+pub mod bsp;
+
+/// Map format implementation
 pub mod map;
 
 /// Time measure utility
@@ -174,38 +180,6 @@ pub struct Camera {
     pub direction: Vec3f,
 }
 
-impl geom::Polygon {
-    /// Clip polygon by (z+, 1) plane.
-    /// This method is much faster, than general polygon split.
-    fn clip_viewspace_back(&self) -> Self {
-        let mut result = Vec::new();
-
-        for index in 0..self.points.len() {
-            let curr = self.points[index];
-            let next = self.points[(index + 1) % self.points.len()];
-
-            if curr.z > 1.0 {
-                result.push(curr);
-
-                if next.z < 1.0 {
-                    let t = (1.0 - curr.z) / (next.z - curr.z);
-
-                    result.push((next - curr) * t + curr);
-                }
-            } else if next.z > 1.0 {
-                let t = (1.0 - curr.z) / (next.z - curr.z);
-
-                result.push((next - curr) * t + curr);
-            }
-        }
-
-        Self {
-            points: result,
-            plane: self.plane,
-        }
-    }
-}
-
 impl Camera {
     pub fn new() -> Self {
         Self {
@@ -255,19 +229,28 @@ impl Camera {
     }
 }
 
+/// Necessary data for slow rendering
+struct SlowRenderContext<'t> {
+    /// Frame presentation function reference
+    pub present_func: &'t dyn Fn(*mut u32, usize, usize, usize) -> (),
+
+    /// Duration between frames rendered
+    pub delta_time: std::time::Duration,
+}
+
 /// Render context
 struct RenderContext<'t> {
     /// Camera location
     camera_location: Vec3f,
 
     /// Camera visibility plane
-    camera_plane: geom::Plane,
+    // camera_plane: geom::Plane,
 
     /// VP matrix
     view_projection_matrix: Mat4f,
 
     /// Map reference
-    map: &'t map::Map,
+    map: &'t bsp::Map,
 
     /// Frame pixel array pointer
     frame_pixels: *mut u32,
@@ -283,6 +266,8 @@ struct RenderContext<'t> {
 
     /// Rasterization mode
     do_rasterize_overdraw: bool,
+
+    slow_render_context: Option<SlowRenderContext<'t>>,
 }
 
 impl<'t> RenderContext<'t> {
@@ -324,33 +309,33 @@ impl<'t> RenderContext<'t> {
 
     /// Build correct volume set rendering order
     fn order_rendered_volume_set(
-        bsp: &map::Bsp,
-        visible_set: &mut BTreeSet<map::VolumeId>,
-        render_set: &mut Vec<map::VolumeId>,
+        bsp: &bsp::Bsp,
+        visible_set: &mut BTreeMap<bsp::VolumeId, geom::ClipRect>,
+        render_set: &mut Vec<(bsp::VolumeId, geom::ClipRect)>,
         camera_location: Vec3f
     ) {
         match bsp {
 
             // Handle space partition
-            map::Bsp::Partition {
+            bsp::Bsp::Partition {
                 splitter_plane,
                 front,
                 back
             } => {
                 let (first, second) = match splitter_plane.get_point_relation(camera_location) {
-                    geom::PointRelation::Front | geom::PointRelation::OnPlane => (front, back),
-                    geom::PointRelation::Back => (back, front)
+                    geom::PointRelation::Front | geom::PointRelation::OnPlane => (back, front),
+                    geom::PointRelation::Back => (front, back)
                 };
 
                 Self::order_rendered_volume_set(
-                    second,
+                    first,
                     visible_set,
                     render_set,
                     camera_location
                 );
 
                 Self::order_rendered_volume_set(
-                    &first,
+                    &second,
                     visible_set,
                     render_set,
                     camera_location
@@ -358,111 +343,201 @@ impl<'t> RenderContext<'t> {
             }
 
             // Move volume to render set if it's visible
-            map::Bsp::Volume(id) => {
-                if visible_set.remove(id) {
-                    render_set.push(*id);
+            bsp::Bsp::Volume(id) => {
+                if let Some(clip_rect) = visible_set.remove(id) {
+                    render_set.push((*id, clip_rect));
                 }
             }
 
             // Just ignore this case)
-            map::Bsp::Void => {}
+            bsp::Bsp::Void => {}
         }
     }
 
-    fn clip_screenspace_polygon(&self, mut points: Vec<Vec3f>) -> Vec<Vec3f> {
-        const OFFSET: f32 = 0.5;
-
-        let mut result = Vec::new();
-
+    fn clip_viewspace_back(&self, points: &mut Vec<Vec3f>, result: &mut Vec<Vec3f>) {
         for index in 0..points.len() {
             let curr = points[index];
             let next = points[(index + 1) % points.len()];
 
-            if curr.x > OFFSET {
+            if curr.z > 1.0 {
                 result.push(curr);
 
-                if next.x < OFFSET {
-                    let t = (OFFSET - curr.x) / (next.x - curr.x);
+                if next.z < 1.0 {
+                    let t = (1.0 - curr.z) / (next.z - curr.z);
 
                     result.push((next - curr) * t + curr);
                 }
-            } else if next.x > OFFSET {
-                let t = (OFFSET - curr.x) / (next.x - curr.x);
+            } else if next.z > 1.0 {
+                let t = (1.0 - curr.z) / (next.z - curr.z);
+
+                result.push((next - curr) * t + curr);
+            }
+        }
+    }
+
+    /// Clip polygon by some rectangle
+    fn clip_polygon_rect(&self, points: &mut Vec<Vec3f>, result: &mut Vec<Vec3f>, clip_rect: geom::ClipRect) {
+        for index in 0..points.len() {
+            let curr = points[index];
+            let next = points[(index + 1) % points.len()];
+
+            if curr.x >= clip_rect.min.x {
+                result.push(curr);
+
+                if next.x < clip_rect.min.x {
+                    let t = (clip_rect.min.x - curr.x) / (next.x - curr.x);
+
+                    result.push((next - curr) * t + curr);
+                }
+            } else if next.x >= clip_rect.min.x {
+                let t = (clip_rect.min.x - curr.x) / (next.x - curr.x);
 
                 result.push((next - curr) * t + curr);
             }
         }
 
-        std::mem::swap(&mut points, &mut result);
+        std::mem::swap(points, result);
         
         result.clear();
         for index in 0..points.len() {
             let curr = points[index];
             let next = points[(index + 1) % points.len()];
 
-            if curr.y > OFFSET {
+            if curr.y >= clip_rect.min.y {
                 result.push(curr);
 
-                if next.y < OFFSET {
-                    let t = (OFFSET - curr.y) / (next.y - curr.y);
+                if next.y < clip_rect.min.y {
+                    let t = (clip_rect.min.y - curr.y) / (next.y - curr.y);
 
                     result.push((next - curr) * t + curr);
                 }
-            } else if next.y > OFFSET {
-                let t = (OFFSET - curr.y) / (next.y - curr.y);
+            } else if next.y >= clip_rect.min.y {
+                let t = (clip_rect.min.y - curr.y) / (next.y - curr.y);
 
                 result.push((next - curr) * t + curr);
             }
         }
 
-        std::mem::swap(&mut points, &mut result);
-
-        let frame_w = self.frame_width as f32 - 1.0;
-        let frame_h = self.frame_height as f32 - 1.0;
+        std::mem::swap(points, result);
 
         result.clear();
         for index in 0..points.len() {
             let curr = points[index];
             let next = points[(index + 1) % points.len()];
 
-            if curr.x < frame_w - OFFSET {
+            if curr.x <= clip_rect.max.x {
                 result.push(curr);
 
-                if next.x > frame_w - OFFSET {
-                    let t = (frame_w - OFFSET - curr.x) / (next.x - curr.x);
+                if next.x > clip_rect.max.x {
+                    let t = (clip_rect.max.x - curr.x) / (next.x - curr.x);
 
                     result.push((next - curr) * t + curr);
                 }
-            } else if next.x < frame_w - OFFSET {
-                let t = (frame_w - OFFSET - curr.x) / (next.x - curr.x);
+            } else if next.x <= clip_rect.max.x {
+                let t = (clip_rect.max.x - curr.x) / (next.x - curr.x);
 
                 result.push((next - curr) * t + curr);
             }
         }
 
-        std::mem::swap(&mut points, &mut result);
+        std::mem::swap(points, result);
 
         result.clear();
         for index in 0..points.len() {
             let curr = points[index];
             let next = points[(index + 1) % points.len()];
 
-            if curr.y < frame_h - OFFSET {
+            if curr.y <= clip_rect.max.y {
                 result.push(curr);
 
-                if next.y > frame_h - OFFSET {
-                    let t = (frame_h - OFFSET - curr.y) / (next.y - curr.y);
+                if next.y > clip_rect.max.y {
+                    let t = (clip_rect.max.y - curr.y) / (next.y - curr.y);
 
                     result.push((next - curr) * t + curr);
                 }
-            } else if next.y < frame_h - OFFSET {
-                let t = (frame_h - OFFSET - curr.y) / (next.y - curr.y);
+            } else if next.y <= clip_rect.max.y {
+                let t = (clip_rect.max.y - curr.y) / (next.y - curr.y);
 
                 result.push((next - curr) * t + curr);
             }
         }
+    }
 
-        result
+    unsafe fn render_clipped_line(&mut self, mut begin: Vec2f, mut end: Vec2f, color: u32) {
+        let mut dy = end.y - begin.y;
+        let mut dx = end.x - begin.x;
+
+        if dy.abs() < dx.abs() {
+            if dx < 0.0 {
+                dx = -dx;
+                dy = -dy;
+                std::mem::swap(&mut begin, &mut end);
+            }
+
+            let mut yi = 1.0;
+
+            if dy < 0.0 {
+                yi = -1.0;
+                dy = -dy;
+            }
+
+            let mut d = 2.0 * dy - dx;
+
+            let mut y = begin.y;
+
+            let x0 = begin.x.round() as usize;
+            let x1 = end.x.round() as usize;
+
+            for xc in x0..=x1 {
+                let yc = y.round() as usize;
+
+                unsafe {
+                    *self.frame_pixels.add(yc * self.frame_stride + xc) = color;
+                }
+
+                if d > 0.0 {
+                    y += yi;
+                    d += 2.0 * (dy - dx);
+                } else {
+                    d += 2.0 * dy;
+                }
+            }
+        } else {
+            if dy < 0.0 {
+                dx = -dx;
+                dy = -dy;
+                std::mem::swap(&mut begin, &mut end);
+            }
+
+            let mut xi = 1.0;
+
+            if dx < 0.0 {
+                xi = -1.0;
+                dx = -dx;
+            }
+
+            let mut d = 2.0 * dx - dy;
+
+            let mut x = begin.x;
+
+            let y0 = usize::min(begin.y.round() as usize, self.frame_height - 1);
+            let y1 = usize::min(end.y.round() as usize, self.frame_height - 1);
+
+            for yc in y0..=y1 {
+                let xc = x.round() as usize;
+
+                unsafe {
+                    *self.frame_pixels.add(yc * self.frame_stride + xc) = color;
+                }
+
+                if d > 0.0 {
+                    x += xi;
+                    d += 2.0 * (dx - dy);
+                } else {
+                    d += 2.0 * dx;
+                }
+            }
+        }
     }
 
     unsafe fn render_clipped_polygon<const RENDER_OVERDRAW: bool>(&mut self, points: &[Vec3f], color: u32) {
@@ -480,7 +555,17 @@ impl<'t> RenderContext<'t> {
             };
         }
 
-        // Calculate min/max
+        // let mut prev = points.last().unwrap();
+        // for curr in points {
+        //     self.render_clipped_line(
+        //         Vec2f::new(prev.x, prev.y),
+        //         Vec2f::new(curr.x, curr.y),
+        //         0x0000FF
+        //     );
+        //     prev = curr;
+        // }
+
+        // Find polygon min/max
         let (min_y_index, min_y_value, max_y_index, max_y_value) = {
             let mut min_y_index = 0;
             let mut max_y_index = 0;
@@ -509,8 +594,8 @@ impl<'t> RenderContext<'t> {
         const DY_EPSILON: f32 = 0.001;
 
         // Calculate polygon bounds
-        let first_line = min_y_value.floor() as usize;
-        let last_line = max_y_value.ceil() as usize;
+        let first_line = usize::min(min_y_value.floor() as usize, self.frame_height - 1);
+        let last_line = usize::min(max_y_value.ceil() as usize, self.frame_height);
 
         let mut left_index = ind_next!(min_y_index);
         let mut left_prev = points[min_y_index];
@@ -521,6 +606,7 @@ impl<'t> RenderContext<'t> {
         let mut right_prev = points[min_y_index];
         let mut right_curr = points[right_index];
         let mut right_inv_slope = (right_curr.x - right_prev.x) / (right_curr.y - right_prev.y);
+
 
         // Scan for lines
         'line_loop: for line in first_line..last_line {
@@ -580,7 +666,7 @@ impl<'t> RenderContext<'t> {
 
             while pixel_ptr < pixel_end {
                 if RENDER_OVERDRAW {
-                    *pixel_ptr = 0x0101010u32.wrapping_add(*pixel_ptr);
+                    *pixel_ptr = 0x101010u32.wrapping_add(*pixel_ptr);
                 } else {
                     *pixel_ptr = color;
                 }
@@ -589,51 +675,78 @@ impl<'t> RenderContext<'t> {
         }
     }
 
-    fn render_polygon_frame(&mut self, polygon: &geom::Polygon, color: [u8; 3]) {
-        let color_u32 = u32::from_le_bytes([color[0], color[1], color[2], 0]);
+    /// Project polygon on screen
+    pub fn get_screenspace_polygon(&self, points: &mut Vec<Vec3f>, point_dst: &mut Vec<Vec3f>) {
+        // Calculate projection-space points
+        point_dst.clear();
+        for pt in points.iter() {
+            point_dst.push(self.view_projection_matrix.transform_point(*pt));
+        }
+        std::mem::swap(points, point_dst);
 
-        let points = {
-            let proj_polygon = geom::Polygon::from_ccw(polygon
-                .points
-                .iter()
-                .map(|point| self.view_projection_matrix.transform_point(*point))
-                .collect::<Vec<_>>()
-            );
+        // Clip polygon invisible part
+        point_dst.clear();
+        self.clip_viewspace_back(points, point_dst);
+        std::mem::swap(points, point_dst);
 
-            // Clip polygon back in viewspace
-            let clip_polygon = proj_polygon.clip_viewspace_back();
+        // Calculate screen-space points
+        let width = self.frame_width as f32 * 0.5;
+        let height = self.frame_height as f32 * 0.5;
 
-            let width = self.frame_width as f32;
-            let height = self.frame_height as f32;
+        point_dst.clear();
+        for v in points.iter() {
+            // Use float-point reciporal
+            // let inv_z = v.z.recip();
 
-            // Projected points
-            let screenspace_polygon = clip_polygon.points
-                .iter()
-                .map(|v| {
-                    Vec3f::new(
-                        (1.0 + v.x / v.z) * 0.5 * width,
-                        (1.0 - v.y / v.z) * 0.5 * height,
-                        1.0 / v.z
-                    )
-                })
-                .collect::<Vec<_>>();
+            point_dst.push(Vec3f::new(
+                (1.0 + v.x / v.z) * width,
+                (1.0 - v.y / v.z) * height,
+                1.0 / v.z
+            ));
+        }
+    }
 
-            let screenspace_polygon = self
-                .clip_screenspace_polygon(screenspace_polygon);
+    /// Render polygon
+    fn render_polygon(&mut self, polygon: &geom::Polygon, color: [u8; 3], clip_rect: geom::ClipRect) {
+        // Calculate polygon point set
+        let mut points = polygon.points.clone();
+        let mut point_dst = Vec::with_capacity(polygon.points.len());
 
-            for pt in &screenspace_polygon {
-                if !pt.x.is_finite() || !pt.y.is_finite() {
-                    return;
-                }
+        // Get projected polygons
+        self.get_screenspace_polygon(&mut points, &mut point_dst);
+        std::mem::swap(&mut points, &mut point_dst);
+
+        // Clip polygon by screen buffer
+        point_dst.clear();
+        self.clip_polygon_rect(&mut points, &mut point_dst, clip_rect);
+        std::mem::swap(&mut points, &mut point_dst);
+
+        // Just for safety
+        for pt in &points {
+            if !pt.x.is_finite() || !pt.y.is_finite() {
+                return;
+            }
+        }
+
+        for pt in &points {
+            if pt.x >= self.frame_width as f32 || pt.x <= 0.0 {
+                eprintln!("X error");
             }
 
-            screenspace_polygon
-        };
+            if pt.y >= self.frame_height as f32 || pt.y <= 0.0 {
+                eprintln!("Y error");
+            }
+        }
 
+        // Check if it is a polygon
         if points.len() < 3 {
             return;
         }
 
+        // Build color U32
+        let color_u32 = u32::from_le_bytes([color[0], color[1], color[2], 0]);
+
+        // Rasterize polygon
         unsafe {
             if self.do_rasterize_overdraw {
                 self.render_clipped_polygon::<true>(&points, color_u32);
@@ -643,8 +756,34 @@ impl<'t> RenderContext<'t> {
         }
     }
 
+    fn render_clip_rect(&mut self, clip_rect: geom::ClipRect, color: u32) {
+        let y0 = usize::min(clip_rect.min.y.ceil() as usize, self.frame_height - 1);
+        let y1 = usize::min(clip_rect.max.y.ceil() as usize, self.frame_height - 1);
+
+        let x0 = usize::min(clip_rect.min.x.floor() as usize, self.frame_width - 1);
+        let x1 = usize::min(clip_rect.max.x.floor() as usize, self.frame_width - 1);
+
+        let line = |mut start: *mut u32, delta: usize, count: usize| {
+            for _ in 0..count {
+                unsafe {
+                    *start = color;
+                    start = start.add(delta);
+                }
+            }
+        };
+
+        unsafe {
+            let s = self.frame_stride;
+
+            line(self.frame_pixels.add(y0 * s + x0), 1, x1 - x0);
+            line(self.frame_pixels.add(y0 * s + x0), s, y1 - y0);
+            line(self.frame_pixels.add(y1 * s + x0), 1, x1 - x0);
+            line(self.frame_pixels.add(y0 * s + x1), s, y1 - y0);
+        }
+    }
+
     /// Render single volume
-    fn render_volume(&mut self, id: map::VolumeId) {
+    fn render_volume(&mut self, id: bsp::VolumeId, clip_rect: geom::ClipRect) {
         let volume = self.map.get_volume(id).unwrap();
 
         'polygon_rendering: for surface in volume.get_surfaces() {
@@ -675,76 +814,233 @@ impl<'t> RenderContext<'t> {
                 (material.color.b as f32 * light) as u8,
             ];
 
-            self.render_polygon_frame(&polygon, color);
+            self.render_polygon(&polygon, color, clip_rect);
+
+            // if let Some(ctx) = self.slow_render_context.as_ref() {
+            //     (ctx.present_func)(self.frame_pixels, self.frame_width, self.frame_height, self.frame_stride);
+            //     std::thread::sleep(ctx.delta_time);
+            // };
         }
     }
 
-    /// Render all volumes starting from
-    pub fn render(&mut self, start_volume_id: map::VolumeId) {
-        let mut visible_set = BTreeSet::<map::VolumeId>::new();
+    /// Get main clipping rectangle
+    fn get_screen_clip_rect(&self) -> geom::ClipRect {
+        /// Clipping offset
+        const CLIP_OFFSET: f32 = 0.2;
 
-        // Visible set DFS edge
-        let mut visible_set_edge = BTreeSet::new();
+        // Surface clipping rectangle
+        geom::ClipRect {
+            min: Vec2f::new(
+                CLIP_OFFSET,
+                CLIP_OFFSET,
+            ),
+            max: Vec2f::new(
+                self.frame_width as f32 - 1.0 - CLIP_OFFSET,
+                self.frame_height as f32 - 1.0 - CLIP_OFFSET,
+            ),
+        }
+    }
 
-        visible_set_edge.insert(start_volume_id);
+    /// Render scene starting from certain volume
+    pub fn render(&mut self, start_volume_id: bsp::VolumeId) {
 
-        while !visible_set_edge.is_empty() {
-            let mut new_edge = BTreeSet::new();
+        /// Volumes to render building context
+        struct RenderSetBuildContext<'t, 'l> {
+            /// Renderer reference
+            render: &'t mut RenderContext<'l>,
 
-            for volume_id in visible_set_edge.iter().copied() {
-                visible_set.insert(volume_id);
+            /// Set of potentially visible polygons
+            /// (Their clip rectangle isn't empty (at least now))
+            pvs: BTreeMap<bsp::VolumeId, geom::ClipRect>,
 
-                let volume = self.map.get_volume(volume_id).unwrap();
+            /// Set of volumes to render in front-to-back order
+            inv_render_set: Vec<(bsp::VolumeId, geom::ClipRect)>,
+        }
 
-                'portal_rendering: for portal in volume.get_portals() {
-                    let portal_polygon = self.map
-                        .get_polygon(portal.polygon_id)
-                        .unwrap();
+        impl<'t, 'l> RenderSetBuildContext<'t, 'l> {
+            /// Visit some BSP node
+            fn visit(&mut self, bsp_elem: &bsp::Bsp) {
+                match bsp_elem {
+                    bsp::Bsp::Partition {
+                        splitter_plane,
+                        front,
+                        back
+                    } => {
+                        let rel = splitter_plane.get_point_relation(self.render.camera_location);
 
-                    // Perform standard backface culling
-                    let backface_cull_result =
-                        (portal_polygon.plane.normal ^ self.camera_location) - portal_polygon.plane.distance
-                        >= 0.0
-                    ;
+                        let (first, second) = match rel {
+                            geom::PointRelation::Front | geom::PointRelation::OnPlane => {
+                                (front, back)
+                            }
+                            geom::PointRelation::Back => {
+                                (back, front)
+                            }
+                        };
 
-                    if false
-                        // Perform modified backface culling
-                        || backface_cull_result != portal.is_facing_front
-
-                        // Check visibility
-                        || self.camera_plane.get_polygon_relation(&portal_polygon) == geom::PolygonRelation::Back
-
-                        // Check set
-                        || visible_set.contains(&portal.dst_volume_id)
-                        || visible_set_edge.contains(&portal.dst_volume_id)
-                    {
-                        continue 'portal_rendering;
+                        self.visit(first);
+                        self.visit(second);
                     }
+                    bsp::Bsp::Volume(volume_id) => 'volume_traverse: {
+                        let Some(volume_clip_rect) = self.pvs.get(volume_id) else {
+                            break 'volume_traverse;
+                        };
+                        let volume_clip_rect = *volume_clip_rect;
 
-                    new_edge.insert(portal.dst_volume_id);
+                        // Insert volume in render set
+                        self.inv_render_set.push((*volume_id, volume_clip_rect));
+
+                        let volume = self.render.map.get_volume(*volume_id).unwrap();
+
+                        'portal_rendering: for portal in volume.get_portals() {
+                            let portal_polygon = self.render.map
+                                .get_polygon(portal.polygon_id)
+                                .unwrap();
+
+                            // Perform modified backface culling
+                            let backface_cull_result =
+                                (portal_polygon.plane.normal ^ self.render.camera_location) - portal_polygon.plane.distance
+                                >= 0.0;
+                            if backface_cull_result != portal.is_facing_front {
+                                continue 'portal_rendering;
+                            }
+
+                            let clip_rect = 'portal_validation: {
+                                /*
+                                I think, that projection is main source of the 'black bug'
+                                is (kinda) infinite points during polygon projection process.
+                                Possibly, it can be solved with early visible portion clipping
+                                or automatic enabling of polygon based on it's relative
+                                location from camera.
+
+                                Reason: bug disappears if we just don't use projection at all.
+                                    (proved by distance clip fix)
+
+                                TODO: add some distance coefficent
+                                Constant works quite bad, because
+                                on small-metric maps it allows too much,
+                                and on huge ones it (theoretically) don't
+                                saves us from the bug.
+                                */
+
+                                let portal_plane_distance = portal_polygon
+                                    .plane
+                                    .get_signed_distance(self.render.camera_location)
+                                    .abs();
+
+                                // Do not calculate projection for near portals
+                                if portal_plane_distance <= 8.0 {
+                                    break 'portal_validation volume_clip_rect;
+                                }
+
+                                let mut polygon_points = portal_polygon.points.clone();
+                                let mut proj_polygon_points = Vec::with_capacity(polygon_points.len());
+    
+                                self.render.get_screenspace_polygon(&mut polygon_points, &mut proj_polygon_points);
+    
+                                // Check if it's even a polygon
+                                if proj_polygon_points.len() < 3 {
+                                    continue 'portal_rendering;
+                                }
+    
+                                let proj_rect = geom::ClipRect::from_points_xy(
+                                    proj_polygon_points.iter().copied()
+                                );
+    
+                                let Some(clip_rect) = geom::ClipRect::intersection(
+                                    volume_clip_rect,
+                                    proj_rect.extend(Vec2f::new(1.0, 1.0))
+                                ) else {
+                                    continue 'portal_rendering;
+                                };
+
+                                clip_rect
+                            };
+
+
+                            // Insert clipping rectangle in PVS
+                            let pvs_entry = self
+                                .pvs
+                                .entry(portal.dst_volume_id);
+
+                            match pvs_entry {
+                                std::collections::btree_map::Entry::Occupied(mut occupied) => {
+                                    let existing_rect: &mut geom::ClipRect = occupied.get_mut();
+                                    *existing_rect = existing_rect.union(clip_rect);
+                                }
+                                std::collections::btree_map::Entry::Vacant(vacant) => {
+                                    vacant.insert(clip_rect);
+                                }
+                            }
+                        }
+                    }
+                    bsp::Bsp::Void => {}
                 }
             }
 
-            visible_set_edge = new_edge;
+            fn start(&mut self) {
+                let bsp = self.render.map.get_bsp();
+
+                self.visit(bsp);
+            }
         }
 
-        let mut render_set = Vec::new();
+        let screen_clip_rect = self.get_screen_clip_rect();
 
-        Self::order_rendered_volume_set(
-            self.map.get_bsp(),
-            &mut visible_set,
-            &mut render_set,
-            self.camera_location
-        );
+        let mut traverse_context = RenderSetBuildContext {
+            pvs: BTreeMap::new(),
+            inv_render_set: Vec::new(),
+            render: self,
+        };
 
-        for index in render_set {
-            self.render_volume(index);
+        traverse_context.pvs
+            .insert(start_volume_id, screen_clip_rect);
+
+        traverse_context.start();
+
+        // Collect render set
+        let mut render_set = traverse_context.inv_render_set;
+
+        // Reorder render set
+        // render_set.reverse();
+
+        if let Some(ctx) = self.slow_render_context.as_ref() {
+            (ctx.present_func)(self.frame_pixels, self.frame_width, self.frame_height, self.frame_stride);
+            std::thread::sleep(ctx.delta_time);
+        }
+
+        for (volume_id, volume_clip_rect) in render_set.iter().rev().copied() {
+
+            let Some(clip_rect) = volume_clip_rect.intersection(screen_clip_rect) else {
+                continue;
+            };
+
+            if self.slow_render_context.is_some() {
+                self.render_clip_rect(clip_rect, 0x0000FF);
+
+                let ctx = self.slow_render_context.as_ref().unwrap();
+                (ctx.present_func)(self.frame_pixels, self.frame_width, self.frame_height, self.frame_stride);
+                std::thread::sleep(ctx.delta_time);
+            }
+
+            self.render_volume(volume_id, volume_clip_rect);
+
+            if let Some(ctx) = self.slow_render_context.as_ref() {
+                (ctx.present_func)(self.frame_pixels, self.frame_width, self.frame_height, self.frame_stride);
+
+                std::thread::sleep(ctx.delta_time);
+            }
         }
     }
 
     /// Display ALL level volumes
     fn render_all(&mut self) {
-        let mut visible_set = BTreeSet::from_iter(self.map.all_volume_ids());
+        let screen_clip_rect = self.get_screen_clip_rect();
+
+        let mut visible_set = BTreeMap::from_iter(self
+            .map
+            .all_volume_ids()
+            .map(|id| (id, screen_clip_rect))
+        );
         let mut render_set = Vec::new();
 
         Self::order_rendered_volume_set(
@@ -754,8 +1050,8 @@ impl<'t> RenderContext<'t> {
             self.camera_location
         );
 
-        for index in render_set {
-            self.render_volume(index);
+        for (id, clip_rect) in render_set {
+            self.render_volume(id, clip_rect);
         }
     }
 }
@@ -763,7 +1059,17 @@ impl<'t> RenderContext<'t> {
 fn main() {
     print!("\n\n\n\n\n\n\n\n");
 
+    // Enable/disable map caching
     let do_cache_maps = true;
+
+    // Synchronize visible-set-building and projection cameras
+    let mut do_sync_logical_camera = true;
+
+    // Enable rendering with synchronization after some portion of frame pixels renderend
+    let mut do_enable_overdraw_rendering = false;
+
+    // Enable delay and sync between volumes rendering
+    let mut do_enable_slow_rendering = false;
 
     // Load map
     let map = {
@@ -778,28 +1084,72 @@ fn main() {
         if do_cache_maps {
             match std::fs::File::open(&wbsp_path) {
                 Ok(mut bsp_file) => {
-                    map::Map::load(&mut bsp_file).unwrap()
+                    // Load map from map cache
+                    bsp::Map::load(&mut bsp_file).unwrap()
                 }
                 Err(_) => {
+                    // Compile map
                     let source = std::fs::read_to_string(&map_path).unwrap();
-    
-                    let location_map = map::builder::Map::parse(&source).unwrap();
-    
-                    let compiled_map = map::builder::build(&location_map);
-    
+                    let location_map = map::q1::Map::parse(&source).unwrap();
+                    let compiled_map = bsp::builder::build(&location_map);
+
+                    // Save map to map cache
                     if let Ok(mut file) = std::fs::File::create(&wbsp_path) {
                         compiled_map.save(&mut file).unwrap();
                     }
-            
+
                     compiled_map
                 }
             }
         } else {
             let source = std::fs::read_to_string(&map_path).unwrap();
-            let location_map = map::builder::Map::parse(&source).unwrap();
-            map::builder::build(&location_map)
+            let location_map = map::q1::Map::parse(&source).unwrap();
+            bsp::builder::build(&location_map)
         }
     };
+
+    struct BspStatBuilder {
+        pub volume_count: usize,
+        pub void_count: usize,
+        pub partition_count: usize,
+    }
+
+    impl BspStatBuilder {
+        /// Build BSP for certain 
+        fn visit(&mut self, bsp: &bsp::Bsp) {
+            match bsp {
+                bsp::Bsp::Partition { splitter_plane: _, front, back } => {
+                    self.partition_count += 1;
+
+                    self.visit(front);
+                    self.visit(back);
+                }
+                bsp::Bsp::Volume(_) => {
+                    self.volume_count += 1;
+                }
+                bsp::Bsp::Void => {
+                    self.void_count += 1;
+                }
+            }
+        }
+    }
+
+    let mut stat = BspStatBuilder {
+        partition_count: 0,
+        void_count: 0,
+        volume_count: 0
+    };
+
+    stat.visit(map.get_bsp());
+
+    let stat_total = stat.partition_count + stat.void_count + stat.volume_count;
+
+    println!("BSP Stat:");
+    println!("    Nodes total : {}", stat_total);
+    println!("    Partitions  : {} ({}%)", stat.partition_count, stat.partition_count as f64 / stat_total as f64 * 100.0);
+    println!("    Volumes     : {} ({}%)", stat.volume_count, stat.volume_count as f64 / stat_total as f64 * 100.0);
+    println!("    Voids       : {} ({}%)", stat.void_count, stat.void_count as f64 / stat_total as f64 * 100.0);
+    // return;
 
     // Setup render
     let sdl = sdl2::init().unwrap();
@@ -816,16 +1166,12 @@ fn main() {
     let mut input = Input::new();
     let mut camera = Camera::new();
 
+    // Set spectial camera location
     camera.location = Vec3f::new(-174.0, 2114.6, -64.5);
     camera.direction = Vec3f::new(-0.4, 0.9, 0.1);
+
     // camera.location = Vec3f::new(-200.0, 2000.0, -50.0);
     // camera.location = Vec3f::new(30.0, 40.0, 50.0);
-
-    // Synchronize visible-set-building and projection cameras
-    let mut do_sync_logical_camera = true;
-
-    // Enable rendering with synchronization after some portion of frame pixels renderend
-    let mut do_enable_overdraw_rendering = false;
 
     // Camera used for visible set building
     let mut logical_camera = camera;
@@ -858,6 +1204,10 @@ fn main() {
         timer.response();
         camera.response(&timer, &input);
 
+        if input.is_key_clicked(Scancode::Num8) {
+            do_enable_slow_rendering = !do_enable_slow_rendering;
+        }
+
         // Synchronize logical camera with physical one
         if input.is_key_clicked(Scancode::Num9) {
             do_sync_logical_camera = !do_sync_logical_camera;
@@ -873,10 +1223,9 @@ fn main() {
 
         // Display some statistics
         if timer.get_frame_count() % 100 == 0 {
-            // println!("{:?} {:?}", camera.location, camera.direction);
-
-            println!("FPS: {}, SL={}, OV={}",
+            println!("FPS: {}, SR={}, SL={}, OV={}",
                 timer.get_fps(),
+                do_enable_slow_rendering as u32,
                 do_sync_logical_camera as u32,
                 do_enable_overdraw_rendering as u32,
             );
@@ -889,7 +1238,10 @@ fn main() {
             (w as usize, h as usize)
         };
 
-        let (frame_width, frame_height) = (window_width / 4, window_height / 4);
+        let (frame_width, frame_height) = (
+            window_width / 4,
+            window_height / 4,
+        );
 
         // Compute view matrix
         let view_matrix = Mat4f::view(
@@ -916,33 +1268,22 @@ fn main() {
         // Resize frame buffer to fit window's size
         frame_buffer.resize(frame_width * frame_height, 0);
 
-        let mut render_context = RenderContext {
-            camera_location: logical_camera.location,
-            camera_plane: geom::Plane::from_point_normal(
-                logical_camera.location,
-                logical_camera.direction
-            ),
-            view_projection_matrix,
-            map: &map,
-
-            frame_pixels: frame_buffer.as_mut_ptr(),
-            frame_width: frame_width,
-            frame_height: frame_height,
-            frame_stride: frame_width,
-            do_rasterize_overdraw: do_enable_overdraw_rendering,
-        };
-
-        'blit_surface: {
+        let present_frame = |frame_buffer: *mut u32, frame_width: usize, frame_height: usize, frame_stride: usize| {
             let mut window_surface = match window.surface(&event_pump) {
                 Ok(window_surface) => window_surface,
                 Err(err) => {
                     eprintln!("Cannot get window surface: {}", err);
-                    break 'blit_surface;
+                    return;
                 }
             };
 
             let mut render_surface = match sdl2::surface::Surface::from_data(
-                bytemuck::cast_slice_mut::<u32, u8>(frame_buffer.as_mut_slice()),
+                unsafe {
+                    std::slice::from_raw_parts_mut(
+                        frame_buffer as *mut u8,
+                        frame_stride * frame_width * 4
+                    )
+                },
                 frame_width as u32,
                 frame_height as u32,
                 frame_width as u32 * 4,
@@ -951,7 +1292,7 @@ fn main() {
                 Ok(surface) => surface,
                 Err(err) => {
                     eprintln!("Source surface create error: {}", err);
-                    break 'blit_surface;
+                    return;
                 }
             };
 
@@ -971,21 +1312,63 @@ fn main() {
             if let Err(err) = window_surface.update_window() {
                 eprintln!("Window update failed: {}", err);
             }
+        };
+
+        // Build render context
+        let mut render_context = RenderContext {
+            camera_location: logical_camera.location,
+            // camera_plane: geom::Plane::from_point_normal(
+            //     logical_camera.location,
+            //     logical_camera.direction
+            // ),
+            view_projection_matrix,
+            map: &map,
+
+            frame_pixels: frame_buffer.as_mut_ptr(),
+            frame_width: frame_width,
+            frame_height: frame_height,
+            frame_stride: frame_width,
+
+            do_rasterize_overdraw: do_enable_overdraw_rendering,
+            slow_render_context: if do_enable_slow_rendering {
+                Some(SlowRenderContext {
+                    delta_time: std::time::Duration::from_millis(50),
+                    present_func: &present_frame,
+                })
+            } else {
+                None
+            },
+        };
+
+        // TODO: Parallel rendering/presentation
+
+        // Clear framebuffer
+        // frame_buffer.fill(0xCC774C);
+        unsafe {
+            std::ptr::write_bytes(
+                frame_buffer.as_mut_ptr(),
+                0,
+                frame_buffer.len()
+            );
         }
 
-        frame_buffer.fill(0);
-
+        // Render frame
         let start_volume_index_opt = map
             .get_bsp()
             .traverse(logical_camera.location);
-
-        // render_context.test_software_rasterizer(timer.get_time());
 
         if let Some(start_volume_index) = start_volume_index_opt {
             render_context.render(start_volume_index);
         } else {
             render_context.render_all();
         }
+
+        present_frame(
+            frame_buffer.as_mut_ptr(),
+            frame_width,
+            frame_height,
+            frame_width
+        );
     }
 }
 

@@ -1,3 +1,5 @@
+///! Random generator implementation module
+
 use std::num::NonZeroU128;
 
 /// 128bit lightweight random generator.
@@ -13,7 +15,10 @@ pub struct Xorshift128p {
 }
 
 impl Xorshift128p {
+    /// Minimal generated value
     pub const MIN: u64 = 0u64;
+
+    /// Maximal generated value
     pub const MAX: u64 = !0u64;
 
     /// Construct random device
@@ -21,7 +26,7 @@ impl Xorshift128p {
         let seed = seed.get();
 
         Self {
-            low: ((seed >>  0) & 0xFFFF_FFFF_FFFF_FFFF) as u64,
+            low:  ((seed >>  0) & 0xFFFF_FFFF_FFFF_FFFF) as u64,
             high: ((seed >> 64) & 0xFFFF_FFFF_FFFF_FFFF) as u64,
         }
     }
@@ -41,6 +46,7 @@ impl Xorshift128p {
         low.wrapping_add(high)
     }
 
+    /// Generate unit float64 number
     pub fn next_unit_f64(&mut self) -> f64 {
         return self.next() as f64 / 0xFFFF_FFFF_FFFF_FFFFu64 as f64
     }

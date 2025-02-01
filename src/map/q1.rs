@@ -1,7 +1,7 @@
 ///! Quake 1 map format support
 
 use std::collections::HashMap;
-use crate::math::Vec3f;
+use crate::{geom, math::Vec3f};
 
 /// Q1 .map brush face binary representation
 #[derive(Clone, Debug)]
@@ -369,6 +369,39 @@ impl Map {
                 ))
             })
             .collect::<Vec<_>>()
+    }
+
+    /// Build Q1 map into WMAP format
+    pub fn build_wmap(&self) -> super::Map {
+        let mut entities = Vec::<super::Entity>::new();
+
+        for entity in &self.entities {
+            let mut brushes = Vec::<super::Brush>::new();
+            let properties = entity.properties.clone();
+
+            for brush in &entity.brushes {
+                let mut faces = Vec::<super::BrushFace>::new();
+
+                for face in &brush.faces {
+                    faces.push(super::BrushFace {
+                        plane: geom::Plane::from_points(face.p1, face.p0, face.p2),
+                        basis_u: face.p0 - face.p1,
+                        basis_v: face.p2 - face.p1,
+                        mtl_offset_u: face.texture_offset_x,
+                        mtl_offset_v: face.texture_offset_y,
+                        mtl_scale_u: face.texture_scale_x,
+                        mtl_scale_v: face.texture_scale_y,
+                        mtl_name: face.texture_name.clone(),
+                    });
+                }
+
+                brushes.push(super::Brush { faces });
+            }
+
+            entities.push(super::Entity { brushes, properties });
+        }
+
+        super::Map { entities }
     }
 }
 

@@ -243,6 +243,37 @@ struct SlowRenderContext<'t> {
     pub delta_time: std::time::Duration,
 }
 
+/// Temporary structure used as instead of WRES-based material tables
+struct MaterialTable {
+    /// Color set
+    color_set: Vec<u32>,
+}
+
+impl MaterialTable {
+    /// Generate color table for map
+    pub fn for_bsp(bsp: &bsp::Map) -> Self {
+        let mut color_set = Vec::new();
+        let mut rand_device = rand::Xorshift128p::new(304780.try_into().unwrap());
+
+        for (id, _) in bsp.all_material_names() {
+            let index = id.into_index();
+
+            color_set.resize(index + 1, !0u32);
+
+            if color_set[index] == !0u32 {
+                color_set[index] = (rand_device.next() & 0xFFFF_FFFF) as u32;
+            }
+        }
+
+        Self { color_set }
+    }
+
+    /// Get color for material by it's ID
+    pub fn get_color(&self, material_id: bsp::MaterialId) -> Option<u32> {
+        self.color_set.get(material_id.into_index()).copied()
+    }
+}
+
 /// Render context
 struct RenderContext<'t> {
     /// Camera location
@@ -256,6 +287,8 @@ struct RenderContext<'t> {
 
     /// Map reference
     map: &'t bsp::Map,
+
+    material_table: &'t MaterialTable,
 
     /// Frame pixel array pointer
     frame_pixels: *mut u32,
@@ -746,7 +779,11 @@ impl<'t> RenderContext<'t> {
             }
 
             // Get surface material
-            let material = self.map.get_material(surface.material_id).unwrap();
+            let color: bsp::Rgb8 = self
+                .material_table
+                .get_color(surface.material_id)
+                .unwrap()
+                .into();
 
             // Calculate simple per-face diffuse light
             let light_diffuse = Vec3f::new(0.30, 0.47, 0.80)
@@ -760,17 +797,12 @@ impl<'t> RenderContext<'t> {
 
             // Calculate color, based on material and light
             let color = [
-                (material.color.r as f32 * light) as u8,
-                (material.color.g as f32 * light) as u8,
-                (material.color.b as f32 * light) as u8,
+                (color.r as f32 * light) as u8,
+                (color.g as f32 * light) as u8,
+                (color.b as f32 * light) as u8,
             ];
 
             self.render_polygon(&polygon, color, clip_rect);
-
-            // if let Some(ctx) = self.slow_render_context.as_ref() {
-            //     (ctx.present_func)(self.frame_pixels, self.frame_width, self.frame_height, self.frame_stride);
-            //     std::thread::sleep(ctx.delta_time);
-            // };
         }
     }
 
@@ -1051,7 +1083,7 @@ fn main() {
     print!("\n\n\n\n\n\n\n\n");
 
     // Enable/disable map caching
-    let do_enable_map_caching = true;
+    let do_enable_map_caching = false;
 
     // Synchronize visible-set-building and projection cameras
     let mut do_sync_logical_camera = true;
@@ -1098,7 +1130,8 @@ fn main() {
             bsp::builder::build(&location_map)
         }
     };
-
+    let material_table = MaterialTable::for_bsp(&map);
+    
     struct BspStatBuilder {
         pub volume_count: usize,
         pub void_count: usize,
@@ -1313,6 +1346,7 @@ fn main() {
             // ),
             view_projection_matrix,
             map: &map,
+            material_table: &material_table,
 
             frame_pixels: frame_buffer.as_mut_ptr(),
             frame_width: frame_width,

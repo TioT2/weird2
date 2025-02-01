@@ -36,7 +36,7 @@ pub struct BrushFace {
     pub mtl_scale_v: f32,
 
     /// Index of material in map material table
-    pub mtl_index: u32,
+    pub mtl_name: String,
 }
 
 /// Map brush
@@ -47,11 +47,11 @@ pub struct Brush {
 
 /// Map entity
 pub struct Entity {
-    /// Entity properties
-    pub properties: HashMap<String, String>,
-
     /// Entity brushes
     pub brushes: Vec<Brush>,
+
+    /// Entity properties
+    pub properties: HashMap<String, String>,
 }
 
 /// Map main structure

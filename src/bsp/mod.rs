@@ -105,12 +105,6 @@ impl Into<u32> for Rgb8 {
     }
 }
 
-/// Material descriptor
-pub struct Material {
-    /// Only single-color materials are supported) (At least now)
-    pub color: Rgb8,
-}
-
 /// Binary Space Partition, used during 
 pub enum Bsp {
     /// Space partition
@@ -171,7 +165,7 @@ pub struct Map {
     polygon_set: Vec<geom::Polygon>,
 
     /// Set of map materials
-    material_set: Vec<Material>,
+    material_name_set: Vec<String>,
 
     /// Set of map volumes
     volume_set: Vec<Volume>,
@@ -179,11 +173,17 @@ pub struct Map {
 
 impl Map {
     /// Build map from BSP and sets.
-    pub fn new(bsp: Box<Bsp>, polygon_set: Vec<geom::Polygon>, material_set: Vec<Material>, volume_set: Vec<Volume>) -> Self {
+    pub fn new(
+        bsp: Box<Bsp>,
+        polygon_set: Vec<geom::Polygon>,
+        material_name_set: Vec<String>,
+        volume_set: Vec<Volume>
+    ) -> Self {
+
         Self {
             bsp,
             polygon_set,
-            material_set,
+            material_name_set,
             volume_set
         }
     }
@@ -199,9 +199,17 @@ impl Map {
             .map(VolumeId::from_index)
     }
 
-    /// Get material by id
-    pub fn get_material(&self, id: MaterialId) -> Option<&Material> {
-        self.material_set.get(id.into_index())
+    /// Get material name by it's id
+    pub fn get_material_name(&self, id: MaterialId) -> Option<&str> {
+        self.material_name_set.get(id.into_index()).map(|s| s.as_str())
+    }
+
+    /// Iterate by material names
+    pub fn all_material_names(&self) -> impl Iterator<Item = (MaterialId, &str)> {
+        self.material_name_set
+            .iter()
+            .enumerate()
+            .map(|(index, name)| (MaterialId::from_index(index), name.as_ref()))
     }
 
     /// Get polygon by id
@@ -399,12 +407,10 @@ impl Map {
             polygons
         };
 
-        let material_set = {
+        let material_name_set = {
             materials
                 .iter()
-                .map(|material| {
-                    Material { color: material.color.into() }
-                })
+                .map(|_| "default".to_string())
                 .collect::<Vec<_>>()
         };
 
@@ -497,7 +503,7 @@ impl Map {
 
         Ok(Self {
             bsp,
-            material_set,
+            material_name_set,
             polygon_set,
             volume_set,
         })
@@ -515,7 +521,7 @@ impl Map {
                 .iter()
                 .map(|polygon| polygon.points.len() as u32)
                 .sum(),
-            material_count: self.material_set.len() as u32,
+            material_count: self.material_name_set.len() as u32,
             volume_portal_count: self.volume_set
                 .iter()
                 .map(|volume| volume.get_portals().len() as u32)
@@ -565,9 +571,9 @@ impl Map {
 
         // Write materials
         write_by_iter(dst, self
-            .material_set
+            .material_name_set
             .iter()
-            .map(|mtl| wbsp::Material { color: mtl.color.into() })
+            .map(|_| wbsp::Material { color: 0xFFFFFFFF }) // Fix material properties
         )?;
 
         // Write volume portals

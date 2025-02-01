@@ -1222,11 +1222,10 @@ impl Builder {
             })
             .collect::<Vec<_>>();
 
+        // TODO: Fix material set building
         let material_set = self.materials
             .into_iter()
-            .map(|material| {
-                super::Material { color: material.color.into() }
-            })
+            .map(|_| { "".to_string() })
             .collect::<Vec<_>>();
 
         super::Map::new(bsp, polygon_set, material_set, volume_set)

@@ -1,7 +1,12 @@
 /// Main project module
 
-/// Resources:
+// Resources:
 // [WMAP -> WBSP], WRES -> WDAT/WRES
+//
+// WMAP - In-development map format, using during map editing
+// WBSP - Intermediate format, used to exchange during different map compilation stages (e.g. Visible and Physical BSP building/Optimization/Lightmapping/etc.)
+// WRES - Resource format, contains textures/sounds/models/etc.
+// WDAT - Data format, contains 'final' project with location BSP's.
 
 use std::collections::{BTreeMap, HashMap};
 use math::{Mat4f, Vec2f, Vec3f};
@@ -307,53 +312,6 @@ impl<'t> RenderContext<'t> {
         }
     }
 
-    /// Build correct volume set rendering order
-    fn order_rendered_volume_set(
-        bsp: &bsp::Bsp,
-        visible_set: &mut BTreeMap<bsp::VolumeId, geom::ClipRect>,
-        render_set: &mut Vec<(bsp::VolumeId, geom::ClipRect)>,
-        camera_location: Vec3f
-    ) {
-        match bsp {
-
-            // Handle space partition
-            bsp::Bsp::Partition {
-                splitter_plane,
-                front,
-                back
-            } => {
-                let (first, second) = match splitter_plane.get_point_relation(camera_location) {
-                    geom::PointRelation::Front | geom::PointRelation::OnPlane => (back, front),
-                    geom::PointRelation::Back => (front, back)
-                };
-
-                Self::order_rendered_volume_set(
-                    first,
-                    visible_set,
-                    render_set,
-                    camera_location
-                );
-
-                Self::order_rendered_volume_set(
-                    &second,
-                    visible_set,
-                    render_set,
-                    camera_location
-                );
-            }
-
-            // Move volume to render set if it's visible
-            bsp::Bsp::Volume(id) => {
-                if let Some(clip_rect) = visible_set.remove(id) {
-                    render_set.push((*id, clip_rect));
-                }
-            }
-
-            // Just ignore this case)
-            bsp::Bsp::Void => {}
-        }
-    }
-
     fn clip_viewspace_back(&self, points: &mut Vec<Vec3f>, result: &mut Vec<Vec3f>) {
         for index in 0..points.len() {
             let curr = points[index];
@@ -463,7 +421,8 @@ impl<'t> RenderContext<'t> {
         }
     }
 
-    unsafe fn render_clipped_line(&mut self, mut begin: Vec2f, mut end: Vec2f, color: u32) {
+    /// Draw line.
+    unsafe fn _render_clipped_line(&mut self, mut begin: Vec2f, mut end: Vec2f, color: u32) {
         let mut dy = end.y - begin.y;
         let mut dx = end.x - begin.x;
 
@@ -554,16 +513,6 @@ impl<'t> RenderContext<'t> {
                 (($index + 1) % points.len())
             };
         }
-
-        // let mut prev = points.last().unwrap();
-        // for curr in points {
-        //     self.render_clipped_line(
-        //         Vec2f::new(prev.x, prev.y),
-        //         Vec2f::new(curr.x, curr.y),
-        //         0x0000FF
-        //     );
-        //     prev = curr;
-        // }
 
         // Find polygon min/max
         let (min_y_index, min_y_value, max_y_index, max_y_value) = {
@@ -661,8 +610,10 @@ impl<'t> RenderContext<'t> {
             let start = usize::min(left_x.floor() as usize, self.frame_width - 1);
             let end = usize::min(right_x.floor() as usize, self.frame_width - 1);
 
-            let mut pixel_ptr = self.frame_pixels.add(self.frame_stride * line + start);
+            let pixel_start = self.frame_pixels.add(self.frame_stride * line + start);
             let pixel_end = self.frame_pixels.add(self.frame_stride * line + end);
+
+            let mut pixel_ptr = pixel_start;
 
             while pixel_ptr < pixel_end {
                 if RENDER_OVERDRAW {
@@ -841,174 +792,167 @@ impl<'t> RenderContext<'t> {
         }
     }
 
-    /// Render scene starting from certain volume
-    pub fn render(&mut self, start_volume_id: bsp::VolumeId) {
+    /// Build set of rendered polygons
+    /// 
+    /// # Algorithm
+    /// 
+    /// This function recursively traverses BSP in front-to-back order,
+    /// if current volume isn't inserted in PVS (Potentially Visible Set),
+    /// then it's ignored. If it is, it is added with render set with it's
+    /// current clipping rectangle (it **is not** visible from any of next
+    /// traverse elements, so current clipping rectangle is the final one)
+    /// and then for every portal of current volume function calculates
+    /// it's screenspace bounding rectangle and inserts inserts destination
+    /// volume in PVS with this rectangle. If destination volume is already
+    /// added, it extends it to fit union of current and previous clipping
+    /// rectangles.
+    pub fn render_build_render_set(
+        &self,
+        bsp_elem: &bsp::Bsp,
+        pvs: &mut BTreeMap<bsp::VolumeId, geom::ClipRect>,
+        inv_render_set: &mut Vec<(bsp::VolumeId, geom::ClipRect)>,
+    ) {
+        match bsp_elem {
+            bsp::Bsp::Partition {
+                splitter_plane,
+                front,
+                back
+            } => {
+                let rel = splitter_plane.get_point_relation(self.camera_location);
 
-        /// Volumes to render building context
-        struct RenderSetBuildContext<'t, 'l> {
-            /// Renderer reference
-            render: &'t mut RenderContext<'l>,
-
-            /// Set of potentially visible polygons
-            /// (Their clip rectangle isn't empty (at least now))
-            pvs: BTreeMap<bsp::VolumeId, geom::ClipRect>,
-
-            /// Set of volumes to render in front-to-back order
-            inv_render_set: Vec<(bsp::VolumeId, geom::ClipRect)>,
-        }
-
-        impl<'t, 'l> RenderSetBuildContext<'t, 'l> {
-            /// Visit some BSP node
-            fn visit(&mut self, bsp_elem: &bsp::Bsp) {
-                match bsp_elem {
-                    bsp::Bsp::Partition {
-                        splitter_plane,
-                        front,
-                        back
-                    } => {
-                        let rel = splitter_plane.get_point_relation(self.render.camera_location);
-
-                        let (first, second) = match rel {
-                            geom::PointRelation::Front | geom::PointRelation::OnPlane => {
-                                (front, back)
-                            }
-                            geom::PointRelation::Back => {
-                                (back, front)
-                            }
-                        };
-
-                        self.visit(first);
-                        self.visit(second);
+                let (first, second) = match rel {
+                    geom::PointRelation::Front | geom::PointRelation::OnPlane => {
+                        (front, back)
                     }
-                    bsp::Bsp::Volume(volume_id) => 'volume_traverse: {
-                        let Some(volume_clip_rect) = self.pvs.get(volume_id) else {
-                            break 'volume_traverse;
+                    geom::PointRelation::Back => {
+                        (back, front)
+                    }
+                };
+
+                self.render_build_render_set(first, pvs, inv_render_set);
+                self.render_build_render_set(second, pvs, inv_render_set);
+            }
+            bsp::Bsp::Volume(volume_id) => 'volume_traverse: {
+                let Some(volume_clip_rect) = pvs.get(volume_id) else {
+                    break 'volume_traverse;
+                };
+                let volume_clip_rect = *volume_clip_rect;
+
+                // Insert volume in render set
+                inv_render_set.push((*volume_id, volume_clip_rect));
+
+                let volume = self.map.get_volume(*volume_id).unwrap();
+
+                'portal_rendering: for portal in volume.get_portals() {
+                    let portal_polygon = self.map
+                        .get_polygon(portal.polygon_id)
+                        .unwrap();
+
+                    // Perform modified backface culling
+                    let backface_cull_result =
+                        (portal_polygon.plane.normal ^ self.camera_location) - portal_polygon.plane.distance
+                        >= 0.0;
+                    if backface_cull_result != portal.is_facing_front {
+                        continue 'portal_rendering;
+                    }
+
+                    let clip_rect = 'portal_validation: {
+                        /*
+                        I think, that projection is main source of the 'black bug'
+                        is (kinda) infinite points during polygon projection process.
+                        Possibly, it can be solved with early visible portion clipping
+                        or automatic enabling of polygon based on it's relative
+                        location from camera.
+
+                        Reason: bug disappears if we just don't use projection at all.
+                            (proved by distance clip fix)
+
+                        TODO: add some distance coefficent
+                        Constant works quite bad, because
+                        on small-metric maps it allows too much,
+                        and on huge ones it (theoretically) don't
+                        saves us from the bug.
+                        */
+
+                        let portal_plane_distance = portal_polygon
+                            .plane
+                            .get_signed_distance(self.camera_location)
+                            .abs();
+
+                        // Do not calculate projection for near portals
+                        if portal_plane_distance <= 8.0 {
+                            break 'portal_validation volume_clip_rect;
+                        }
+
+                        let mut polygon_points = portal_polygon.points.clone();
+                        let mut proj_polygon_points = Vec::with_capacity(polygon_points.len());
+
+                        if !portal.is_facing_front {
+                            polygon_points.reverse();
+                        }
+
+                        self.get_screenspace_polygon(&mut polygon_points, &mut proj_polygon_points);
+
+                        // Check if it's even a polygon
+                        if proj_polygon_points.len() < 3 {
+                            continue 'portal_rendering;
+                        }
+
+                        let proj_rect = geom::ClipRect::from_points_xy(
+                            proj_polygon_points.iter().copied()
+                        );
+
+                        let Some(clip_rect) = geom::ClipRect::intersection(
+                            volume_clip_rect,
+                            proj_rect.extend(Vec2f::new(1.0, 1.0))
+                        ) else {
+                            continue 'portal_rendering;
                         };
-                        let volume_clip_rect = *volume_clip_rect;
 
-                        // Insert volume in render set
-                        self.inv_render_set.push((*volume_id, volume_clip_rect));
-
-                        let volume = self.render.map.get_volume(*volume_id).unwrap();
-
-                        'portal_rendering: for portal in volume.get_portals() {
-                            let portal_polygon = self.render.map
-                                .get_polygon(portal.polygon_id)
-                                .unwrap();
-
-                            // Perform modified backface culling
-                            let backface_cull_result =
-                                (portal_polygon.plane.normal ^ self.render.camera_location) - portal_polygon.plane.distance
-                                >= 0.0;
-                            if backface_cull_result != portal.is_facing_front {
-                                continue 'portal_rendering;
-                            }
-
-                            let clip_rect = 'portal_validation: {
-                                /*
-                                I think, that projection is main source of the 'black bug'
-                                is (kinda) infinite points during polygon projection process.
-                                Possibly, it can be solved with early visible portion clipping
-                                or automatic enabling of polygon based on it's relative
-                                location from camera.
-
-                                Reason: bug disappears if we just don't use projection at all.
-                                    (proved by distance clip fix)
-
-                                TODO: add some distance coefficent
-                                Constant works quite bad, because
-                                on small-metric maps it allows too much,
-                                and on huge ones it (theoretically) don't
-                                saves us from the bug.
-                                */
-
-                                let portal_plane_distance = portal_polygon
-                                    .plane
-                                    .get_signed_distance(self.render.camera_location)
-                                    .abs();
-
-                                // Do not calculate projection for near portals
-                                if portal_plane_distance <= 8.0 {
-                                    break 'portal_validation volume_clip_rect;
-                                }
-
-                                let mut polygon_points = portal_polygon.points.clone();
-                                let mut proj_polygon_points = Vec::with_capacity(polygon_points.len());
-    
-                                self.render.get_screenspace_polygon(&mut polygon_points, &mut proj_polygon_points);
-    
-                                // Check if it's even a polygon
-                                if proj_polygon_points.len() < 3 {
-                                    continue 'portal_rendering;
-                                }
-    
-                                let proj_rect = geom::ClipRect::from_points_xy(
-                                    proj_polygon_points.iter().copied()
-                                );
-    
-                                let Some(clip_rect) = geom::ClipRect::intersection(
-                                    volume_clip_rect,
-                                    proj_rect.extend(Vec2f::new(1.0, 1.0))
-                                ) else {
-                                    continue 'portal_rendering;
-                                };
-
-                                clip_rect
-                            };
+                        clip_rect
+                    };
 
 
-                            // Insert clipping rectangle in PVS
-                            let pvs_entry = self
-                                .pvs
-                                .entry(portal.dst_volume_id);
+                    // Insert clipping rectangle in PVS
+                    let pvs_entry = pvs
+                        .entry(portal.dst_volume_id);
 
-                            match pvs_entry {
-                                std::collections::btree_map::Entry::Occupied(mut occupied) => {
-                                    let existing_rect: &mut geom::ClipRect = occupied.get_mut();
-                                    *existing_rect = existing_rect.union(clip_rect);
-                                }
-                                std::collections::btree_map::Entry::Vacant(vacant) => {
-                                    vacant.insert(clip_rect);
-                                }
-                            }
+                    match pvs_entry {
+                        std::collections::btree_map::Entry::Occupied(mut occupied) => {
+                            let existing_rect: &mut geom::ClipRect = occupied.get_mut();
+                            *existing_rect = existing_rect.union(clip_rect);
+                        }
+                        std::collections::btree_map::Entry::Vacant(vacant) => {
+                            vacant.insert(clip_rect);
                         }
                     }
-                    bsp::Bsp::Void => {}
                 }
             }
-
-            fn start(&mut self) {
-                let bsp = self.render.map.get_bsp();
-
-                self.visit(bsp);
-            }
+            bsp::Bsp::Void => {}
         }
+    }
 
+    /// Render scene starting from certain volume
+    pub fn render(&mut self, start_volume_id: bsp::VolumeId) {
         let screen_clip_rect = self.get_screen_clip_rect();
 
-        let mut traverse_context = RenderSetBuildContext {
-            pvs: BTreeMap::new(),
-            inv_render_set: Vec::new(),
-            render: self,
-        };
+        let mut pvs = BTreeMap::new();
+        let mut inv_render_set = Vec::new();
 
-        traverse_context.pvs
-            .insert(start_volume_id, screen_clip_rect);
+        pvs.insert(start_volume_id, screen_clip_rect);
 
-        traverse_context.start();
-
-        // Collect render set
-        let mut render_set = traverse_context.inv_render_set;
-
-        // Reorder render set
-        // render_set.reverse();
+        self.render_build_render_set(self.map.get_bsp(), &mut pvs, &mut inv_render_set);
 
         if let Some(ctx) = self.slow_render_context.as_ref() {
             (ctx.present_func)(self.frame_pixels, self.frame_width, self.frame_height, self.frame_stride);
             std::thread::sleep(ctx.delta_time);
         }
 
-        for (volume_id, volume_clip_rect) in render_set.iter().rev().copied() {
+        for (volume_id, volume_clip_rect) in inv_render_set
+            .iter()
+            .rev()
+            .copied()
+        {
 
             let Some(clip_rect) = volume_clip_rect.intersection(screen_clip_rect) else {
                 continue;
@@ -1029,6 +973,53 @@ impl<'t> RenderContext<'t> {
 
                 std::thread::sleep(ctx.delta_time);
             }
+        }
+    }
+
+    /// Build correct volume set rendering order
+    fn order_rendered_volume_set(
+        bsp: &bsp::Bsp,
+        visible_set: &mut BTreeMap<bsp::VolumeId, geom::ClipRect>,
+        render_set: &mut Vec<(bsp::VolumeId, geom::ClipRect)>,
+        camera_location: Vec3f
+    ) {
+        match bsp {
+
+            // Handle space partition
+            bsp::Bsp::Partition {
+                splitter_plane,
+                front,
+                back
+            } => {
+                let (first, second) = match splitter_plane.get_point_relation(camera_location) {
+                    geom::PointRelation::Front | geom::PointRelation::OnPlane => (back, front),
+                    geom::PointRelation::Back => (front, back)
+                };
+
+                Self::order_rendered_volume_set(
+                    first,
+                    visible_set,
+                    render_set,
+                    camera_location
+                );
+
+                Self::order_rendered_volume_set(
+                    &second,
+                    visible_set,
+                    render_set,
+                    camera_location
+                );
+            }
+
+            // Move volume to render set if it's visible
+            bsp::Bsp::Volume(id) => {
+                if let Some(clip_rect) = visible_set.remove(id) {
+                    render_set.push((*id, clip_rect));
+                }
+            }
+
+            // Just ignore this case)
+            bsp::Bsp::Void => {}
         }
     }
 
@@ -1060,7 +1051,7 @@ fn main() {
     print!("\n\n\n\n\n\n\n\n");
 
     // Enable/disable map caching
-    let do_cache_maps = true;
+    let do_enable_map_caching = true;
 
     // Synchronize visible-set-building and projection cameras
     let mut do_sync_logical_camera = true;
@@ -1081,7 +1072,7 @@ fn main() {
         let wbsp_path = format!("{}wbsp/{}.wbsp", data_path, map_name);
         let map_path = format!("{}{}.map", data_path, map_name);
 
-        if do_cache_maps {
+        if do_enable_map_caching {
             match std::fs::File::open(&wbsp_path) {
                 Ok(mut bsp_file) => {
                     // Load map from map cache
@@ -1167,10 +1158,9 @@ fn main() {
     let mut camera = Camera::new();
 
     // Set spectial camera location
-    camera.location = Vec3f::new(-174.0, 2114.6, -64.5);
+    camera.location = Vec3f::new(-174.0, 2114.6, -64.5); // -200, 2000, -50
     camera.direction = Vec3f::new(-0.4, 0.9, 0.1);
 
-    // camera.location = Vec3f::new(-200.0, 2000.0, -50.0);
     // camera.location = Vec3f::new(30.0, 40.0, 50.0);
 
     // Camera used for visible set building

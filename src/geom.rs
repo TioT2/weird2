@@ -564,6 +564,110 @@ impl Polygon {
     }
 }
 
+/// Clipping octagon
+#[derive(Copy, Clone, Debug)]
+pub struct ClipOct {
+    pub min_y_s_x: f32,
+    pub max_y_s_x: f32,
+
+    pub min_y: f32,
+    pub max_y: f32,
+
+    pub min_y_a_x: f32,
+    pub max_y_a_x: f32,
+
+    pub min_x: f32,
+    pub max_x: f32,
+}
+
+impl ClipOct {
+    /// Build clipping oct from point XY plane projection coordinates
+    pub fn from_points_xy(points: impl Iterator<Item = Vec3f>) -> Self {
+        let mut min_y_s_x = f32::MAX;
+        let mut max_y_s_x = f32::MIN;
+        let mut min_y = f32::MAX;
+        let mut max_y = f32::MIN;
+        let mut min_y_a_x = f32::MAX;
+        let mut max_y_a_x = f32::MIN;
+        let mut min_x = f32::MAX;
+        let mut max_x = f32::MIN;
+
+        for pt in points {
+            let y_s_x = pt.y - pt.x;
+            let y = pt.y;
+            let y_a_x = pt.y + pt.x;
+            let x = pt.x;
+
+            min_y_s_x = f32::min(min_y_s_x, y_s_x);
+            max_y_s_x = f32::max(max_y_s_x, y_s_x);
+            min_y = f32::min(min_y, y);
+            max_y = f32::max(max_y, y);
+            min_y_a_x = f32::min(min_y_a_x, y_a_x);
+            max_y_a_x = f32::max(max_y_a_x, y_a_x);
+            min_x = f32::min(min_x, x);
+            max_x = f32::max(max_x, x);
+    
+        }
+
+        Self {
+            min_y_s_x, min_y, min_y_a_x: min_y_a_x, min_x,
+            max_y_s_x, max_y, max_y_a_x: max_y_a_x, max_x,
+        }
+    }
+
+    /// Get clipping octahedron union
+    pub fn union(&self, rhs: &Self) -> Self {
+        Self {
+            min_y_s_x: f32::min(self.min_y_s_x, rhs.min_y_s_x),
+            max_y_s_x: f32::max(self.max_y_s_x, rhs.max_y_s_x),
+            min_y: f32::min(self.min_y, rhs.min_y),
+            max_y: f32::max(self.max_y, rhs.max_y),
+            min_y_a_x: f32::min(self.min_y_a_x, rhs.min_y_a_x),
+            max_y_a_x: f32::max(self.max_y_a_x, rhs.max_y_a_x),
+            min_x: f32::min(self.min_x, rhs.min_x),
+            max_x: f32::max(self.max_x, rhs.max_x),
+        }
+    }
+
+    /// Get clipping octahedron intersection
+    pub fn intersection(&self, rhs: &Self) -> Option<Self> {
+        let min_y_s_x = f32::max(self.min_y_s_x, rhs.min_y_s_x);
+        let max_y_s_x = f32::min(self.max_y_s_x, rhs.max_y_s_x);
+        if min_y_s_x > max_y_s_x { return None; }
+
+        let min_y_a_x = f32::max(self.min_y_a_x, rhs.min_y_a_x);
+        let max_y_a_x = f32::min(self.max_y_a_x, rhs.max_y_a_x);
+        if min_y_a_x > max_y_a_x { return None; }
+
+        let min_x = f32::max(self.min_x, rhs.min_x);
+        let max_x = f32::min(self.max_x, rhs.max_x);
+        if min_x > max_x { return None; }
+
+        let min_y = f32::max(self.min_y, rhs.min_y);
+        let max_y = f32::min(self.max_y, rhs.max_y);
+        if min_y > max_y { return None; }
+
+        Some(Self {
+            min_y_s_x, min_y, min_y_a_x: min_y_a_x, min_x,
+            max_y_s_x, max_y, max_y_a_x: max_y_a_x, max_x,
+        })
+    }
+
+    /// Extend clipping octahedron
+    pub fn extend(&self, y_s_x: f32, y: f32, y_a_x: f32, x: f32) -> Self {
+        Self {
+            min_y_s_x: self.min_y_s_x - y_s_x,
+            max_y_s_x: self.max_y_s_x + y_s_x,
+            min_y: self.min_y - y,
+            max_y: self.max_y + y,
+            min_y_a_x: self.min_y_a_x - y_a_x,
+            max_y_a_x: self.max_y_a_x + y_a_x,
+            min_x: self.min_x - x,
+            max_x: self.max_x + x,
+        }
+    }
+}
+
 /// Polygon clipping rectangle
 #[derive(Copy, Clone, Debug)]
 pub struct ClipRect {

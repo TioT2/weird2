@@ -469,6 +469,18 @@ impl Vec3f {
     }
 }
 
+impl Vec3f {
+    /// Get vector component by index
+    pub fn get<const I: u32>(self) -> f32 {
+        match I {
+            0 => self.x,
+            1 => self.y,
+            2 => self.z,
+            _ => panic!("invalid vector component index \"{}\" (expected number in [0, 2] range)", I),
+        }
+    }
+}
+
 pub struct Mat4<T> {
     pub data: [[T; 4]; 4],
 }

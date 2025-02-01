@@ -11,6 +11,8 @@
 use std::{collections::{BTreeMap, BTreeSet, HashMap}, num::NonZeroU32};
 use crate::{geom, math::{Mat3f, Vec3f}, map};
 
+use super::MtlMapAxis;
+
 impl map::Map {
     /// Build physical polygon set
     pub fn build_world_physical_polygons(&self) -> (Vec<PhysicalPolygon>, Vec<String>) {
@@ -39,29 +41,39 @@ impl map::Map {
                             mtlid
                         });
 
-                    (face.plane, mtlid)
+                    (face, mtlid)
                 })
                 .collect::<Vec<_>>();
 
-            for (p1, mtlid) in &planes {
+            for (f1, mtlid) in &planes {
+
                 let mut points = Vec::<Vec3f>::new();
 
-                for (p2, _) in &planes {
-                    if std::ptr::eq(p1, p2) {
+                for (f2, _) in &planes {
+                    if std::ptr::eq(f1, f2) {
                         continue;
                     }
 
-                    for (p3, _) in &planes {
-                        if std::ptr::eq(p1, p3) || std::ptr::eq(p2, p3) {
+                    for (f3, _) in &planes {
+                        if std::ptr::eq(f1, f3) || std::ptr::eq(f2, f3) {
                             continue;
                         }
 
-                        let mat = Mat3f::from_rows(p1.normal, p2.normal, p3.normal);
+                        let mat = Mat3f::from_rows(
+                            f1.plane.normal,
+                            f2.plane.normal,
+                            f3.plane.normal
+                        );
+
                         let inv = match mat.inversed() {
                             Some(m) => m,
                             None => continue,
                         };
-                        let intersection_point = inv * Vec3f::new(p1.distance, p2.distance, p3.distance);
+                        let intersection_point = inv * Vec3f::new(
+                            f1.plane.distance,
+                            f2.plane.distance,
+                            f3.plane.distance,
+                        );
     
                         points.push(intersection_point);
                     }
@@ -71,8 +83,8 @@ impl map::Map {
                     .into_iter()
                     .filter(|point| planes
                         .iter()
-                        .all(|(plane, _)| {
-                            plane.get_point_relation(*point) != geom::PointRelation::Front
+                        .all(|(face, _)| {
+                            face.plane.get_point_relation(*point) != geom::PointRelation::Front
                         })
                     )
                     .collect::<Vec<_>>();
@@ -87,10 +99,20 @@ impl map::Map {
                 // Build physical polygon
                 physical_polygons.push(PhysicalPolygon {
                     polygon: geom::Polygon {
-                        points: geom::sort_points_by_angle(points, p1.normal),
-                        plane: *p1,
+                        points: geom::sort_points_by_angle(points, f1.plane.normal),
+                        plane: f1.plane,
                     },
-                    material_index: *mtlid
+                    material_index: *mtlid,
+                    material_u: MtlMapAxis {
+                        axis: f1.basis_u,
+                        offset: f1.mtl_offset_u,
+                        scale: f1.mtl_scale_u,
+                    },
+                    material_v: MtlMapAxis {
+                        axis: f1.basis_v,
+                        offset: f1.mtl_offset_v,
+                        scale: f1.mtl_scale_v,
+                    },
                 })
             }
         }
@@ -106,6 +128,12 @@ pub struct PhysicalPolygon {
 
     /// All material info (just for debug)
     pub material_index: usize,
+
+    /// Material mapping U axis
+    pub material_u: MtlMapAxis,
+
+    /// Material mapping V axis
+    pub material_v: MtlMapAxis,
 }
 
 /// Reference to another volume
@@ -388,11 +416,15 @@ impl HullVolume {
                                 front_physical_polygons.push(PhysicalPolygon {
                                     polygon: front,
                                     material_index: physical_polygon.material_index,
+                                    material_u: physical_polygon.material_u,
+                                    material_v: physical_polygon.material_v,
                                 });
 
                                 back_physical_polygons.push(PhysicalPolygon {
                                     polygon: back,
                                     material_index: physical_polygon.material_index,
+                                    material_u: physical_polygon.material_u,
+                                    material_v: physical_polygon.material_v,
                                 });
                             }
                             geom::PolygonSplitResult::Coplanar => {
@@ -634,11 +666,15 @@ impl Builder {
                     front_polygons.push(PhysicalPolygon {
                         polygon: front,
                         material_index: physical_polygon.material_index,
+                        material_u: physical_polygon.material_u,
+                        material_v: physical_polygon.material_v,
                     });
 
                     back_polygons.push(PhysicalPolygon {
                         polygon: back,
                         material_index: physical_polygon.material_index,
+                        material_u: physical_polygon.material_u,
+                        material_v: physical_polygon.material_v,
                     });
                 }
             }
@@ -934,8 +970,6 @@ impl Builder {
                 }
             }
         }
-
-        // todo!("Builder.start_resolve_portals function")
     }
 
     /// Build index map based on set of polygons to remove and total set array size
@@ -1192,6 +1226,8 @@ impl Builder {
                             super::Surface {
                                 material_id: super::MaterialId::from_index(physical_polygon.material_index),
                                 polygon_id: super::PolygonId::from_index(polygon_index),
+                                u: physical_polygon.material_u,
+                                v: physical_polygon.material_v,
                             }
                         })
                     );

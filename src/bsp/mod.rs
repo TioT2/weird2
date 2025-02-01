@@ -35,6 +35,26 @@ impl_id!(VolumeId);
 impl_id!(PolygonId);
 impl_id!(MaterialId);
 
+/// Descriptor of UV mapping process
+#[derive(Copy, Clone)]
+pub struct MtlMapAxis {
+    /// Axis itself
+    pub axis: Vec3f,
+
+    /// Offset from point to axis
+    pub offset: f32,
+
+    /// Axis scale
+    pub scale: f32,
+}
+
+impl MtlMapAxis {
+    /// Get coordinate along axis
+    pub fn get_coordinate(&self, point: Vec3f) -> f32 {
+        (point ^ self.axis) * self.scale + self.offset
+    }
+}
+
 /// Visible volume face piece
 pub struct Surface {
     /// Polygon material identifier
@@ -42,6 +62,11 @@ pub struct Surface {
 
     /// Polygon itself identifier
     pub polygon_id: PolygonId,
+
+    /// U texture-mapping axis
+    pub u: MtlMapAxis,
+    /// V texture-mapping axis
+    pub v: MtlMapAxis,
 }
 
 /// Portal (volume-volume connection)
@@ -220,6 +245,71 @@ impl Map {
     /// Get location BSP
     pub fn get_bsp(&self) -> &Bsp {
         &self.bsp
+    }
+
+    /// Test if volume contains point or not
+    pub fn volume_contains_point(&self, id: VolumeId, point: Vec3f) -> Option<bool> {
+        let volume = self.get_volume(id)?;
+
+        for portal in &volume.portals {
+            let mut plane = self.polygon_set[portal.polygon_id.into_index()].plane;
+
+            if !portal.is_facing_front {
+                plane = plane.negate_direction();
+            }
+
+            if plane.get_point_relation(point) == geom::PointRelation::Back {
+                return Some(false);
+            }
+        }
+
+        for surface in &volume.surfaces {
+            let plane = self.polygon_set[surface.polygon_id.into_index()].plane;
+
+            if plane.get_point_relation(point) == geom::PointRelation::Back {
+                return Some(false);
+            }
+        }
+
+        Some(true)
+    }
+
+    /// Remove voids from BSP
+    pub fn _remove_bsp_voids(&mut self) {
+        fn remove_voids(bsp: Bsp) -> Option<Bsp> {
+            match bsp {
+                Bsp::Partition { splitter_plane, front, back } => {
+                    let front = remove_voids(*front);
+                    let back = remove_voids(*back);
+
+                    if let Some(front) = front {
+                        if let Some(back) = back {
+                            Some(Bsp::Partition {
+                                splitter_plane,
+                                front: Box::new(front),
+                                back: Box::new(back)
+                            })
+                        } else {
+                            Some(front)
+                        }
+                    } else {
+                        if let Some(back) = back {
+                            Some(back)
+                        } else {
+                            None
+                        }
+                    }
+                }
+                Bsp::Volume(id) => Some(Bsp::Volume(id)),
+                Bsp::Void => None,
+            }
+        }
+
+        let old_bsp = std::mem::replace(&mut self.bsp, Box::new(Bsp::Void));
+
+        if let Some(bsp) = remove_voids(*old_bsp) {
+            self.bsp = Box::new(bsp);
+        }
     }
 }
 
@@ -519,6 +609,9 @@ impl Map {
                     surfaces.push(Surface {
                         material_id: MaterialId::from_index(surface.material_index as usize),
                         polygon_id: PolygonId::from_index(surface.polygon_index as usize),
+
+                        u: surface.u.into(),
+                        v: surface.v.into(),
                     });
                 }
                 surface_offset += volume.surface_count as usize;
@@ -638,6 +731,8 @@ impl Map {
             .map(|surface| wbsp::Surface {
                 material_index: surface.material_id.into_index() as u32,
                 polygon_index: surface.polygon_id.into_index() as u32,
+                u: surface.u.into(),
+                v: surface.v.into(),
             })
         )?;
 

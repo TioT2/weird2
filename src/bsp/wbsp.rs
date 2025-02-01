@@ -38,6 +38,25 @@ unsafe impl Zeroable for Header {}
 unsafe impl AnyBitPattern for Header {}
 unsafe impl NoUninit for Header {}
 
+/// MtlMapAxis structure pair
+#[repr(C, packed)]
+#[derive(Copy, Clone)]
+pub struct MtlMapAxis {
+    /// Ais
+    pub axis: Vec3,
+
+    /// Offset
+    pub offset: f32,
+
+    /// Scale
+    pub scale: f32,
+}
+
+
+unsafe impl Zeroable for MtlMapAxis {}
+unsafe impl AnyBitPattern for MtlMapAxis {}
+unsafe impl NoUninit for MtlMapAxis {}
+
 /// Visible volume face piece
 #[repr(C, packed)]
 #[derive(Copy, Clone)]
@@ -47,6 +66,32 @@ pub struct Surface {
 
     /// Index of surface polygon in polygon set
     pub polygon_index: u32,
+
+    /// U axis
+    pub u: MtlMapAxis,
+
+    /// V axis
+    pub v: MtlMapAxis,
+}
+
+impl Into<super::MtlMapAxis> for MtlMapAxis {
+    fn into(self) -> super::MtlMapAxis {
+        super::MtlMapAxis {
+            axis: self.axis.into(),
+            offset: self.offset,
+            scale: self.scale,
+        }
+    }
+}
+
+impl From<super::MtlMapAxis> for MtlMapAxis {
+    fn from(value: super::MtlMapAxis) -> Self {
+        Self {
+            axis: value.axis.into(),
+            offset: value.offset,
+            scale: value.scale,
+        }
+    }
 }
 
 unsafe impl Zeroable for Surface {}
@@ -128,6 +173,18 @@ pub struct Vec3 {
 unsafe impl Zeroable for Vec3 {}
 unsafe impl AnyBitPattern for Vec3 {}
 unsafe impl NoUninit for Vec3 {}
+
+impl Into<super::Vec3f> for Vec3 {
+    fn into(self) -> super::Vec3f {
+        super::Vec3f { x: self.x, y: self.y, z: self.z }
+    }
+}
+
+impl From<super::Vec3f> for Vec3 {
+    fn from(value: super::Vec3f) -> Self {
+        Self { x: value.x, y: value.y, z: value.z }
+    }
+}
 
 /// BSP helper structure
 #[repr(C, packed)]

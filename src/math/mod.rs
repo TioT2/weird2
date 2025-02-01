@@ -244,11 +244,27 @@ impl_vecn!(Vec2, x, y);
 impl_vecn!(Vec3, x, y, z);
 impl_vecn!(Vec4, x, y, z, w);
 
+impl_vecn!(Vec5UV, x, y, z, u, v);
+
 impl_extn!(Ext2, w, h);
 impl_extn!(Ext3, w, h, d);
 
 impl_rectn!(Rect, Vec2, Ext2, x, y);
 impl_rectn!(Box, Vec3, Ext3, x, y, z);
+
+pub type Vec5UVf = Vec5UV<f32>;
+
+impl Vec5UVf {
+    pub fn from_32(xyz: Vec3f, uv: Vec2f) -> Self {
+        Self {
+            x: xyz.x,
+            y: xyz.y,
+            z: xyz.z,
+            u: uv.x,
+            v: uv.y,
+        }
+    }
+}
 
 impl Vec3f {
     pub fn checked_normalized(&self) -> Option<Self> {
@@ -462,6 +478,12 @@ pub type Ext2us = Ext2<usize>;
 pub type Mat2f = Mat2<f32>;
 pub type Mat3f = Mat3<f32>;
 pub type Mat4f = Mat4<f32>;
+
+impl Vec2f {
+    pub fn zero() -> Self {
+        Self::new(0.0, 0.0)
+    }
+}
 
 impl Vec3f {
     pub fn zero() -> Self {

@@ -9,8 +9,8 @@
 // WDAT - Data format, contains 'final' project with location BSP's.
 
 use std::collections::{BTreeMap, HashMap};
-use math::{Mat4f, Vec2f, Vec3f};
-use sdl2::keyboard::Scancode;
+use math::{Mat4f, Vec2f, Vec3f, Vec4f};
+use sdl2::{keyboard::Scancode, render};
 
 /// Basic math utility
 #[macro_use]
@@ -303,48 +303,46 @@ struct RenderContext<'t> {
     frame_stride: usize,
 
     /// Rasterization mode
-    do_rasterize_overdraw: bool,
+    rasterization_mode: RasterizationMode,
 
     slow_render_context: Option<SlowRenderContext<'t>>,
 }
 
-impl<'t> RenderContext<'t> {
-    /// Just test rendering function
-    pub fn _test_software_rasterizer(&mut self, time: f32) {
-        let cv = Vec3f::new(
-            self.frame_width as f32 / 2.0,
-            self.frame_height as f32 / 2.0,
-            0.0
-        );
+/// Different rasterization modes
+#[derive(Copy, Clone, PartialEq, Eq)]
+enum RasterizationMode {
+    Standard = 0,
+    Overdraw = 1,
+    Depth = 2,
+    UV = 3,
+}
 
-        let ext_min = usize::min(self.frame_width, self.frame_height);
+impl RasterizationMode {
+    // Rasterization mode count
+    const COUNT: u32 = 4;
 
-        let ev = Vec3f::new(
-            ext_min as f32 / 4.0,
-            ext_min as f32 / 4.0,
-            0.1
-        );
-
-        let rotm = math::Mat4f::rotate_z(time / 4.0);
-
-        let set1 = [
-            Vec3f::new(-1.0, -1.0, 0.0),
-            Vec3f::new(-1.0,  1.0, 0.0),
-            Vec3f::new( 1.0, -1.0, 0.0),
-        ];
-
-        let set2 = [
-            Vec3f::new(-1.0,  1.0, 0.0),
-            Vec3f::new( 1.0,  1.0, 0.0),
-            Vec3f::new( 1.0, -1.0, 0.0),
-        ];
-
-        unsafe {
-            self.render_clipped_polygon::<false>(&set1.map(|v| rotm.transform_vector(v) * ev + cv), 0xFF0000);
-            self.render_clipped_polygon::<false>(&set2.map(|v| rotm.transform_vector(v) * ev + cv), 0x0000FF);
-        }
+    /// Build rasterization mode from u32
+    pub const fn from_u32(n: u32) -> Option<RasterizationMode> {
+        Some(match n {
+            0 => RasterizationMode::Standard,
+            1 => RasterizationMode::Overdraw,
+            2 => RasterizationMode::Depth,
+            3 => RasterizationMode::UV,
+            _ => return None,
+        })
     }
 
+    pub const fn next(self) -> RasterizationMode {
+        Self::from_u32((self as u32 + 1) % Self::COUNT).unwrap()
+    }
+
+    /// Build rasterization mode from u32
+    pub const fn into_u32(self) -> u32 {
+        self as u32
+    }
+}
+
+impl<'t> RenderContext<'t> {
     fn clip_viewspace_back(&self, points: &mut Vec<Vec3f>, result: &mut Vec<Vec3f>) {
         for index in 0..points.len() {
             let curr = points[index];
@@ -454,85 +452,41 @@ impl<'t> RenderContext<'t> {
         }
     }
 
-    /// Draw line.
-    unsafe fn _render_clipped_line(&mut self, mut begin: Vec2f, mut end: Vec2f, color: u32) {
-        let mut dy = end.y - begin.y;
-        let mut dx = end.x - begin.x;
+    /// Project polygon on screen
+    pub fn get_screenspace_polygon(&self, points: &mut Vec<Vec3f>, point_dst: &mut Vec<Vec3f>) {
+        // Calculate projection-space points
+        point_dst.clear();
+        for pt in points.iter() {
+            point_dst.push(self.view_projection_matrix.transform_point(*pt));
+        }
+        std::mem::swap(points, point_dst);
 
-        if dy.abs() < dx.abs() {
-            if dx < 0.0 {
-                dx = -dx;
-                dy = -dy;
-                std::mem::swap(&mut begin, &mut end);
-            }
+        // Clip polygon invisible part
+        point_dst.clear();
+        self.clip_viewspace_back(points, point_dst);
+        std::mem::swap(points, point_dst);
 
-            let mut yi = 1.0;
+        // Calculate screen-space points
+        let width = self.frame_width as f32 * 0.5;
+        let height = self.frame_height as f32 * 0.5;
 
-            if dy < 0.0 {
-                yi = -1.0;
-                dy = -dy;
-            }
-
-            let mut d = 2.0 * dy - dx;
-
-            let mut y = begin.y;
-
-            let x0 = begin.x.round() as usize;
-            let x1 = end.x.round() as usize;
-
-            for xc in x0..=x1 {
-                let yc = y.round() as usize;
-
-                unsafe {
-                    *self.frame_pixels.add(yc * self.frame_stride + xc) = color;
-                }
-
-                if d > 0.0 {
-                    y += yi;
-                    d += 2.0 * (dy - dx);
-                } else {
-                    d += 2.0 * dy;
-                }
-            }
-        } else {
-            if dy < 0.0 {
-                dx = -dx;
-                dy = -dy;
-                std::mem::swap(&mut begin, &mut end);
-            }
-
-            let mut xi = 1.0;
-
-            if dx < 0.0 {
-                xi = -1.0;
-                dx = -dx;
-            }
-
-            let mut d = 2.0 * dx - dy;
-
-            let mut x = begin.x;
-
-            let y0 = usize::min(begin.y.round() as usize, self.frame_height - 1);
-            let y1 = usize::min(end.y.round() as usize, self.frame_height - 1);
-
-            for yc in y0..=y1 {
-                let xc = x.round() as usize;
-
-                unsafe {
-                    *self.frame_pixels.add(yc * self.frame_stride + xc) = color;
-                }
-
-                if d > 0.0 {
-                    x += xi;
-                    d += 2.0 * (dx - dy);
-                } else {
-                    d += 2.0 * dx;
-                }
-            }
+        point_dst.clear();
+        for v in points.iter() {
+            point_dst.push(Vec3f::new(
+                (1.0 + v.x / v.z) * width,
+                (1.0 - v.y / v.z) * height,
+                1.0 / v.z
+            ));
         }
     }
 
-    unsafe fn render_clipped_polygon<const RENDER_OVERDRAW: bool>(&mut self, points: &[Vec3f], color: u32) {
+    /// Rasterize already clipped polygon
+    unsafe fn render_clipped_polygon<const MODE: u32>(
+        &mut self,
+        points: &[Vec3f],
+        color: u32,
+    ) {
+
         /// Index forward by point list
         macro_rules! ind_prev {
             ($index: expr) => {
@@ -573,27 +527,38 @@ impl<'t> RenderContext<'t> {
         };
 
         /// Epsilon for dy value
-        const DY_EPSILON: f32 = 0.001;
+        const DY_EPSILON: f32 = 0.01;
 
         // Calculate polygon bounds
         let first_line = usize::min(min_y_value.floor() as usize, self.frame_height - 1);
         let last_line = usize::min(max_y_value.ceil() as usize, self.frame_height);
 
+        // // Calculate vector UV
+        // let get_screen_linear_uv = |proj_vec: Vec3f| -> Vec2f {
+        //     Vec2f::new(
+        //         proj_vec.x * axis_u.x + proj_vec.y * axis_u.y + axis_u.z,
+        //         proj_vec.x * axis_v.x + proj_vec.y * axis_v.y + axis_v.z,
+        //     )
+        // };
+
         let mut left_index = ind_next!(min_y_index);
         let mut left_prev = points[min_y_index];
         let mut left_curr = points[left_index];
+
         let mut left_inv_slope = (left_curr.x - left_prev.x) / (left_curr.y - left_prev.y);
+        let mut left_inv_z_slope = (left_curr.z - left_prev.z) / (left_curr.y - left_prev.y);
 
         let mut right_index = ind_prev!(min_y_index);
         let mut right_prev = points[min_y_index];
         let mut right_curr = points[right_index];
-        let mut right_inv_slope = (right_curr.x - right_prev.x) / (right_curr.y - right_prev.y);
 
+        let mut right_inv_slope = (right_curr.x - right_prev.x) / (right_curr.y - right_prev.y);
+        let mut right_inv_z_slope = (right_curr.z - right_prev.z) / (right_curr.y - right_prev.y);
 
         // Scan for lines
-        'line_loop: for line in first_line..last_line {
+        'line_loop: for pixel_y in first_line..last_line {
             // Get current pixel y
-            let y = line as f32 + 0.5;
+            let y = pixel_y as f32 + 0.5;
 
             while y > left_curr.y {
                 if left_index == max_y_index {
@@ -601,7 +566,9 @@ impl<'t> RenderContext<'t> {
                 }
 
                 left_index = ind_next!(left_index);
+
                 left_prev = left_curr;
+
                 left_curr = points[left_index];
 
                 let left_dy = left_curr.y - left_prev.y;
@@ -609,8 +576,10 @@ impl<'t> RenderContext<'t> {
                 // Check if edge is flat
                 if left_dy <= DY_EPSILON {
                     left_inv_slope = 0.0;
+                    left_inv_z_slope = 0.0;
                 } else {
                     left_inv_slope = (left_curr.x - left_prev.x) / left_dy;
+                    left_inv_z_slope = (left_curr.z - left_prev.z) / left_dy;
                 }
             }
 
@@ -620,7 +589,9 @@ impl<'t> RenderContext<'t> {
                 }
 
                 right_index = ind_prev!(right_index);
+
                 right_prev = right_curr;
+
                 right_curr = points[right_index];
 
                 let right_dy = right_curr.y - right_prev.y;
@@ -628,8 +599,10 @@ impl<'t> RenderContext<'t> {
                 // Check if edge is flat
                 if right_dy <= DY_EPSILON {
                     right_inv_slope = 0.0;
+                    right_inv_z_slope = 0.0;
                 } else {
                     right_inv_slope = (right_curr.x - right_prev.x) / right_dy;
+                    right_inv_z_slope = (right_curr.z - right_prev.z) / right_dy;
                 }
             }
 
@@ -639,59 +612,70 @@ impl<'t> RenderContext<'t> {
             // Calculate intersection with right edge
             let right_x = right_prev.x + (y - right_prev.y) * right_inv_slope;
 
+            // Left X coordinate
+            let left_z = left_prev.z + (y - left_prev.y) * left_inv_z_slope;
+
+            // Right X coordinate
+            let right_z = right_prev.z + (y - right_prev.y) * right_inv_z_slope;
+
             // Calculate hline start/end, clip it
             let start = usize::min(left_x.floor() as usize, self.frame_width - 1);
             let end = usize::min(right_x.floor() as usize, self.frame_width - 1);
 
-            let pixel_start = self.frame_pixels.add(self.frame_stride * line + start);
-            let pixel_end = self.frame_pixels.add(self.frame_stride * line + end);
+            let pixel_row = self.frame_pixels.add(self.frame_stride * pixel_y);
 
-            let mut pixel_ptr = pixel_start;
+            let dx = right_x - left_x;
 
-            while pixel_ptr < pixel_end {
-                if RENDER_OVERDRAW {
-                    *pixel_ptr = 0x101010u32.wrapping_add(*pixel_ptr);
-                } else {
+            let slope_z_x = if dx <= DY_EPSILON {
+                0.0
+            } else {
+                (right_z - left_z) / (right_x - left_x)
+            };
+
+            for pixel_x in start..end {
+                let z = left_z + (pixel_x - start) as f32 * slope_z_x;
+                let pixel_ptr = pixel_row.add(pixel_x);
+
+                if MODE == RasterizationMode::Standard as u32 {
                     *pixel_ptr = color;
+                } else if MODE == RasterizationMode::Overdraw as u32 {
+                    *pixel_ptr = 0x101010u32.wrapping_add(*pixel_ptr);
+                } else if MODE == RasterizationMode::Depth as u32 {
+                    let color = (z * 25500.0) as u8;
+                    *pixel_ptr = u32::from_le_bytes([color, color, color, color]);
+                } else if MODE == RasterizationMode::UV as u32 {
+                    let color = (z * 25500.0) as u8;
+                    *pixel_ptr = u32::from_le_bytes([color, color, 0, 0]);
+                } else {
+                    panic!("Unknown rasterization mode: {}", MODE);
                 }
-                pixel_ptr = pixel_ptr.add(1);
             }
-        }
-    }
 
-    /// Project polygon on screen
-    pub fn get_screenspace_polygon(&self, points: &mut Vec<Vec3f>, point_dst: &mut Vec<Vec3f>) {
-        // Calculate projection-space points
-        point_dst.clear();
-        for pt in points.iter() {
-            point_dst.push(self.view_projection_matrix.transform_point(*pt));
-        }
-        std::mem::swap(points, point_dst);
-
-        // Clip polygon invisible part
-        point_dst.clear();
-        self.clip_viewspace_back(points, point_dst);
-        std::mem::swap(points, point_dst);
-
-        // Calculate screen-space points
-        let width = self.frame_width as f32 * 0.5;
-        let height = self.frame_height as f32 * 0.5;
-
-        point_dst.clear();
-        for v in points.iter() {
-            // Use float-point reciporal
-            // let inv_z = v.z.recip();
-
-            point_dst.push(Vec3f::new(
-                (1.0 + v.x / v.z) * width,
-                (1.0 - v.y / v.z) * height,
-                1.0 / v.z
-            ));
+            // let pixel_start = self.frame_pixels.add(self.frame_stride * pixel_y + start);
+            // let pixel_end = self.frame_pixels.add(self.frame_stride * pixel_y + end);
+            // let mut pixel_ptr = pixel_start;
+            // while pixel_ptr < pixel_end {
+            //     if RENDER_OVERDRAW {
+            //         *pixel_ptr = 0x101010u32.wrapping_add(*pixel_ptr);
+            //     } else {
+            //         *pixel_ptr = color;
+            //     }
+            //     pixel_ptr = pixel_ptr.add(1);
+            // }
         }
     }
 
     /// Render polygon
-    fn render_polygon(&mut self, polygon: &geom::Polygon, color: [u8; 3], clip_rect: geom::ClipRect) {
+    fn render_polygon(
+        &mut self,
+        polygon: &geom::Polygon,
+        axis_u: Vec3f,
+        u_offset: f32,
+        axis_v: Vec3f,
+        v_offset: f32,
+        color: [u8; 3],
+        clip_rect: geom::ClipRect
+    ) {
         // Calculate polygon point set
         let mut points = polygon.points.clone();
         let mut point_dst = Vec::with_capacity(polygon.points.len());
@@ -700,7 +684,7 @@ impl<'t> RenderContext<'t> {
         self.get_screenspace_polygon(&mut points, &mut point_dst);
         std::mem::swap(&mut points, &mut point_dst);
 
-        // Clip polygon by screen buffer
+        // Clip polygon by volume clipping rectangle
         point_dst.clear();
         self.clip_polygon_rect(&mut points, &mut point_dst, clip_rect);
         std::mem::swap(&mut points, &mut point_dst);
@@ -709,16 +693,6 @@ impl<'t> RenderContext<'t> {
         for pt in &points {
             if !pt.x.is_finite() || !pt.y.is_finite() {
                 return;
-            }
-        }
-
-        for pt in &points {
-            if pt.x >= self.frame_width as f32 || pt.x <= 0.0 {
-                eprintln!("X error");
-            }
-
-            if pt.y >= self.frame_height as f32 || pt.y <= 0.0 {
-                eprintln!("Y error");
             }
         }
 
@@ -731,11 +705,13 @@ impl<'t> RenderContext<'t> {
         let color_u32 = u32::from_le_bytes([color[0], color[1], color[2], 0]);
 
         // Rasterize polygon
+
         unsafe {
-            if self.do_rasterize_overdraw {
-                self.render_clipped_polygon::<true>(&points, color_u32);
-            } else {
-                self.render_clipped_polygon::<false>(&points, color_u32);
+            match self.rasterization_mode {
+                RasterizationMode::Standard => self.render_clipped_polygon::<0>(&points, color_u32),
+                RasterizationMode::Overdraw => self.render_clipped_polygon::<1>(&points, color_u32),
+                RasterizationMode::Depth    => self.render_clipped_polygon::<2>(&points, color_u32),
+                RasterizationMode::UV       => self.render_clipped_polygon::<3>(&points, color_u32),
             }
         }
     }
@@ -802,7 +778,15 @@ impl<'t> RenderContext<'t> {
                 (color.b as f32 * light) as u8,
             ];
 
-            self.render_polygon(&polygon, color, clip_rect);
+            self.render_polygon(
+                &polygon,
+                surface.u.axis * surface.u.scale,
+                surface.u.offset,
+                surface.v.axis * surface.u.scale,
+                surface.v.offset,
+                color,
+                clip_rect
+            );
         }
     }
 
@@ -1089,7 +1073,7 @@ fn main() {
     let mut do_sync_logical_camera = true;
 
     // Enable rendering with synchronization after some portion of frame pixels renderend
-    let mut do_enable_overdraw_rendering = false;
+    let mut rasterization_mode = RasterizationMode::Standard;
 
     // Enable delay and sync between volumes rendering
     let mut do_enable_slow_rendering = false;
@@ -1130,8 +1114,9 @@ fn main() {
             let q1_location_map = map::q1::Map::parse(&source).unwrap();
             let location_map = q1_location_map.build_wmap();
             bsp::builder::build(&location_map)
-}
+        }
     };
+
     let material_table = MaterialTable::for_bsp(&map);
     
     struct BspStatBuilder {
@@ -1239,7 +1224,7 @@ fn main() {
         }
 
         if input.is_key_clicked(Scancode::Num0) {
-            do_enable_overdraw_rendering = !do_enable_overdraw_rendering;
+            rasterization_mode = rasterization_mode.next();
         }
 
         if do_sync_logical_camera {
@@ -1252,7 +1237,7 @@ fn main() {
                 timer.get_fps(),
                 do_enable_slow_rendering as u32,
                 do_sync_logical_camera as u32,
-                do_enable_overdraw_rendering as u32,
+                rasterization_mode as u32,
             );
         }
 
@@ -1355,7 +1340,7 @@ fn main() {
             frame_height: frame_height,
             frame_stride: frame_width,
 
-            do_rasterize_overdraw: do_enable_overdraw_rendering,
+            rasterization_mode,
             slow_render_context: if do_enable_slow_rendering {
                 Some(SlowRenderContext {
                     delta_time: std::time::Duration::from_millis(50),
@@ -1383,8 +1368,8 @@ fn main() {
             .get_bsp()
             .traverse(logical_camera.location);
 
-        if let Some(start_volume_index) = start_volume_index_opt {
-            render_context.render(start_volume_index);
+        if let Some(start_volume_id) = start_volume_index_opt {
+            render_context.render(start_volume_id);
         } else {
             render_context.render_all();
         }

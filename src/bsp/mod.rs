@@ -105,7 +105,7 @@ impl Into<u32> for Rgb8 {
     }
 }
 
-/// Binary Space Partition, used during 
+/// Binary Space Partition, used during
 pub enum Bsp {
     /// Space partition
     Partition {
@@ -158,7 +158,7 @@ impl Bsp {
 
 /// Map
 pub struct Map {
-    /// Map BSP. Actually, empty map *may not* contain any volumes, so BSP is an option.
+    /// Map (visible) BSP.
     bsp: Box<Bsp>,
 
     /// Set of map polygons
@@ -229,6 +229,9 @@ pub enum MapLoadingError {
     /// Input/Output error
     IoError(std::io::Error),
 
+    /// Error during building string from UTF-8 byte array
+    StringFromUtf8Error(std::string::FromUtf8Error),
+
     /// Invalid magic value
     InvalidMagic(u32),
 
@@ -238,12 +241,17 @@ pub enum MapLoadingError {
         polygon_length_sum: u32,
     },
 
-    VolumePortalsLengthsSumMoreThanVolumePortalCount {
+    ShortMaterialNameByteSet {
+        name_length_sum: u32,
+        name_bytes_count: u32,
+    },
+
+    ShortVolumePortalSet {
         volume_portal_length_sum: u32,
         volume_portal_count: u32,
     },
 
-    VolumeSurfaceLengthsSumMoreThanVolumeSurfaceCount {
+    ShortVolumeSurfaceSet {
         volume_surface_length_sum: u32,
         volume_surface_count: u32,
     },
@@ -315,7 +323,8 @@ impl Map {
 
         let polygon_lengths = read_vec::<u32>(src, header.polygon_length_count)?;
         let polygon_points = read_vec::<wbsp::Vec3>(src, header.polygon_point_count)?;
-        let materials = read_vec::<wbsp::Material>(src, header.material_count)?;
+        let material_name_lengths = read_vec::<u32>(src, header.material_name_length_count)?;
+        let material_name_bytes = read_vec::<u8>(src, header.material_name_chars_length)?;
         let volume_portals = read_vec::<wbsp::Portal>(src, header.volume_portal_count)?;
         let volume_surfaces = read_vec::<wbsp::Surface>(src, header.volume_surface_count)?;
         let volumes = read_vec::<wbsp::Volume>(src, header.volume_count)?;
@@ -408,10 +417,29 @@ impl Map {
         };
 
         let material_name_set = {
-            materials
+            let length_sum = material_name_lengths.iter().sum();
+
+            if length_sum as usize > material_name_bytes.len() {
+                return Err(MapLoadingError::ShortMaterialNameByteSet {
+                    name_length_sum: length_sum,
+                    name_bytes_count: material_name_bytes.len() as u32
+                });
+            }
+
+            let mut material_name_bytes_rest = material_name_bytes.as_slice();
+
+            material_name_lengths
                 .iter()
-                .map(|_| "default".to_string())
-                .collect::<Vec<_>>()
+                .map(|len| {
+                    let bytes;
+                    (bytes, material_name_bytes_rest) =
+                        material_name_bytes_rest.split_at(*len as usize);
+
+                    String::from_utf8(bytes.to_vec())
+                })
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(MapLoadingError::StringFromUtf8Error)
+                ?
         };
 
         let volume_set = {
@@ -422,7 +450,7 @@ impl Map {
                 .sum::<u32>();
 
             if volume_portal_length_sum > header.volume_portal_count {
-                return Err(MapLoadingError::VolumePortalsLengthsSumMoreThanVolumePortalCount {
+                return Err(MapLoadingError::ShortVolumePortalSet {
                     volume_portal_length_sum,
                     volume_portal_count: header.volume_portal_count
                 });
@@ -434,7 +462,7 @@ impl Map {
                 .sum::<u32>();
 
             if volume_surface_length_sum > header.volume_surface_count {
-                return Err(MapLoadingError::VolumeSurfaceLengthsSumMoreThanVolumeSurfaceCount {
+                return Err(MapLoadingError::ShortVolumeSurfaceSet {
                     volume_surface_length_sum,
                     volume_surface_count: header.volume_surface_count
                 });
@@ -474,9 +502,9 @@ impl Map {
 
                 for surface in &volume_surfaces[surface_offset..surface_offset + volume.surface_count as usize] {
                     // Validate material index
-                    if surface.material_index >= header.material_count {
+                    if surface.material_index >= header.material_name_length_count {
                         return Err(MapLoadingError::InvalidMaterialIndex {
-                            material_count: header.material_count,
+                            material_count: header.material_name_length_count,
                             material_index: surface.material_index,
                         });
                     }
@@ -521,7 +549,12 @@ impl Map {
                 .iter()
                 .map(|polygon| polygon.points.len() as u32)
                 .sum(),
-            material_count: self.material_name_set.len() as u32,
+            material_name_chars_length: self
+                .material_name_set
+                .iter()
+                .map(|name| name.len() as u32)
+                .sum(),
+            material_name_length_count: self.material_name_set.len() as u32,
             volume_portal_count: self.volume_set
                 .iter()
                 .map(|volume| volume.get_portals().len() as u32)
@@ -569,11 +602,20 @@ impl Map {
             })
         )?;
 
-        // Write materials
+
+        // Write material name lengths
         write_by_iter(dst, self
             .material_name_set
             .iter()
-            .map(|_| wbsp::Material { color: 0xFFFFFFFF }) // Fix material properties
+            .map(|name| name.len() as u32)
+        )?;
+
+        // Write material name bytes
+        // TODO: UUGH, it's TOO slow
+        write_by_iter(dst, self
+            .material_name_set
+            .iter()
+            .flat_map(|name| name.as_bytes().iter().copied())
         )?;
 
         // Write volume portals

@@ -9,13 +9,11 @@
 */
 
 use std::{collections::{BTreeMap, BTreeSet, HashMap}, num::NonZeroU32};
-use crate::{geom, math::{Mat3f, Vec3f}, rand, map};
+use crate::{geom, math::{Mat3f, Vec3f}, map};
 
-impl map::q1::Map {
+impl map::Map {
     /// Build physical polygon set
-    pub fn build_world_physical_polygons(&self) -> (Vec<PhysicalPolygon>, Vec<Material>) {
-        let mut randomizer = rand::Xorshift128p::new(304780.try_into().unwrap());
-
+    pub fn build_world_physical_polygons(&self) -> (Vec<PhysicalPolygon>, Vec<String>) {
         // 'material -> physical polygon color' table
         let mut texture_mtlid_talbe = HashMap::<String, usize>::new();
 
@@ -24,28 +22,24 @@ impl map::q1::Map {
         };
 
         let mut physical_polygons = Vec::<PhysicalPolygon>::new();
-        let mut materials = Vec::<Material>::new();
+        let mut materials = Vec::<String>::new();
 
         for brush in &worldspawn.brushes {
             let planes = brush.faces
                 .iter()
                 .map(|face| {
                     let mtlid = texture_mtlid_talbe
-                        .get(&face.texture_name)
+                        .get(&face.mtl_name)
                         .copied()
                         .unwrap_or_else(|| {
                             let mtlid = materials.len();
-
-                            texture_mtlid_talbe.insert(face.texture_name.clone(), mtlid);
-
-                            materials.push(Material {
-                                color: (randomizer.next() & 0xFFFFFFFF) as u32,
-                            });
+                            texture_mtlid_talbe.insert(face.mtl_name.clone(), mtlid);
+                            materials.push(face.mtl_name.clone());
 
                             mtlid
                         });
 
-                    (geom::Plane::from_points(face.p1, face.p0, face.p2), mtlid)
+                    (face.plane, mtlid)
                 })
                 .collect::<Vec<_>>();
 
@@ -484,18 +478,13 @@ pub struct SplitTaskPolygon {
     pub polygon: geom::Polygon,
 }
 
-/// Simple material description
-pub struct Material {
-    pub color: u32,
-}
-
 /// Map builder structure
 pub struct Builder {
     /// Final volumes
     pub volumes: Vec<HullVolume>,
 
     /// Material set
-    pub materials: Vec<Material>,
+    pub materials_names: Vec<String>,
 
     /// Split infos
     pub split_infos: Vec<SplitInfo>,
@@ -511,7 +500,7 @@ impl Builder {
     pub fn new() -> Self {
         Self {
             volumes: Vec::new(),
-            materials: Vec::new(),
+            materials_names: Vec::new(),
             split_infos: Vec::new(),
             portal_polygons: Vec::new(),
             volume_bsp: None,
@@ -1222,23 +1211,17 @@ impl Builder {
             })
             .collect::<Vec<_>>();
 
-        // TODO: Fix material set building
-        let material_set = self.materials
-            .into_iter()
-            .map(|_| { "".to_string() })
-            .collect::<Vec<_>>();
-
-        super::Map::new(bsp, polygon_set, material_set, volume_set)
+        super::Map::new(bsp, polygon_set, self.materials_names, volume_set)
     }
 }
 
 /// Builder
-pub fn build(map: &map::q1::Map) -> super::Map {
+pub fn build(map: &map::Map) -> super::Map {
     let mut builder = Builder::new();
 
     let physical_polygons;
 
-    (physical_polygons, builder.materials) = map.build_world_physical_polygons();
+    (physical_polygons, builder.materials_names) = map.build_world_physical_polygons();
 
     // Build volumes & volume BSP
     builder.start_build_volumes(physical_polygons);

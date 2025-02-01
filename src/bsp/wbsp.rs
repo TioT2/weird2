@@ -2,7 +2,7 @@
 
 use bytemuck::{AnyBitPattern, NoUninit, Zeroable};
 
-/// Magic number
+/// .WBSP file Magic number
 pub const MAGIC: u32 = u32::from_le_bytes(*b"WBSP");
 
 #[derive(Copy, Clone)]
@@ -18,7 +18,10 @@ pub struct Header {
     pub polygon_point_count: u32,
 
     /// Count of polygons
-    pub material_count: u32,
+    pub material_name_length_count: u32,
+
+    /// Length of material string set
+    pub material_name_chars_length: u32,
 
     /// Surface count
     pub volume_surface_count: u32,
@@ -81,18 +84,6 @@ pub struct Volume {
 unsafe impl Zeroable for Volume {}
 unsafe impl AnyBitPattern for Volume {}
 unsafe impl NoUninit for Volume {}
-
-/// Material
-#[repr(C, packed)]
-#[derive(Copy, Clone)]
-pub struct Material {
-    /// Material color
-    pub color: u32,
-}
-
-unsafe impl Zeroable for Material {}
-unsafe impl AnyBitPattern for Material {}
-unsafe impl NoUninit for Material {}
 
 /// BSP entry type
 #[repr(C)]

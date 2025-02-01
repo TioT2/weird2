@@ -1083,7 +1083,7 @@ fn main() {
     print!("\n\n\n\n\n\n\n\n");
 
     // Enable/disable map caching
-    let do_enable_map_caching = false;
+    let do_enable_map_caching = true;
 
     // Synchronize visible-set-building and projection cameras
     let mut do_sync_logical_camera = true;
@@ -1113,7 +1113,8 @@ fn main() {
                 Err(_) => {
                     // Compile map
                     let source = std::fs::read_to_string(&map_path).unwrap();
-                    let location_map = map::q1::Map::parse(&source).unwrap();
+                    let q1_location_map = map::q1::Map::parse(&source).unwrap();
+                    let location_map = q1_location_map.build_wmap();
                     let compiled_map = bsp::builder::build(&location_map);
 
                     // Save map to map cache
@@ -1126,9 +1127,10 @@ fn main() {
             }
         } else {
             let source = std::fs::read_to_string(&map_path).unwrap();
-            let location_map = map::q1::Map::parse(&source).unwrap();
+            let q1_location_map = map::q1::Map::parse(&source).unwrap();
+            let location_map = q1_location_map.build_wmap();
             bsp::builder::build(&location_map)
-        }
+}
     };
     let material_table = MaterialTable::for_bsp(&map);
     

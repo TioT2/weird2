@@ -322,55 +322,6 @@ impl Map {
         return Ok(Map { entities });
     }
 
-    /// Find entity by property
-    pub fn find_entity(&self, key: &str, value: Option<&str>) -> Option<&MapEntity> {
-        if let Some(value) = value {
-            for entity in &self.entities {
-                if let Some(actual_value) = entity.properties.get(key) {
-                    if actual_value == value {
-                        return Some(entity);
-                    }
-                }
-            }
-        } else {
-            for entity in &self.entities {
-                if entity.properties.get(key).is_some() {
-                    return Some(entity);
-                }
-            }
-        }
-
-        return None;
-    }
-
-    /// Extract all 'origin' properties from map
-    /// (this function is used in invisible volume removal pass)
-    pub fn get_all_origins(&self) -> Vec<Vec3f> {
-        self
-            .entities
-            .iter()
-
-            // Map entities to their 'origin' properties
-            .filter_map(|entity| entity.properties.get("origin"))
-
-            // Parse origin property values into vectors
-            .filter_map(|origin| {
-                let flt_arr = origin
-                    .split_whitespace()
-                    .map(|str| str.parse::<f32>())
-                    .collect::<Result<Vec<_>, _>>()
-                    .ok()
-                    ?;
-
-                Some(Vec3f::new(
-                    *flt_arr.get(0)?,
-                    *flt_arr.get(1)?,
-                    *flt_arr.get(2)?,
-                ))
-            })
-            .collect::<Vec<_>>()
-    }
-
     /// Build Q1 map into WMAP format
     pub fn build_wmap(&self) -> super::Map {
         let mut entities = Vec::<super::Entity>::new();

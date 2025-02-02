@@ -18,22 +18,10 @@ pub struct BrushFace {
     pub plane: geom::Plane,
 
     /// U texture axis
-    pub basis_u: Vec3f,
+    pub u: geom::Plane,
 
     /// V texture axis
-    pub basis_v: Vec3f,
-
-    /// U offset (in texels)
-    pub mtl_offset_u: f32,
-
-    /// V offset (in texels)
-    pub mtl_offset_v: f32,
-
-    /// U scale
-    pub mtl_scale_u: f32,
-
-    /// V scale
-    pub mtl_scale_v: f32,
+    pub v: geom::Plane,
 
     /// Index of material in map material table
     pub mtl_name: String,

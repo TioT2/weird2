@@ -2,6 +2,8 @@
 
 use bytemuck::{AnyBitPattern, NoUninit, Zeroable};
 
+use crate::geom;
+
 /// .WBSP file Magic number
 pub const MAGIC: u32 = u32::from_le_bytes(*b"WBSP");
 
@@ -38,24 +40,16 @@ unsafe impl Zeroable for Header {}
 unsafe impl AnyBitPattern for Header {}
 unsafe impl NoUninit for Header {}
 
-/// MtlMapAxis structure pair
 #[repr(C, packed)]
 #[derive(Copy, Clone)]
-pub struct MtlMapAxis {
-    /// Ais
-    pub axis: Vec3,
-
-    /// Offset
-    pub offset: f32,
-
-    /// Scale
-    pub scale: f32,
+pub struct Plane {
+    pub normal: Vec3,
+    pub distance: f32,
 }
 
-
-unsafe impl Zeroable for MtlMapAxis {}
-unsafe impl AnyBitPattern for MtlMapAxis {}
-unsafe impl NoUninit for MtlMapAxis {}
+unsafe impl Zeroable for Plane {}
+unsafe impl AnyBitPattern for Plane {}
+unsafe impl NoUninit for Plane {}
 
 /// Visible volume face piece
 #[repr(C, packed)]
@@ -68,29 +62,21 @@ pub struct Surface {
     pub polygon_index: u32,
 
     /// U axis
-    pub u: MtlMapAxis,
+    pub u: Plane,
 
     /// V axis
-    pub v: MtlMapAxis,
+    pub v: Plane,
 }
 
-impl Into<super::MtlMapAxis> for MtlMapAxis {
-    fn into(self) -> super::MtlMapAxis {
-        super::MtlMapAxis {
-            axis: self.axis.into(),
-            offset: self.offset,
-            scale: self.scale,
-        }
+impl Into<geom::Plane> for Plane {
+    fn into(self) -> geom::Plane {
+        geom::Plane { distance: self.distance, normal: self.normal.into() }
     }
 }
 
-impl From<super::MtlMapAxis> for MtlMapAxis {
-    fn from(value: super::MtlMapAxis) -> Self {
-        Self {
-            axis: value.axis.into(),
-            offset: value.offset,
-            scale: value.scale,
-        }
+impl From<geom::Plane> for Plane {
+    fn from(value: geom::Plane) -> Self {
+        Self { distance: value.distance, normal: value.normal.into() }
     }
 }
 

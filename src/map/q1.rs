@@ -1,7 +1,7 @@
 ///! Quake 1 map format support
 
 use std::collections::HashMap;
-use crate::{geom, math::Vec3f};
+use crate::{geom, math::{Mat4f, Vec3f}};
 
 /// Q1 .map brush face binary representation
 #[derive(Clone, Debug)]
@@ -334,14 +334,22 @@ impl Map {
                 let mut faces = Vec::<super::BrushFace>::new();
 
                 for face in &brush.faces {
+                    let u = (face.p0 - face.p1).normalized();
+                    let v = (face.p2 - face.p1).normalized();
+
+                    let axis = (u % v).normalized();
+                    let rot_matr = Mat4f::rotate(face.texture_rotation.to_radians(), axis);
+
                     faces.push(super::BrushFace {
                         plane: geom::Plane::from_points(face.p1, face.p0, face.p2),
-                        basis_u: face.p0 - face.p1,
-                        basis_v: face.p2 - face.p1,
-                        mtl_offset_u: face.texture_offset_x,
-                        mtl_offset_v: face.texture_offset_y,
-                        mtl_scale_u: face.texture_scale_x,
-                        mtl_scale_v: face.texture_scale_y,
+                        u: geom::Plane {
+                            normal: rot_matr.transform_vector(u).normalized() * face.texture_scale_x,
+                            distance: face.texture_offset_x,
+                        },
+                        v: geom::Plane {
+                            normal: rot_matr.transform_vector(v).normalized() * face.texture_scale_y,
+                            distance: face.texture_offset_y,
+                        },
                         mtl_name: face.texture_name.clone(),
                     });
                 }

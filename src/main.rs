@@ -9,8 +9,8 @@
 // WDAT - Data format, contains 'final' project with location BSP's.
 
 use std::collections::{BTreeMap, HashMap};
-use math::{Mat4f, Vec2f, Vec3f, Vec4f};
-use sdl2::{keyboard::Scancode, render};
+use math::{Mat4f, Vec2f, Vec3f, Vec5UVf};
+use sdl2::keyboard::Scancode;
 
 /// Basic math utility
 #[macro_use]
@@ -343,7 +343,7 @@ impl RasterizationMode {
 }
 
 impl<'t> RenderContext<'t> {
-    fn clip_viewspace_back(&self, points: &mut Vec<Vec3f>, result: &mut Vec<Vec3f>) {
+    fn clip_viewspace_back(&self, points: &mut Vec<Vec5UVf>, result: &mut Vec<Vec5UVf>) {
         for index in 0..points.len() {
             let curr = points[index];
             let next = points[(index + 1) % points.len()];
@@ -365,7 +365,7 @@ impl<'t> RenderContext<'t> {
     }
 
     /// Clip polygon by some rectangle
-    fn clip_polygon_rect(&self, points: &mut Vec<Vec3f>, result: &mut Vec<Vec3f>, clip_rect: geom::ClipRect) {
+    fn clip_polygon_rect(&self, points: &mut Vec<Vec5UVf>, result: &mut Vec<Vec5UVf>, clip_rect: geom::ClipRect) {
         for index in 0..points.len() {
             let curr = points[index];
             let next = points[(index + 1) % points.len()];
@@ -453,11 +453,14 @@ impl<'t> RenderContext<'t> {
     }
 
     /// Project polygon on screen
-    pub fn get_screenspace_polygon(&self, points: &mut Vec<Vec3f>, point_dst: &mut Vec<Vec3f>) {
+    pub fn get_screenspace_polygon(&self, points: &mut Vec<Vec5UVf>, point_dst: &mut Vec<Vec5UVf>) {
         // Calculate projection-space points
         point_dst.clear();
         for pt in points.iter() {
-            point_dst.push(self.view_projection_matrix.transform_point(*pt));
+            point_dst.push(Vec5UVf::from_32(
+                self.view_projection_matrix.transform_point(pt.xyz()),
+                pt.uv()
+            ));
         }
         std::mem::swap(points, point_dst);
 
@@ -472,10 +475,12 @@ impl<'t> RenderContext<'t> {
 
         point_dst.clear();
         for v in points.iter() {
-            point_dst.push(Vec3f::new(
+            point_dst.push(Vec5UVf::new(
                 (1.0 + v.x / v.z) * width,
                 (1.0 - v.y / v.z) * height,
-                1.0 / v.z
+                1.0 / v.z,
+                v.u / v.z,
+                v.v / v.z,
             ));
         }
     }
@@ -483,7 +488,7 @@ impl<'t> RenderContext<'t> {
     /// Rasterize already clipped polygon
     unsafe fn render_clipped_polygon<const MODE: u32>(
         &mut self,
-        points: &[Vec3f],
+        points: &[Vec5UVf],
         color: u32,
     ) {
 
@@ -533,27 +538,18 @@ impl<'t> RenderContext<'t> {
         let first_line = usize::min(min_y_value.floor() as usize, self.frame_height - 1);
         let last_line = usize::min(max_y_value.ceil() as usize, self.frame_height);
 
-        // // Calculate vector UV
-        // let get_screen_linear_uv = |proj_vec: Vec3f| -> Vec2f {
-        //     Vec2f::new(
-        //         proj_vec.x * axis_u.x + proj_vec.y * axis_u.y + axis_u.z,
-        //         proj_vec.x * axis_v.x + proj_vec.y * axis_v.y + axis_v.z,
-        //     )
-        // };
-
         let mut left_index = ind_next!(min_y_index);
         let mut left_prev = points[min_y_index];
         let mut left_curr = points[left_index];
+        let mut left_slope = (left_curr - left_prev) / (left_curr.y - left_prev.y);
 
-        let mut left_inv_slope = (left_curr.x - left_prev.x) / (left_curr.y - left_prev.y);
-        let mut left_inv_z_slope = (left_curr.z - left_prev.z) / (left_curr.y - left_prev.y);
+        // let mut left_inv_slope = (left_curr.x - left_prev.x) / (left_curr.y - left_prev.y);
+        // let mut left_inv_z_slope = (left_curr.z - left_prev.z) / (left_curr.y - left_prev.y);
 
         let mut right_index = ind_prev!(min_y_index);
         let mut right_prev = points[min_y_index];
         let mut right_curr = points[right_index];
-
-        let mut right_inv_slope = (right_curr.x - right_prev.x) / (right_curr.y - right_prev.y);
-        let mut right_inv_z_slope = (right_curr.z - right_prev.z) / (right_curr.y - right_prev.y);
+        let mut right_slope = (right_curr - right_prev) / (right_curr.y - right_prev.y);
 
         // Scan for lines
         'line_loop: for pixel_y in first_line..last_line {
@@ -575,11 +571,9 @@ impl<'t> RenderContext<'t> {
 
                 // Check if edge is flat
                 if left_dy <= DY_EPSILON {
-                    left_inv_slope = 0.0;
-                    left_inv_z_slope = 0.0;
+                    left_slope = Vec5UVf::zero();
                 } else {
-                    left_inv_slope = (left_curr.x - left_prev.x) / left_dy;
-                    left_inv_z_slope = (left_curr.z - left_prev.z) / left_dy;
+                    left_slope = (left_curr - left_prev) / left_dy;
                 }
             }
 
@@ -598,25 +592,21 @@ impl<'t> RenderContext<'t> {
 
                 // Check if edge is flat
                 if right_dy <= DY_EPSILON {
-                    right_inv_slope = 0.0;
-                    right_inv_z_slope = 0.0;
+                    right_slope = Vec5UVf::zero();
                 } else {
-                    right_inv_slope = (right_curr.x - right_prev.x) / right_dy;
-                    right_inv_z_slope = (right_curr.z - right_prev.z) / right_dy;
+                    right_slope = (right_curr - right_prev) / right_dy;
                 }
             }
 
             // Calculate intersection with left edge
-            let left_x = left_prev.x + (y - left_prev.y) * left_inv_slope;
+            let left_x = left_prev.x + (y - left_prev.y) * left_slope.x;
 
             // Calculate intersection with right edge
-            let right_x = right_prev.x + (y - right_prev.y) * right_inv_slope;
+            let right_x = right_prev.x + (y - right_prev.y) * right_slope.x;
 
-            // Left X coordinate
-            let left_z = left_prev.z + (y - left_prev.y) * left_inv_z_slope;
+            let left_zuv = left_prev.zuv() + left_slope.zuv() * (y - left_prev.y);
 
-            // Right X coordinate
-            let right_z = right_prev.z + (y - right_prev.y) * right_inv_z_slope;
+            let right_zuv = right_prev.zuv() + right_slope.zuv() * (y - right_prev.y);
 
             // Calculate hline start/end, clip it
             let start = usize::min(left_x.floor() as usize, self.frame_width - 1);
@@ -626,14 +616,14 @@ impl<'t> RenderContext<'t> {
 
             let dx = right_x - left_x;
 
-            let slope_z_x = if dx <= DY_EPSILON {
-                0.0
+            let slope_zuv = if dx <= DY_EPSILON {
+                Vec3f::zero()
             } else {
-                (right_z - left_z) / (right_x - left_x)
+                (right_zuv - left_zuv) / (right_x - left_x)
             };
 
             for pixel_x in start..end {
-                let z = left_z + (pixel_x - start) as f32 * slope_z_x;
+                let zuv = left_zuv + slope_zuv * (pixel_x - start) as f32;
                 let pixel_ptr = pixel_row.add(pixel_x);
 
                 if MODE == RasterizationMode::Standard as u32 {
@@ -641,11 +631,27 @@ impl<'t> RenderContext<'t> {
                 } else if MODE == RasterizationMode::Overdraw as u32 {
                     *pixel_ptr = 0x101010u32.wrapping_add(*pixel_ptr);
                 } else if MODE == RasterizationMode::Depth as u32 {
-                    let color = (z * 25500.0) as u8;
+                    let color = (zuv.x * 25500.0) as u8;
                     *pixel_ptr = u32::from_le_bytes([color, color, color, color]);
                 } else if MODE == RasterizationMode::UV as u32 {
-                    let color = (z * 25500.0) as u8;
-                    *pixel_ptr = u32::from_le_bytes([color, color, 0, 0]);
+                    let uv = Vec2f::new(
+                        zuv.y / zuv.x,
+                        zuv.z / zuv.x,
+                    );
+
+                    let xi = (uv.x as i64 & 0xFF) as u8;
+                    let yi = (uv.y as i64 & 0xFF) as u8;
+
+                    let c = ((xi / 32) ^ (yi / 32)) & 1;
+
+                    let rgb = bsp::Rgb8::from(color);
+
+                    *pixel_ptr = u32::from_le_bytes([
+                        rgb.r * c,
+                        rgb.g * c,
+                        rgb.b * c,
+                        0,
+                    ]);
                 } else {
                     panic!("Unknown rasterization mode: {}", MODE);
                 }
@@ -669,15 +675,22 @@ impl<'t> RenderContext<'t> {
     fn render_polygon(
         &mut self,
         polygon: &geom::Polygon,
-        axis_u: Vec3f,
-        u_offset: f32,
-        axis_v: Vec3f,
-        v_offset: f32,
+        plane_u: geom::Plane,
+        plane_v: geom::Plane,
         color: [u8; 3],
         clip_rect: geom::ClipRect
     ) {
         // Calculate polygon point set
-        let mut points = polygon.points.clone();
+        let mut points = polygon.points
+            .iter()
+            .map(|v| Vec5UVf::from_32(
+                *v,
+                Vec2f::new(
+                    (*v ^ plane_u.normal) + plane_u.distance,
+                    (*v ^ plane_v.normal) + plane_v.distance,
+                )
+            ))
+            .collect::<Vec<_>>();
         let mut point_dst = Vec::with_capacity(polygon.points.len());
 
         // Get projected polygons
@@ -780,10 +793,8 @@ impl<'t> RenderContext<'t> {
 
             self.render_polygon(
                 &polygon,
-                surface.u.axis * surface.u.scale,
-                surface.u.offset,
-                surface.v.axis * surface.u.scale,
-                surface.v.offset,
+                surface.u,
+                surface.v,
                 color,
                 clip_rect
             );
@@ -872,6 +883,10 @@ impl<'t> RenderContext<'t> {
                         continue 'portal_rendering;
                     }
 
+                    let clip_rect = volume_clip_rect;
+
+                    // TODO: Restore clipping
+                    #[cfg(not)]
                     let clip_rect = 'portal_validation: {
                         /*
                         I think, that projection is main source of the 'black bug'

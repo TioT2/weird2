@@ -35,26 +35,6 @@ impl_id!(VolumeId);
 impl_id!(PolygonId);
 impl_id!(MaterialId);
 
-/// Descriptor of UV mapping process
-#[derive(Copy, Clone)]
-pub struct MtlMapAxis {
-    /// Axis itself
-    pub axis: Vec3f,
-
-    /// Offset from point to axis
-    pub offset: f32,
-
-    /// Axis scale
-    pub scale: f32,
-}
-
-impl MtlMapAxis {
-    /// Get coordinate along axis
-    pub fn get_coordinate(&self, point: Vec3f) -> f32 {
-        (point ^ self.axis) * self.scale + self.offset
-    }
-}
-
 /// Visible volume face piece
 pub struct Surface {
     /// Polygon material identifier
@@ -64,9 +44,10 @@ pub struct Surface {
     pub polygon_id: PolygonId,
 
     /// U texture-mapping axis
-    pub u: MtlMapAxis,
+    pub u: geom::Plane,
+
     /// V texture-mapping axis
-    pub v: MtlMapAxis,
+    pub v: geom::Plane,
 }
 
 /// Portal (volume-volume connection)

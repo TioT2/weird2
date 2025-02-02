@@ -264,6 +264,26 @@ impl Vec5UVf {
             v: uv.y,
         }
     }
+
+    pub fn zero() -> Self {
+        Self::new(0.0, 0.0, 0.0, 0.0, 0.0)
+    }
+
+    pub fn xyz(&self) -> Vec3f {
+        Vec3f::new(self.x, self.y, self.z)
+    }
+
+    pub fn uv(&self) -> Vec2f {
+        Vec2f::new(self.u, self.v)
+    }
+
+    pub fn xzuv(&self) -> Vec4f {
+        Vec4f::new(self.x, self.z, self.u, self.v)
+    }
+
+    pub fn zuv(&self) -> Vec3f {
+        Vec3f::new(self.z, self.u, self.v)
+    }
 }
 
 impl Vec3f {

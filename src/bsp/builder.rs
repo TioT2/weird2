@@ -11,8 +11,6 @@
 use std::{collections::{BTreeMap, BTreeSet, HashMap}, num::NonZeroU32};
 use crate::{geom, math::{Mat3f, Vec3f}, map};
 
-use super::MtlMapAxis;
-
 impl map::Map {
     /// Build physical polygon set
     pub fn build_world_physical_polygons(&self) -> (Vec<PhysicalPolygon>, Vec<String>) {
@@ -103,16 +101,8 @@ impl map::Map {
                         plane: f1.plane,
                     },
                     material_index: *mtlid,
-                    material_u: MtlMapAxis {
-                        axis: f1.basis_u,
-                        offset: f1.mtl_offset_u,
-                        scale: f1.mtl_scale_u,
-                    },
-                    material_v: MtlMapAxis {
-                        axis: f1.basis_v,
-                        offset: f1.mtl_offset_v,
-                        scale: f1.mtl_scale_v,
-                    },
+                    material_u: f1.u,
+                    material_v: f1.v,
                 })
             }
         }
@@ -130,10 +120,10 @@ pub struct PhysicalPolygon {
     pub material_index: usize,
 
     /// Material mapping U axis
-    pub material_u: MtlMapAxis,
+    pub material_u: geom::Plane,
 
     /// Material mapping V axis
-    pub material_v: MtlMapAxis,
+    pub material_v: geom::Plane,
 }
 
 /// Reference to another volume

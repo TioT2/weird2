@@ -322,6 +322,57 @@ impl Map {
         return Ok(Map { entities });
     }
 
+    /// Find best fitting UV from pre-defined candidate set
+    pub fn find_texture_uv(normal: Vec3f) -> (Vec3f, Vec3f) {
+        // Candidate array contains [normal, u, v] triplets.
+        const UV_CANDIDADTES: [[Vec3f; 3]; 6] = [
+            [
+                Vec3f::new(0.0, 0.0, 1.0),
+                Vec3f::new(1.0, 0.0, 0.0),
+                Vec3f::new(0.0, -1.0, 0.0),
+            ], // floor
+            [
+                Vec3f::new(0.0, 0.0, -1.0),
+                Vec3f::new(1.0, 0.0, 0.0),
+                Vec3f::new(0.0, -1.0, 0.0),
+            ], // ceiling
+            [
+                Vec3f::new(1.0, 0.0, 0.0),
+                Vec3f::new(0.0, 1.0, 0.0),
+                Vec3f::new(0.0, 0.0, -1.0),
+            ], // west wall
+            [
+                Vec3f::new(-1.0, 0.0, 0.0),
+                Vec3f::new(0.0, 1.0, 0.0),
+                Vec3f::new(0.0, 0.0, -1.0),
+            ], // east wall
+            [
+                Vec3f::new(0.0, 1.0, 0.0),
+                Vec3f::new(1.0, 0.0, 0.0),
+                Vec3f::new(0.0, 0.0, -1.0),
+            ], // south wall
+            [
+                Vec3f::new(0.0, -1.0, 0.0),
+                Vec3f::new(1.0, 0.0, 0.0),
+                Vec3f::new(0.0, 0.0, -1.0),
+            ], // north wall
+        ];
+
+        let mut best_dot = f32::MIN;
+        let mut best_candidate = &UV_CANDIDADTES[0];
+
+        for candidate in &UV_CANDIDADTES {
+            let dot = candidate[0] ^ normal;
+
+            if dot >= best_dot {
+                best_dot = dot;
+                best_candidate = candidate;
+            }
+        }
+
+        (best_candidate[1], best_candidate[2])
+    }
+
     /// Build Q1 map into WMAP format
     pub fn build_wmap(&self) -> super::Map {
         let mut entities = Vec::<super::Entity>::new();
@@ -334,20 +385,26 @@ impl Map {
                 let mut faces = Vec::<super::BrushFace>::new();
 
                 for face in &brush.faces {
-                    let u = (face.p0 - face.p1).normalized();
-                    let v = (face.p2 - face.p1).normalized();
+                    let normal = ((face.p0 - face.p1) % (face.p2 - face.p1)).normalized();
 
-                    let axis = (u % v).normalized();
-                    let rot_matr = Mat4f::rotate(face.texture_rotation.to_radians(), axis);
+                    let (u, v) = Self::find_texture_uv(normal);
+
+                    let rcos = face.texture_rotation.to_radians().cos();
+                    let rsin = face.texture_rotation.to_radians().sin();
+
+                    let (u, v) = (
+                        u * rcos - v * rsin,
+                        u * rsin + v * rcos,
+                    );
 
                     faces.push(super::BrushFace {
                         plane: geom::Plane::from_points(face.p1, face.p0, face.p2),
                         u: geom::Plane {
-                            normal: rot_matr.transform_vector(u).normalized() * face.texture_scale_x,
+                            normal: u / face.texture_scale_x,
                             distance: face.texture_offset_x,
                         },
                         v: geom::Plane {
-                            normal: rot_matr.transform_vector(v).normalized() * face.texture_scale_y,
+                            normal: v / face.texture_scale_y,
                             distance: face.texture_offset_y,
                         },
                         mtl_name: face.texture_name.clone(),

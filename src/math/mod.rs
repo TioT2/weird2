@@ -54,7 +54,7 @@ macro_rules! impl_vecn_base {
         }
 
         impl<$template_type> $struct_name<$template_type> {
-            pub fn new($($x: $value_type,)*) -> Self {
+            pub const fn new($($x: $value_type,)*) -> Self {
                 Self { $($x,)* }
             }
 

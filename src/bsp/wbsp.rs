@@ -66,6 +66,9 @@ pub struct Surface {
 
     /// V axis
     pub v: Plane,
+
+    /// True if transparent, false if not
+    pub is_transparent: u8,
 }
 
 impl Into<geom::Plane> for Plane {

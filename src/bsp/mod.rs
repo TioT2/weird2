@@ -35,6 +35,8 @@ impl_id!(VolumeId);
 impl_id!(PolygonId);
 impl_id!(MaterialId);
 
+// TODO: Rename surface into smth more logical.
+
 /// Visible volume face piece
 pub struct Surface {
     /// Polygon material identifier
@@ -42,6 +44,9 @@ pub struct Surface {
 
     /// Polygon itself identifier
     pub polygon_id: PolygonId,
+
+    /// Surface transparency flag
+    pub is_transparent: bool,
 
     /// U texture-mapping axis
     pub u: geom::Plane,
@@ -590,6 +595,7 @@ impl Map {
                     surfaces.push(Surface {
                         material_id: MaterialId::from_index(surface.material_index as usize),
                         polygon_id: PolygonId::from_index(surface.polygon_index as usize),
+                        is_transparent: surface.is_transparent != 0,
 
                         u: surface.u.into(),
                         v: surface.v.into(),
@@ -714,6 +720,7 @@ impl Map {
                 polygon_index: surface.polygon_id.into_index() as u32,
                 u: surface.u.into(),
                 v: surface.v.into(),
+                is_transparent: surface.is_transparent as u8,
             })
         )?;
 

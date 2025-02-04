@@ -7,9 +7,9 @@ use std::arch::x86_64 as arch;
 /// SIMD-based float-point 3/4-component vector
 #[repr(transparent)]
 #[derive(Copy, Clone)]
-pub struct FVec(arch::__m128);
+pub struct FVec4(arch::__m128);
 
-impl FVec {
+impl FVec4 {
     /// Construct vector from X, Y and Z. W is zeroed
     pub fn from_xyz(x: f32, y: f32, z: f32) -> Self {
         Self(unsafe {
@@ -32,7 +32,7 @@ impl FVec {
     /// Construct vector from single number
     pub fn from_single(v: f32) -> Self {
         Self(unsafe {
-            arch::_mm_set_ps1(v)
+            arch::_mm_set1_ps(v)
         })
     }
 
@@ -88,7 +88,7 @@ impl FVec {
 
     /// Dot product
     #[allow(unreachable_code)]
-    pub fn dot(self, rhs: FVec) -> f32 {
+    pub fn dot(self, rhs: FVec4) -> f32 {
         #[cfg(target_feature = "sse4.1")]
         {
             // However, this method may be slower on AMD CPUs, but idk.
@@ -114,11 +114,11 @@ impl FVec {
 
     /// Multiply and add vectors (in case of FMA unavailability, fallbacks to separate mul and add)
     #[allow(dead_code)]
-    pub fn mul_add(self, second: FVec, third: FVec) -> Self {
+    pub fn mul_add(self, second: FVec4, third: FVec4) -> Self {
         unsafe {
             #[cfg(target_feature = "fma")]
             return Self(
-                arch::_mm_add_ps(arch::_mm_mul_ps(self.0, second.0), third.0)
+                arch::_mm_fmadd_ps(self.0, second.0, third.0)
             );
     
             return Self(
@@ -128,7 +128,7 @@ impl FVec {
     }
 
     /// Calculate 3-dimensional cross product of of self.xyz and rhs.xyz vectors
-    pub fn cross(self, othr: FVec) -> FVec {
+    pub fn cross(self, othr: FVec4) -> FVec4 {
         // 3 shuffles, 2 products and 1 substraction
         unsafe {
             let tmp0 = arch::_mm_shuffle_ps::<0b11_00_10_01>(self.0, self.0);
@@ -159,31 +159,81 @@ impl FVec {
 }
 
 macro_rules! impl_binary_operator {
-    ($op_trait_name: ident, $op_func_name: ident, $arch_func_name: ident) => {
+    ($type: ident, $op_trait_name: ident, $op_func_name: ident, $arch_func_name: ident, $set1_func_name: ident) => {
 
         // vector-vector product
-        impl std::ops::$op_trait_name<FVec> for FVec {
-            type Output = FVec;
+        impl std::ops::$op_trait_name<$type> for $type {
+            type Output = $type;
 
-            fn $op_func_name(self, rhs: FVec) -> Self::Output {
+            fn $op_func_name(self, rhs: $type) -> Self::Output {
                 Self(unsafe { arch::$arch_func_name(self.0, rhs.0) })
             }
         }
 
         // vector-number product
-        impl std::ops::$op_trait_name<f32> for FVec {
-            type Output = FVec;
+        impl std::ops::$op_trait_name<f32> for $type {
+            type Output = $type;
 
             fn $op_func_name(self, rhs: f32) -> Self::Output {
-                Self(unsafe { arch::$arch_func_name(self.0, arch::_mm_set_ps1(rhs)) })
+                Self(unsafe { arch::$arch_func_name(self.0, arch::$set1_func_name(rhs)) })
             }
         }
     };
 }
 
-impl_binary_operator!(Mul, mul, _mm_mul_ps);
-impl_binary_operator!(Div, div, _mm_div_ps);
-impl_binary_operator!(Add, add, _mm_add_ps);
-impl_binary_operator!(Sub, sub, _mm_sub_ps);
+impl_binary_operator!(FVec4, Mul, mul, _mm_mul_ps, _mm_set1_ps);
+impl_binary_operator!(FVec4, Div, div, _mm_div_ps, _mm_set1_ps);
+impl_binary_operator!(FVec4, Add, add, _mm_add_ps, _mm_set1_ps);
+impl_binary_operator!(FVec4, Sub, sub, _mm_sub_ps, _mm_set1_ps);
+
+/// Fast 8-component vector
+#[repr(transparent)]
+#[derive(Copy, Clone)]
+pub struct FVec8(arch::__m256);
+
+impl FVec8 {
+    /// From component set
+    pub fn from_components(c0: f32, c1: f32, c2: f32, c3: f32, c4: f32, c5: f32, c6: f32, c7: f32) -> Self {
+        unsafe {
+            Self(arch::_mm256_set_ps(c7, c6, c5, c4, c3, c2, c1, c0))
+        }
+    }
+
+    /// From pair of FVec4's
+    pub fn from_fvec4(v1: FVec4, v2: FVec4) -> Self {
+        unsafe {
+            Self(arch::_mm256_set_m128(v2.0, v1.0))
+        }
+    }
+
+    /// From single number
+    pub fn from_single(v: f32) -> Self {
+        unsafe {
+            Self(arch::_mm256_set1_ps(v))
+        }
+    }
+
+    /// From zero components
+    pub fn zero() -> Self {
+        unsafe {
+            Self(arch::_mm256_setzero_ps())
+        }
+    }
+
+    /// Get element by index
+    pub fn get<const I: i32>(self) -> f32 {
+        // AVX solution
+        unsafe {
+            arch::_mm256_cvtss_f32(
+                arch::_mm256_shuffle_ps::<I>(self.0, self.0)
+            )
+        }
+    }
+}
+
+impl_binary_operator!(FVec8, Mul, mul, _mm256_mul_ps, _mm256_set1_ps);
+impl_binary_operator!(FVec8, Div, div, _mm256_div_ps, _mm256_set1_ps);
+impl_binary_operator!(FVec8, Add, add, _mm256_add_ps, _mm256_set1_ps);
+impl_binary_operator!(FVec8, Sub, sub, _mm256_sub_ps, _mm256_set1_ps);
 
 // fvec_x86.rs

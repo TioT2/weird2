@@ -1,7 +1,7 @@
 ///! Quake 1 map format support
 
 use std::collections::HashMap;
-use crate::{geom, math::{Mat4f, Vec3f}};
+use crate::{geom, math::Vec3f};
 
 /// Q1 .map brush face binary representation
 #[derive(Clone, Debug)]

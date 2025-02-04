@@ -9,6 +9,7 @@
 // WDAT - Data format, contains 'final' project with location BSP's.
 
 use std::collections::{BTreeMap, HashMap};
+use bytemuck::Zeroable;
 use math::{Mat4f, Vec2f, Vec3f, Vec5UVf};
 use sdl2::keyboard::Scancode;
 
@@ -243,6 +244,224 @@ struct SlowRenderContext<'t> {
     pub delta_time: std::time::Duration,
 }
 
+mod wad2 {
+    /// WAD2 file magic
+    pub const MAGIC: [u8; 4] = *b"WAD2";
+
+    #[repr(C, packed)]
+    #[derive(Copy, Clone)]
+    pub struct Header {
+        pub magic: [u8; 4],
+        pub num_entities: i32,
+        pub dir_offset: i32,
+    }
+
+    unsafe impl bytemuck::Zeroable for Header {}
+    unsafe impl bytemuck::AnyBitPattern for Header {}
+    unsafe impl bytemuck::NoUninit for Header {}
+
+
+    /// WAD entry
+    #[repr(C, packed)]
+    #[derive(Copy, Clone)]
+    pub struct Entry {
+        pub offset: i32,
+        pub entry_size: i32,
+        pub size: i32,
+        pub ty: i8,
+        pub compression: i8,
+        pub _dummy: u16,
+        pub name: [u8; 16],
+    }
+
+
+    unsafe impl bytemuck::Zeroable for Entry {}
+    unsafe impl bytemuck::AnyBitPattern for Entry {}
+    unsafe impl bytemuck::NoUninit for Entry {}
+
+    #[repr(C)]
+    #[derive(Copy, Clone)]
+    pub enum EntryType {
+        ColorPalette = 0x40,
+        StatusBarPictures = 0x42,
+        MipTexture = 0x44,
+        ConsolePicture = 0x45,
+    }
+
+    impl EntryType {
+        pub fn from_i8(v: i8) -> Option<Self> {
+            Some(match v {
+                0x40 => Self::ColorPalette,
+                0x42 => Self::StatusBarPictures,
+                0x44 => Self::MipTexture,
+                0x45 => Self::ConsolePicture,
+                _ => return None,
+            })
+        }
+    }
+
+    #[repr(C, packed)]
+    #[derive(Copy, Clone)]
+    pub struct PictureHeader {
+        pub width: i32,
+        pub height: i32,
+        // Pixels: array of i8 with width x height size
+    }
+
+    unsafe impl bytemuck::Zeroable for PictureHeader {}
+    unsafe impl bytemuck::AnyBitPattern for PictureHeader {}
+    unsafe impl bytemuck::NoUninit for PictureHeader {}
+
+    #[repr(C, packed)]
+    #[derive(Copy, Clone)]
+    pub struct Color {
+        pub r: u8,
+        pub g: u8,
+        pub b: u8,
+    }
+
+    impl Color {
+        pub const fn zero() -> Self {
+            Self { r: 0, g: 0, b: 0 }
+        }
+    }
+
+    unsafe impl bytemuck::Zeroable for Color {}
+    unsafe impl bytemuck::AnyBitPattern for Color {}
+    unsafe impl bytemuck::NoUninit for Color {}
+}
+
+/// Texture structure
+struct Texture {
+    pub width: usize,
+    pub height: usize,
+    pub colors: Vec<u32>,
+}
+
+/// Material table imported from WAD files
+struct WadMaterialTable {
+    /// Index table
+    pub index_table: BTreeMap<String, usize>,
+
+    /// Zero index stands for default texture
+    pub index_map: Vec<Texture>,
+}
+
+#[derive(Debug)]
+pub enum Wad2LoadingError {
+    /// Invali WAD file magic
+    InvalidWadMagic([u8; 4]),
+
+    /// Unexpected WAD file end
+    UnexpectedFileEnd,
+
+    /// File interaction error
+    IoError(std::io::Error),
+
+    /// Error of building UTF-8 from bytes that (technically) should be string
+    Utf8Error(std::str::Utf8Error),
+
+    /// Slice is smaller, than required
+    TooSmallSlice(std::array::TryFromSliceError),
+
+    /// Compressed data occured
+    CompressedData,
+
+    /// Entry type isn't documented.
+    UnknownEntryType(i8),
+}
+
+impl From<std::io::Error> for Wad2LoadingError {
+    fn from(value: std::io::Error) -> Self {
+        Self::IoError(value)
+    }
+}
+
+impl From<std::str::Utf8Error> for Wad2LoadingError {
+    fn from(value: std::str::Utf8Error) -> Self {
+        Self::Utf8Error(value)
+    }
+}
+
+impl From<std::array::TryFromSliceError> for Wad2LoadingError {
+    fn from(value: std::array::TryFromSliceError) -> Self {
+        Self::TooSmallSlice(value)
+    }
+}
+
+impl WadMaterialTable {
+    /// Load WAD2 format in material table
+    pub fn load_wad2(file: &mut dyn std::io::Read) -> Result<Self, Wad2LoadingError> {
+        let mut data = Vec::<u8>::new();
+
+        file.read_to_end(&mut data)?;
+
+        let mut data_rest = data.as_slice();
+
+        let header_bytes;
+
+        (header_bytes, data_rest) = data_rest
+            .split_at_checked(std::mem::size_of::<wad2::Header>())
+            .ok_or(Wad2LoadingError::UnexpectedFileEnd)?;
+
+        let header = bytemuck::from_bytes::<wad2::Header>(header_bytes);
+
+        // Read WAD2 header
+        if header.magic != wad2::MAGIC {
+            return Err(Wad2LoadingError::InvalidWadMagic(header.magic));
+        }
+
+        let entry_bytes;
+
+        (entry_bytes, data_rest) = data_rest
+            .split_at_checked(std::mem::size_of::<wad2::Entry>() * header.num_entities as usize)
+            .ok_or(Wad2LoadingError::UnexpectedFileEnd)?;
+
+        // Drop data rest
+        _ = data_rest;
+
+        let entries = bytemuck::cast_slice::<_, wad2::Entry>(entry_bytes);
+
+        let mut color_palette: &[wad2::Color; 256] = &[wad2::Color::zero(); 256];
+
+        // Read WAD entries
+        for entry in entries {
+            // I Don't know how to decode compressed data...
+            if entry.compression != 0 {
+                return Err(Wad2LoadingError::CompressedData);
+            }
+
+            let ty = wad2::EntryType::from_i8(entry.ty)
+                .ok_or(Wad2LoadingError::UnknownEntryType(entry.ty))?;
+
+            let name = std::str::from_utf8(&entry.name)?;
+
+            let entry_data = data
+                .get(entry.offset as usize..entry.offset as usize + entry.size as usize)
+                .ok_or(Wad2LoadingError::UnexpectedFileEnd)?;
+
+            match ty {
+                wad2::EntryType::ColorPalette => {
+                    color_palette = bytemuck::cast_slice(entry_data)
+                        .try_into()
+                        .unwrap();
+                }
+                wad2::EntryType::ConsolePicture => {
+                    // ignore
+                }
+                wad2::EntryType::StatusBarPictures => {
+                    // ignore
+                }
+                wad2::EntryType::MipTexture => {
+
+                }
+            }
+        }
+
+        todo!()
+    }
+}
+
 /// Temporary structure used as instead of WRES-based material tables
 struct MaterialTable {
     /// Color set
@@ -334,11 +553,6 @@ impl RasterizationMode {
 
     pub const fn next(self) -> RasterizationMode {
         Self::from_u32((self as u32 + 1) % Self::COUNT).unwrap()
-    }
-
-    /// Build rasterization mode from u32
-    pub const fn into_u32(self) -> u32 {
-        self as u32
     }
 }
 
@@ -485,8 +699,29 @@ impl<'t> RenderContext<'t> {
         }
     }
 
+    unsafe fn render_clipped_polygon(&mut self, is_transparent: bool, points: &[Vec5UVf], color: u32) {
+        if is_transparent {
+            match self.rasterization_mode {
+                RasterizationMode::Standard => self.render_clipped_polygon_impl::<0, true>(&points, color),
+                RasterizationMode::Overdraw => self.render_clipped_polygon_impl::<1, true>(&points, color),
+                RasterizationMode::Depth    => self.render_clipped_polygon_impl::<2, true>(&points, color),
+                RasterizationMode::UV       => self.render_clipped_polygon_impl::<3, true>(&points, color),
+            }
+        } else {
+            match self.rasterization_mode {
+                RasterizationMode::Standard => self.render_clipped_polygon_impl::<0, false>(&points, color),
+                RasterizationMode::Overdraw => self.render_clipped_polygon_impl::<1, false>(&points, color),
+                RasterizationMode::Depth    => self.render_clipped_polygon_impl::<2, false>(&points, color),
+                RasterizationMode::UV       => self.render_clipped_polygon_impl::<3, false>(&points, color),
+            }
+        }
+}
+
     /// Rasterize already clipped polygon
-    unsafe fn render_clipped_polygon<const MODE: u32>(
+    unsafe fn render_clipped_polygon_impl<
+        const MODE: u32,
+        const IS_TRANSPARENT: bool,
+    >(
         &mut self,
         points: &[Vec5UVf],
         color: u32,
@@ -622,9 +857,16 @@ impl<'t> RenderContext<'t> {
                 (right_zuv - left_zuv) / (right_x - left_x)
             };
 
-            for pixel_x in start..end {
+            'render: for pixel_x in start..end {
                 let zuv = left_zuv + slope_zuv * (pixel_x - start) as f32;
                 let pixel_ptr = pixel_row.add(pixel_x);
+
+                // Handle transparency
+                if IS_TRANSPARENT {
+                    if (pixel_y ^ pixel_x) & 1 == 1 {
+                        continue 'render;
+                    }
+                }
 
                 if MODE == RasterizationMode::Standard as u32 {
                     *pixel_ptr = color;
@@ -678,6 +920,7 @@ impl<'t> RenderContext<'t> {
         plane_u: geom::Plane,
         plane_v: geom::Plane,
         color: [u8; 3],
+        is_transparent: bool,
         clip_rect: geom::ClipRect
     ) {
         // Calculate polygon point set
@@ -720,12 +963,11 @@ impl<'t> RenderContext<'t> {
         // Rasterize polygon
 
         unsafe {
-            match self.rasterization_mode {
-                RasterizationMode::Standard => self.render_clipped_polygon::<0>(&points, color_u32),
-                RasterizationMode::Overdraw => self.render_clipped_polygon::<1>(&points, color_u32),
-                RasterizationMode::Depth    => self.render_clipped_polygon::<2>(&points, color_u32),
-                RasterizationMode::UV       => self.render_clipped_polygon::<3>(&points, color_u32),
-            }
+            self.render_clipped_polygon(
+                is_transparent,
+                &points,
+                color_u32
+            );
         }
     }
 
@@ -796,6 +1038,7 @@ impl<'t> RenderContext<'t> {
                 surface.u,
                 surface.v,
                 color,
+                surface.is_transparent,
                 clip_rect
             );
         }
@@ -883,10 +1126,6 @@ impl<'t> RenderContext<'t> {
                         continue 'portal_rendering;
                     }
 
-                    let clip_rect = volume_clip_rect;
-
-                    // TODO: Restore clipping
-                    #[cfg(not)]
                     let clip_rect = 'portal_validation: {
                         /*
                         I think, that projection is main source of the 'black bug'
@@ -915,8 +1154,11 @@ impl<'t> RenderContext<'t> {
                             break 'portal_validation volume_clip_rect;
                         }
 
-                        let mut polygon_points = portal_polygon.points.clone();
-                        let mut proj_polygon_points = Vec::with_capacity(polygon_points.len());
+                        let mut polygon_points = portal_polygon.points
+                            .iter()
+                            .map(|point| Vec5UVf::from_32(*point, Vec2f::zero()))
+                            .collect::<Vec<_>>();
+                        let mut proj_polygon_points: Vec<Vec5UVf> = Vec::with_capacity(polygon_points.len());
 
                         if !portal.is_facing_front {
                             polygon_points.reverse();
@@ -930,7 +1172,9 @@ impl<'t> RenderContext<'t> {
                         }
 
                         let proj_rect = geom::ClipRect::from_points_xy(
-                            proj_polygon_points.iter().copied()
+                            proj_polygon_points
+                                .iter()
+                                .map(|v| v.xyz())
                         );
 
                         let Some(clip_rect) = geom::ClipRect::intersection(

@@ -277,9 +277,6 @@ impl Vec5UVf {
         Vec2f::new(self.u, self.v)
     }
 
-    pub fn xzuv(&self) -> Vec4f {
-        Vec4f::new(self.x, self.z, self.u, self.v)
-    }
 
     pub fn zuv(&self) -> Vec3f {
         Vec3f::new(self.z, self.u, self.v)

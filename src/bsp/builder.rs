@@ -94,16 +94,37 @@ impl map::Map {
                     continue;
                 }
 
+                let is_transparent = f1.mtl_name.starts_with("*");
+                let points = geom::sort_points_by_angle(points, f1.plane.normal);
+
+                if is_transparent {
+                    physical_polygons.push(PhysicalPolygon {
+                        polygon: geom::Polygon {
+                            points: {
+                                let mut pts = points.clone();
+                                pts.reverse();
+                                pts
+                            },
+                            plane: f1.plane.negate_direction(),
+                        },
+                        material_index: *mtlid,
+                        material_u: f1.u,
+                        material_v: f1.v,
+                        is_transparent,
+                    });
+                }
+
                 // Build physical polygon
                 physical_polygons.push(PhysicalPolygon {
                     polygon: geom::Polygon {
-                        points: geom::sort_points_by_angle(points, f1.plane.normal),
+                        points: points,
                         plane: f1.plane,
                     },
                     material_index: *mtlid,
                     material_u: f1.u,
                     material_v: f1.v,
-                })
+                    is_transparent,
+                });
             }
         }
 
@@ -124,6 +145,9 @@ pub struct PhysicalPolygon {
 
     /// Material mapping V axis
     pub material_v: geom::Plane,
+
+    /// True if physical polygon is built from transparent material, false if not
+    pub is_transparent: bool,
 }
 
 /// Reference to another volume
@@ -408,6 +432,7 @@ impl HullVolume {
                                     material_index: physical_polygon.material_index,
                                     material_u: physical_polygon.material_u,
                                     material_v: physical_polygon.material_v,
+                                    is_transparent: physical_polygon.is_transparent,
                                 });
 
                                 back_physical_polygons.push(PhysicalPolygon {
@@ -415,6 +440,7 @@ impl HullVolume {
                                     material_index: physical_polygon.material_index,
                                     material_u: physical_polygon.material_u,
                                     material_v: physical_polygon.material_v,
+                                    is_transparent: physical_polygon.is_transparent,
                                 });
                             }
                             geom::PolygonSplitResult::Coplanar => {
@@ -658,6 +684,7 @@ impl Builder {
                         material_index: physical_polygon.material_index,
                         material_u: physical_polygon.material_u,
                         material_v: physical_polygon.material_v,
+                        is_transparent: physical_polygon.is_transparent,
                     });
 
                     back_polygons.push(PhysicalPolygon {
@@ -665,6 +692,7 @@ impl Builder {
                         material_index: physical_polygon.material_index,
                         material_u: physical_polygon.material_u,
                         material_v: physical_polygon.material_v,
+                        is_transparent: physical_polygon.is_transparent,
                     });
                 }
             }
@@ -772,9 +800,16 @@ impl Builder {
 
                 face.physical_polygons.iter()
             })
-            .map(|physical_polygon| CutInfo {
-                planes: physical_polygon.polygon.iter_edge_planes().collect(),
-                bound_box: physical_polygon.polygon.build_bound_box(),
+            .filter_map(|physical_polygon| {
+                // Do not cut portals by transparent polygons
+                if physical_polygon.is_transparent {
+                    None
+                } else {
+                    Some(CutInfo {
+                        planes: physical_polygon.polygon.iter_edge_planes().collect(),
+                        bound_box: physical_polygon.polygon.build_bound_box(),
+                    })
+                }
             })
             .collect::<Vec<_>>();
 
@@ -1218,6 +1253,7 @@ impl Builder {
                                 polygon_id: super::PolygonId::from_index(polygon_index),
                                 u: physical_polygon.material_u,
                                 v: physical_polygon.material_v,
+                                is_transparent: physical_polygon.is_transparent,
                             }
                         })
                     );

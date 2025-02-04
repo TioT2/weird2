@@ -31,6 +31,9 @@ pub struct BrushFace {
 pub struct Brush {
     /// Brush face set
     pub faces: Vec<BrushFace>,
+
+    /// Is this brush should not be rendered
+    pub is_invisible: bool,
 }
 
 /// Map entity

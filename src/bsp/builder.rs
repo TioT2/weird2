@@ -24,7 +24,12 @@ impl map::Map {
         let mut physical_polygons = Vec::<PhysicalPolygon>::new();
         let mut materials = Vec::<String>::new();
 
-        for brush in &worldspawn.brushes {
+        'brush_polygon_building: for brush in &worldspawn.brushes {
+            // Don't merge clip brushes into render BSP
+            if brush.is_invisible {
+                continue 'brush_polygon_building;
+            }
+
             let planes = brush.faces
                 .iter()
                 .map(|face| {

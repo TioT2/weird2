@@ -383,8 +383,11 @@ impl Map {
 
             for brush in &entity.brushes {
                 let mut faces = Vec::<super::BrushFace>::new();
+                let mut is_invisible = false;
 
                 for face in &brush.faces {
+                    is_invisible |= face.texture_name == "CLIP";
+
                     let normal = ((face.p0 - face.p1) % (face.p2 - face.p1)).normalized();
 
                     let (u, v) = Self::find_texture_uv(normal);
@@ -411,7 +414,7 @@ impl Map {
                     });
                 }
 
-                brushes.push(super::Brush { faces });
+                brushes.push(super::Brush { faces, is_invisible });
             }
 
             entities.push(super::Entity { brushes, properties });

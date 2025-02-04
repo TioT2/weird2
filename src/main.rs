@@ -8,10 +8,11 @@
 // WRES - Resource format, contains textures/sounds/models/etc.
 // WDAT - Data format, contains 'final' project with location BSP's.
 
-use std::collections::{BTreeMap, HashMap};
+use std::{collections::{BTreeMap, HashMap}, ffi::CStr};
 use bytemuck::Zeroable;
 use math::{Mat4f, Vec2f, Vec3f, Vec5UVf};
 use sdl2::keyboard::Scancode;
+use wad2::PictureHeader;
 
 /// Basic math utility
 #[macro_use]
@@ -314,6 +315,19 @@ mod wad2 {
 
     #[repr(C, packed)]
     #[derive(Copy, Clone)]
+    pub struct MipTextureHeader {
+        pub name: [u8; 16],
+        pub width: i32,
+        pub height: i32,
+        pub offsets: [i32; 4],
+    }
+
+    unsafe impl bytemuck::Zeroable for MipTextureHeader {}
+    unsafe impl bytemuck::AnyBitPattern for MipTextureHeader {}
+    unsafe impl bytemuck::NoUninit for MipTextureHeader {}
+
+    #[repr(C, packed)]
+    #[derive(Copy, Clone)]
     pub struct Color {
         pub r: u8,
         pub g: u8,
@@ -323,6 +337,10 @@ mod wad2 {
     impl Color {
         pub const fn zero() -> Self {
             Self { r: 0, g: 0, b: 0 }
+        }
+
+        pub const fn rgb_u32(self) -> u32 {
+            u32::from_le_bytes([self.r, self.g, self.b, 0])
         }
     }
 
@@ -335,16 +353,33 @@ mod wad2 {
 struct Texture {
     pub width: usize,
     pub height: usize,
-    pub colors: Vec<u32>,
+    pub data: Vec<u32>,
+}
+
+impl Texture {
+    /// Construct default texture
+    pub fn default() -> Self {
+        let m = 0xFF00FF;
+        Self {
+            width: 4,
+            height: 4,
+            data: vec![
+                0, 0, m, m,
+                0, 0, m, m,
+                m, m, 0, 0,
+                m, m, 0, 0,
+            ],
+        }
+    }
 }
 
 /// Material table imported from WAD files
 struct WadMaterialTable {
     /// Index table
-    pub index_table: BTreeMap<String, usize>,
+    pub texture_index_map: BTreeMap<String, usize>,
 
     /// Zero index stands for default texture
-    pub index_map: Vec<Texture>,
+    pub textures: Vec<Texture>,
 }
 
 #[derive(Debug)]
@@ -355,11 +390,17 @@ pub enum Wad2LoadingError {
     /// Unexpected WAD file end
     UnexpectedFileEnd,
 
+    /// Unexpected WAD entry end
+    UnexpectedEntryEnd,
+
     /// File interaction error
     IoError(std::io::Error),
 
     /// Error of building UTF-8 from bytes that (technically) should be string
     Utf8Error(std::str::Utf8Error),
+
+    /// Invalid CStr
+    CStrReadingError(std::ffi::FromBytesUntilNulError),
 
     /// Slice is smaller, than required
     TooSmallSlice(std::array::TryFromSliceError),
@@ -389,6 +430,24 @@ impl From<std::array::TryFromSliceError> for Wad2LoadingError {
     }
 }
 
+impl From<std::ffi::FromBytesUntilNulError> for Wad2LoadingError {
+    fn from(value: std::ffi::FromBytesUntilNulError) -> Self {
+        Self::CStrReadingError(value)
+    }
+}
+
+/// Table of references to certain WAD
+pub struct WadReferenceTable<'t> {
+    ref_table: Vec<&'t Texture>,
+}
+
+impl<'t> WadReferenceTable<'t> {
+    /// Get texture by index
+    pub fn get_texture(&self, id: bsp::MaterialId) -> Option<&'t Texture> {
+        self.ref_table.get(id.into_index()).copied()
+    }
+}
+
 impl WadMaterialTable {
     /// Load WAD2 format in material table
     pub fn load_wad2(file: &mut dyn std::io::Read) -> Result<Self, Wad2LoadingError> {
@@ -396,55 +455,91 @@ impl WadMaterialTable {
 
         file.read_to_end(&mut data)?;
 
-        let mut data_rest = data.as_slice();
-
-        let header_bytes;
-
-        (header_bytes, data_rest) = data_rest
-            .split_at_checked(std::mem::size_of::<wad2::Header>())
+        let header_data = data
+            .get(0..std::mem::size_of::<wad2::Header>())
             .ok_or(Wad2LoadingError::UnexpectedFileEnd)?;
-
-        let header = bytemuck::from_bytes::<wad2::Header>(header_bytes);
+        let header = bytemuck::pod_read_unaligned::<wad2::Header>(header_data);
 
         // Read WAD2 header
         if header.magic != wad2::MAGIC {
             return Err(Wad2LoadingError::InvalidWadMagic(header.magic));
         }
 
-        let entry_bytes;
-
-        (entry_bytes, data_rest) = data_rest
-            .split_at_checked(std::mem::size_of::<wad2::Entry>() * header.num_entities as usize)
+        let entry_bytes = data
+            .get(header.dir_offset as usize..)
             .ok_or(Wad2LoadingError::UnexpectedFileEnd)?;
-
-        // Drop data rest
-        _ = data_rest;
 
         let entries = bytemuck::cast_slice::<_, wad2::Entry>(entry_bytes);
 
-        let mut color_palette: &[wad2::Color; 256] = &[wad2::Color::zero(); 256];
+        let mut color_palette: [u32; 256] = [
+            0x000000, 0x0f0f0f, 0x1f1f1f, 0x2f2f2f, 0x3f3f3f, 0x4b4b4b, 0x5b5b5b, 0x6b6b6b, 
+            0x7b7b7b, 0x8b8b8b, 0x9b9b9b, 0xababab, 0xbbbbbb, 0xcbcbcb, 0xdbdbdb, 0xebebeb, 
+            0x070b0f, 0x0b0f17, 0x0b171f, 0x0f1b27, 0x13232f, 0x172b37, 0x172f3f, 0x1b374b, 
+            0x1b3b53, 0x1f435b, 0x1f4b63, 0x1f536b, 0x1f5773, 0x235f7b, 0x236783, 0x236f8f, 
+            0x0f0b0b, 0x1b1313, 0x271b1b, 0x332727, 0x3f2f2f, 0x4b3737, 0x573f3f, 0x674747, 
+            0x734f4f, 0x7f5b5b, 0x8b6363, 0x976b6b, 0xa37373, 0xaf7b7b, 0xbb8383, 0xcb8b8b, 
+            0x000000, 0x000707, 0x000b0b, 0x001313, 0x001b1b, 0x002323, 0x072b2b, 0x072f2f, 
+            0x073737, 0x073f3f, 0x074747, 0x0b4b4b, 0x0b5353, 0x0b5b5b, 0x0b6363, 0x0f6b6b, 
+            0x000007, 0x00000f, 0x000017, 0x00001f, 0x000027, 0x00002f, 0x000037, 0x00003f, 
+            0x000047, 0x00004f, 0x000057, 0x00005f, 0x000067, 0x00006f, 0x000077, 0x00007f, 
+            0x001313, 0x001b1b, 0x002323, 0x002b2f, 0x002f37, 0x003743, 0x073b4b, 0x074357, 
+            0x07475f, 0x0b4b6b, 0x0f5377, 0x135783, 0x135b8b, 0x1b5f97, 0x1f63a3, 0x2367af, 
+            0x071323, 0x0b172f, 0x0f1f3b, 0x13234b, 0x172b57, 0x1f2f63, 0x233773, 0x2b3b7f, 
+            0x33438f, 0x334f9f, 0x2f63af, 0x2f77bf, 0x2b8fcf, 0x27abdf, 0x1fcbef, 0x1bf3ff, 
+            0x00070b, 0x00131b, 0x0f232b, 0x132b37, 0x1b3347, 0x233753, 0x2b3f63, 0x33476f, 
+            0x3f537f, 0x475f8b, 0x536b9b, 0x5f7ba7, 0x6b87b7, 0x7b93c3, 0x8ba3d3, 0x97b3e3, 
+            0xa38bab, 0x977f9f, 0x877393, 0x7b678b, 0x6f5b7f, 0x635377, 0x574b6b, 0x4b3f5f, 
+            0x433757, 0x372f4b, 0x2f2743, 0x231f37, 0x1b172b, 0x131323, 0x0b0b17, 0x07070f, 
+            0x9f73bb, 0x8f6baf, 0x835fa3, 0x775797, 0x6b4f8b, 0x5f4b7f, 0x534373, 0x4b3b6b, 
+            0x3f335f, 0x372b53, 0x2b2347, 0x231f3b, 0x1b172f, 0x131323, 0x0b0b17, 0x07070f, 
+            0xbbc3db, 0xa7b3cb, 0x9ba3bf, 0x8b97af, 0x7b87a3, 0x6f7b97, 0x5f6f87, 0x53637b, 
+            0x47576b, 0x3b4b5f, 0x333f53, 0x273343, 0x1f2b37, 0x171f27, 0x0f131b, 0x070b0f, 
+            0x7b836f, 0x6f7b67, 0x67735f, 0x5f6b57, 0x57634f, 0x4f5b47, 0x47533f, 0x3f4b37, 
+            0x37432f, 0x2f3b2b, 0x273323, 0x1f2b1f, 0x172317, 0x131b0f, 0x0b130b, 0x070b07, 
+            0x1bf3ff, 0x17dfef, 0x13cbdb, 0x0fb7cb, 0x0fa7bb, 0x0b97ab, 0x07839b, 0x07738b, 
+            0x07637b, 0x00536b, 0x00475b, 0x00374b, 0x002b3b, 0x001f2b, 0x000f1b, 0x00070b, 
+            0xff0000, 0xef0b0b, 0xdf1313, 0xcf1b1b, 0xbf2323, 0xaf2b2b, 0x9f2f2f, 0x8f2f2f, 
+            0x7f2f2f, 0x6f2f2f, 0x5f2f2f, 0x4f2b2b, 0x3f2323, 0x2f1b1b, 0x1f1313, 0x0f0b0b, 
+            0x00002b, 0x00003b, 0x00074b, 0x00075f, 0x000f6f, 0x07177f, 0x071f93, 0x0b27a3, 
+            0x0f33b7, 0x1b4bc3, 0x2b63cf, 0x3b7fdb, 0x4f97e3, 0x5fabe7, 0x77bfef, 0x8bd3f7, 
+            0x3b7ba7, 0x379bb7, 0x37c3c7, 0x57e3e7, 0xffbf7f, 0xffe7ab, 0xffffd7, 0x000067, 
+            0x00008b, 0x0000b3, 0x0000d7, 0x0000ff, 0x93f3ff, 0xc7f7ff, 0xffffff, 0x535b9f, 
+        ];
+
+        // Find palette entry and parse it
+
+        let mut textures =  Vec::<Texture>::new();
+        let mut texture_index_map = BTreeMap::<String, usize>::new();
+
+        // Default texture isn't mapped to any name
+        textures.push(Texture::default());
 
         // Read WAD entries
         for entry in entries {
             // I Don't know how to decode compressed data...
             if entry.compression != 0 {
-                return Err(Wad2LoadingError::CompressedData);
+                continue;
+                // return Err(Wad2LoadingError::CompressedData);
             }
 
             let ty = wad2::EntryType::from_i8(entry.ty)
                 .ok_or(Wad2LoadingError::UnknownEntryType(entry.ty))?;
 
-            let name = std::str::from_utf8(&entry.name)?;
+            let name = CStr::from_bytes_until_nul(&entry.name)?.to_str()?;
+
+            let offset = entry.offset as usize;
 
             let entry_data = data
-                .get(entry.offset as usize..entry.offset as usize + entry.size as usize)
+                .get(offset..offset + entry.size as usize)
                 .ok_or(Wad2LoadingError::UnexpectedFileEnd)?;
 
             match ty {
                 wad2::EntryType::ColorPalette => {
-                    color_palette = bytemuck::cast_slice(entry_data)
+                    let wad_color_slice: &[wad2::Color; 256] = bytemuck::cast_slice::<_, wad2::Color>(entry_data)
                         .try_into()
-                        .unwrap();
+                        .map_err(|_| Wad2LoadingError::UnexpectedEntryEnd)?;
+
+                    color_palette = wad_color_slice.map(|v| v.rgb_u32());
                 }
                 wad2::EntryType::ConsolePicture => {
                     // ignore
@@ -453,12 +548,81 @@ impl WadMaterialTable {
                     // ignore
                 }
                 wad2::EntryType::MipTexture => {
+                    // Try to parse texture
+                    let header_data = entry_data
+                        .get(..std::mem::size_of::<wad2::MipTextureHeader>())
+                        .ok_or(Wad2LoadingError::UnexpectedEntryEnd)?;
+                    let header = bytemuck::pod_read_unaligned::<wad2::MipTextureHeader>(header_data);
 
+                    let offset = header.offsets[0] as usize;
+
+                    let bytes = &entry_data[offset..];
+
+                    let width = header.width as usize;
+                    let height = header.height as usize;
+
+                    if bytes.len() <= width * height {
+                        return Err(Wad2LoadingError::UnexpectedEntryEnd);
+                    }
+
+                    let mut data = Vec::<u32>::with_capacity(width * height);
+
+                    for y in 0..height {
+                        for x in 0..width {
+                            let index = bytes[y * width + x];
+                            let color = color_palette[index as usize];
+                            // let color_u32 = color.rgb_u32();
+
+                            data.push(color);
+                        }
+                    }
+
+                    let name = name.to_string().to_ascii_uppercase();
+                    texture_index_map.insert(name, textures.len());
+                    textures.push(Texture {
+                        width,
+                        height,
+                        data,
+                    });
                 }
             }
         }
 
-        todo!()
+        Ok(Self {
+            textures,
+            texture_index_map,
+        })
+    }
+
+    /// Build WAD reference table
+    pub fn build_reference_table<'t>(&'t self, bsp: &bsp::Map) -> Option<WadReferenceTable<'t>> {
+        // Quite bad solution, though...
+        let mut ref_table = Vec::new();
+
+        let default_texture = self.textures.get(0).unwrap();
+
+        for e  in self.texture_index_map.iter() {
+            println!("{} -> {}", e.0, e.1);
+        }
+
+        println!("--------------------------");
+
+        for e in bsp.all_material_names() {
+            println!("{}", e.1);
+        }
+
+        for (mtl_id, mtl_name) in bsp.all_material_names() {
+            let index = mtl_id.into_index();
+
+            ref_table.resize(index + 1, default_texture);
+
+            let texture_index_opt = self.texture_index_map.get(mtl_name).copied();
+            let texture_index = texture_index_opt.unwrap_or(0);
+
+            ref_table[index] = self.textures.get(texture_index).unwrap();
+        }
+
+        Some(WadReferenceTable { ref_table })
     }
 }
 
@@ -494,7 +658,7 @@ impl MaterialTable {
 }
 
 /// Render context
-struct RenderContext<'t> {
+struct RenderContext<'t, 'ref_table> {
     /// Camera location
     camera_location: Vec3f,
 
@@ -508,6 +672,8 @@ struct RenderContext<'t> {
     map: &'t bsp::Map,
 
     material_table: &'t MaterialTable,
+
+    wad_reference_table: &'t WadReferenceTable<'ref_table>,
 
     /// Frame pixel array pointer
     frame_pixels: *mut u32,
@@ -534,11 +700,12 @@ enum RasterizationMode {
     Overdraw = 1,
     Depth = 2,
     UV = 3,
+    Textured = 4,
 }
 
 impl RasterizationMode {
     // Rasterization mode count
-    const COUNT: u32 = 4;
+    const COUNT: u32 = 5;
 
     /// Build rasterization mode from u32
     pub const fn from_u32(n: u32) -> Option<RasterizationMode> {
@@ -547,6 +714,7 @@ impl RasterizationMode {
             1 => RasterizationMode::Overdraw,
             2 => RasterizationMode::Depth,
             3 => RasterizationMode::UV,
+            4 => RasterizationMode::Textured,
             _ => return None,
         })
     }
@@ -556,7 +724,7 @@ impl RasterizationMode {
     }
 }
 
-impl<'t> RenderContext<'t> {
+impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
     fn clip_viewspace_back(&self, points: &mut Vec<Vec5UVf>, result: &mut Vec<Vec5UVf>) {
         for index in 0..points.len() {
             let curr = points[index];
@@ -699,25 +867,28 @@ impl<'t> RenderContext<'t> {
         }
     }
 
-    unsafe fn render_clipped_polygon(&mut self, is_transparent: bool, points: &[Vec5UVf], color: u32) {
+    /// Render already clipped polygon
+    unsafe fn render_clipped_polygon(&mut self, is_transparent: bool, points: &[Vec5UVf], color: u32, texture: &Texture) {
         if is_transparent {
             match self.rasterization_mode {
-                RasterizationMode::Standard => self.render_clipped_polygon_impl::<0, true>(&points, color),
-                RasterizationMode::Overdraw => self.render_clipped_polygon_impl::<1, true>(&points, color),
-                RasterizationMode::Depth    => self.render_clipped_polygon_impl::<2, true>(&points, color),
-                RasterizationMode::UV       => self.render_clipped_polygon_impl::<3, true>(&points, color),
+                RasterizationMode::Standard => self.render_clipped_polygon_impl::<0, true>(&points, color, texture),
+                RasterizationMode::Overdraw => self.render_clipped_polygon_impl::<1, true>(&points, color, texture),
+                RasterizationMode::Depth    => self.render_clipped_polygon_impl::<2, true>(&points, color, texture),
+                RasterizationMode::UV       => self.render_clipped_polygon_impl::<3, true>(&points, color, texture),
+                RasterizationMode::Textured => self.render_clipped_polygon_impl::<4, true>(&points, color, texture),
             }
         } else {
             match self.rasterization_mode {
-                RasterizationMode::Standard => self.render_clipped_polygon_impl::<0, false>(&points, color),
-                RasterizationMode::Overdraw => self.render_clipped_polygon_impl::<1, false>(&points, color),
-                RasterizationMode::Depth    => self.render_clipped_polygon_impl::<2, false>(&points, color),
-                RasterizationMode::UV       => self.render_clipped_polygon_impl::<3, false>(&points, color),
+                RasterizationMode::Standard => self.render_clipped_polygon_impl::<0, false>(&points, color, texture),
+                RasterizationMode::Overdraw => self.render_clipped_polygon_impl::<1, false>(&points, color, texture),
+                RasterizationMode::Depth    => self.render_clipped_polygon_impl::<2, false>(&points, color, texture),
+                RasterizationMode::UV       => self.render_clipped_polygon_impl::<3, false>(&points, color, texture),
+                RasterizationMode::Textured => self.render_clipped_polygon_impl::<4, false>(&points, color, texture),
             }
         }
-}
+    }
 
-    /// Rasterize already clipped polygon
+    /// render_clipped_polygon function optimized implementation
     unsafe fn render_clipped_polygon_impl<
         const MODE: u32,
         const IS_TRANSPARENT: bool,
@@ -725,6 +896,7 @@ impl<'t> RenderContext<'t> {
         &mut self,
         points: &[Vec5UVf],
         color: u32,
+        texture: &Texture,
     ) {
 
         /// Index forward by point list
@@ -857,8 +1029,10 @@ impl<'t> RenderContext<'t> {
                 (right_zuv - left_zuv) / (right_x - left_x)
             };
 
+            let pixel_off = left_x.fract() - 0.5;
+
             'render: for pixel_x in start..end {
-                let zuv = left_zuv + slope_zuv * (pixel_x - start) as f32;
+                let zuv = left_zuv + slope_zuv * ((pixel_x - start) as f32 - pixel_off);
                 let pixel_ptr = pixel_row.add(pixel_x);
 
                 // Handle transparency
@@ -868,6 +1042,7 @@ impl<'t> RenderContext<'t> {
                     }
                 }
 
+                // Handle different rasterization modes
                 if MODE == RasterizationMode::Standard as u32 {
                     *pixel_ptr = color;
                 } else if MODE == RasterizationMode::Overdraw as u32 {
@@ -894,22 +1069,20 @@ impl<'t> RenderContext<'t> {
                         rgb.b * c,
                         0,
                     ]);
+                } else if MODE == RasterizationMode::Textured as u32 {
+                    let uv = Vec2f::new(
+                        zuv.y / zuv.x,
+                        zuv.z / zuv.x,
+                    );
+
+                    let xi: usize = (uv.x as isize).rem_euclid(texture.width as isize) as usize;
+                    let yi: usize = (uv.y as isize).rem_euclid(texture.height as isize) as usize;
+
+                    *pixel_ptr = texture.data[yi * texture.width + xi];
                 } else {
                     panic!("Unknown rasterization mode: {}", MODE);
                 }
             }
-
-            // let pixel_start = self.frame_pixels.add(self.frame_stride * pixel_y + start);
-            // let pixel_end = self.frame_pixels.add(self.frame_stride * pixel_y + end);
-            // let mut pixel_ptr = pixel_start;
-            // while pixel_ptr < pixel_end {
-            //     if RENDER_OVERDRAW {
-            //         *pixel_ptr = 0x101010u32.wrapping_add(*pixel_ptr);
-            //     } else {
-            //         *pixel_ptr = color;
-            //     }
-            //     pixel_ptr = pixel_ptr.add(1);
-            // }
         }
     }
 
@@ -920,6 +1093,7 @@ impl<'t> RenderContext<'t> {
         plane_u: geom::Plane,
         plane_v: geom::Plane,
         color: [u8; 3],
+        texture: &Texture,
         is_transparent: bool,
         clip_rect: geom::ClipRect
     ) {
@@ -966,7 +1140,8 @@ impl<'t> RenderContext<'t> {
             self.render_clipped_polygon(
                 is_transparent,
                 &points,
-                color_u32
+                color_u32,
+                texture
             );
         }
     }
@@ -1016,6 +1191,10 @@ impl<'t> RenderContext<'t> {
                 .unwrap()
                 .into();
 
+            let texture = self.wad_reference_table
+                .get_texture(surface.material_id)
+                .unwrap();
+
             // Calculate simple per-face diffuse light
             let light_diffuse = Vec3f::new(0.30, 0.47, 0.80)
                 .normalized()
@@ -1038,6 +1217,7 @@ impl<'t> RenderContext<'t> {
                 surface.u,
                 surface.v,
                 color,
+                texture,
                 surface.is_transparent,
                 clip_rect
             );
@@ -1376,6 +1556,15 @@ fn main() {
         }
     };
 
+    let wad = {
+        let mut wad_file = std::fs::File::open("temp/q1/gfx/base.wad").unwrap();
+
+        WadMaterialTable::load_wad2(&mut wad_file).unwrap()
+    };
+
+    let wad_reference_table = wad.build_reference_table(&map).unwrap();
+
+
     let material_table = MaterialTable::for_bsp(&map);
     
     struct BspStatBuilder {
@@ -1440,6 +1629,9 @@ fn main() {
     camera.location = Vec3f::new(-174.0, 2114.6, -64.5); // -200, 2000, -50
     camera.direction = Vec3f::new(-0.4, 0.9, 0.1);
 
+    camera.location = Vec3f::new(1402.4, 1913.7, -86.3);
+    camera.direction = Vec3f::new(-0.74, 0.63, -0.24);
+
     // camera.location = Vec3f::new(30.0, 40.0, 50.0);
 
     // Camera used for visible set building
@@ -1498,6 +1690,8 @@ fn main() {
                 do_sync_logical_camera as u32,
                 rasterization_mode as u32,
             );
+            // println!("Location: {:?}", logical_camera.location);
+            // println!("Direction: {:?}", logical_camera.direction);
         }
 
         // Acquire window extent
@@ -1593,6 +1787,7 @@ fn main() {
             view_projection_matrix,
             map: &map,
             material_table: &material_table,
+            wad_reference_table: &wad_reference_table,
 
             frame_pixels: frame_buffer.as_mut_ptr(),
             frame_width: frame_width,

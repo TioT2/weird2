@@ -74,6 +74,12 @@ macro_rules! impl_vecn_base {
             )*
         }
 
+        impl<$template_type: Clone> $struct_name<$template_type> {
+            pub fn from_single(t: $value_type) -> Self {
+                Self { $($x: t.clone(),)* }
+            }
+        }
+
         impl<$template_type> Into<( $( consume_ident!($value_type, $x) ),* )> for $struct_name<$template_type> {
             fn into(self) -> ( $( consume_ident!($value_type, $x) ),* ) {
                 ( $( self.$x ),* )

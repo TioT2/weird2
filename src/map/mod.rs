@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use crate::{geom, math::Vec3f};
 
 /// Quake 1 map
-pub mod q1;
+pub mod q1_map;
 
 /// Map material
 pub struct Material {

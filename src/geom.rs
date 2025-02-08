@@ -581,6 +581,21 @@ pub struct ClipOct {
 }
 
 impl ClipOct {
+    /// Calculate conservative clipping octagon of clipping rectangle
+    pub fn from_clip_rect(clip_rect: ClipRect) -> Self {
+        Self {
+            max_x: clip_rect.max.x,
+            max_y: clip_rect.max.y,
+            min_x: clip_rect.min.x,
+            min_y: clip_rect.min.y,
+
+            max_y_a_x: clip_rect.max.y + clip_rect.max.x,
+            min_y_a_x: clip_rect.min.y + clip_rect.min.x,
+            max_y_s_x: clip_rect.max.y - clip_rect.min.x,
+            min_y_s_x: clip_rect.min.y - clip_rect.max.x,
+        }
+    }
+    
     /// Build clipping oct from point XY plane projection coordinates
     pub fn from_points_xy(points: impl Iterator<Item = Vec3f>) -> Self {
         let mut min_y_s_x = f32::MAX;
@@ -648,8 +663,8 @@ impl ClipOct {
         if min_y > max_y { return None; }
 
         Some(Self {
-            min_y_s_x, min_y, min_y_a_x: min_y_a_x, min_x,
-            max_y_s_x, max_y, max_y_a_x: max_y_a_x, max_x,
+            min_y_s_x, min_y, min_y_a_x, min_x,
+            max_y_s_x, max_y, max_y_a_x, max_x,
         })
     }
 

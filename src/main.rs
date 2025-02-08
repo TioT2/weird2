@@ -450,7 +450,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                 std::mem::swap(points, result);
         
                 result.clear();
-                clip_edge!($metric, $max, >=);
+                clip_edge!($metric, $max, <=);
                 std::mem::swap(points, result);
             };
         }
@@ -460,52 +460,20 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
         macro_rules! metric_y_a_x { ($e: ident) => { ($e.y + $e.x) } }
         macro_rules! metric_y_s_x { ($e: ident) => { ($e.y - $e.x) } }
 
+        // Clip by X
         clip_metric_minmax!(metric_x, clip_oct.min_x, clip_oct.max_x);
+
+        // Clip by Y
         clip_metric_minmax!(metric_y, clip_oct.min_y, clip_oct.max_y);
+
+        // Clip by Y+X
         clip_metric_minmax!(metric_y_a_x, clip_oct.min_y_a_x, clip_oct.max_y_a_x);
+
+        // Clip by Y-X
         clip_metric_minmax!(metric_y_s_x, clip_oct.min_y_s_x, clip_oct.max_y_s_x);
-    }
 
-    /// Clip polygon by some rectangle
-    fn clip_polygon_rect(&self, points: &mut Vec<Vec5UVf>, result: &mut Vec<Vec5UVf>, clip_rect: geom::ClipRect) {
-        // Common clipping instruction
-        macro_rules! clip_edge {
-            ($metric: ident, $clip_val: expr, $cmp: tt) => {
-                for index in 0..points.len() {
-                    let curr = points[index];
-                    let next = points[(index + 1) % points.len()];
-
-                    if $metric!(curr) $cmp $clip_val {
-                        result.push(curr);
-
-                        if !($metric!(next) $cmp $clip_val) {
-                            let t = ($clip_val - $metric!(curr)) / ($metric!(next) - $metric!(curr));
-                            result.push((next - curr) * t + curr);
-                        }
-                    } else if $metric!(next) $cmp $clip_val {
-                        let t = ($clip_val - $metric!(curr)) / ($metric!(next) - $metric!(curr));
-                        result.push((next - curr) * t + curr);
-                    }
-                }
-            }
-        }
-
-        macro_rules! metric_x { ($e: ident) => { $e.x } }
-        macro_rules! metric_y { ($e: ident) => { $e.y } }
-
-        clip_edge!(metric_x, clip_rect.min.x, >=);
+        // Swap results (again)
         std::mem::swap(points, result);
-
-        result.clear();
-        clip_edge!(metric_y, clip_rect.min.y, >=);
-        std::mem::swap(points, result);
-
-        result.clear();
-        clip_edge!(metric_x, clip_rect.max.x, <=);
-        std::mem::swap(points, result);
-
-        result.clear();
-        clip_edge!(metric_y, clip_rect.max.y, <=);
     }
 
     /// Project polygon on screen
@@ -767,7 +735,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
         color: [u8; 3],
         texture: res::ImageRef,
         is_transparent: bool,
-        clip_rect: geom::ClipRect
+        clip_oct: &geom::ClipOct
     ) {
         // Calculate polygon point set
         let mut points = polygon.points
@@ -788,7 +756,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
 
         // Clip polygon by volume clipping rectangle
         point_dst.clear();
-        self.clip_polygon_rect(&mut points, &mut point_dst, clip_rect);
+        self.clip_polygon_oct(&mut points, &mut point_dst, clip_oct);
         std::mem::swap(&mut points, &mut point_dst);
 
         // Just for safety
@@ -817,34 +785,8 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
         }
     }
 
-    fn render_clip_rect(&mut self, clip_rect: geom::ClipRect, color: u32) {
-        let y0 = usize::min(clip_rect.min.y.ceil() as usize, self.frame_height - 1);
-        let y1 = usize::min(clip_rect.max.y.ceil() as usize, self.frame_height - 1);
-
-        let x0 = usize::min(clip_rect.min.x.floor() as usize, self.frame_width - 1);
-        let x1 = usize::min(clip_rect.max.x.floor() as usize, self.frame_width - 1);
-
-        let line = |mut start: *mut u32, delta: usize, count: usize| {
-            for _ in 0..count {
-                unsafe {
-                    *start = color;
-                    start = start.add(delta);
-                }
-            }
-        };
-
-        unsafe {
-            let s = self.frame_stride;
-
-            line(self.frame_pixels.add(y0 * s + x0), 1, x1 - x0);
-            line(self.frame_pixels.add(y0 * s + x0), s, y1 - y0);
-            line(self.frame_pixels.add(y1 * s + x0), 1, x1 - x0);
-            line(self.frame_pixels.add(y0 * s + x1), s, y1 - y0);
-        }
-    }
-
     /// Render single volume
-    fn render_volume(&mut self, id: bsp::VolumeId, clip_rect: geom::ClipRect) {
+    fn render_volume(&mut self, id: bsp::VolumeId, clip_oct: &geom::ClipOct) {
         let volume = self.map.get_volume(id).unwrap();
 
         'polygon_rendering: for surface in volume.get_surfaces() {
@@ -913,7 +855,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                 color,
                 image,
                 surface.is_transparent,
-                clip_rect
+                clip_oct
             );
         }
     }
@@ -950,11 +892,11 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
     /// volume in PVS with this rectangle. If destination volume is already
     /// added, it extends it to fit union of current and previous clipping
     /// rectangles.
-    pub fn render_build_render_set(
+    pub fn build_render_set(
         &self,
         bsp_elem: &bsp::Bsp,
-        pvs: &mut BTreeMap<bsp::VolumeId, geom::ClipRect>,
-        inv_render_set: &mut Vec<(bsp::VolumeId, geom::ClipRect)>,
+        pvs: &mut BTreeMap<bsp::VolumeId, geom::ClipOct>,
+        inv_render_set: &mut Vec<(bsp::VolumeId, geom::ClipOct)>,
     ) {
         match bsp_elem {
             bsp::Bsp::Partition {
@@ -973,17 +915,17 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                     }
                 };
 
-                self.render_build_render_set(first, pvs, inv_render_set);
-                self.render_build_render_set(second, pvs, inv_render_set);
+                self.build_render_set(first, pvs, inv_render_set);
+                self.build_render_set(second, pvs, inv_render_set);
             }
             bsp::Bsp::Volume(volume_id) => 'volume_traverse: {
-                let Some(volume_clip_rect) = pvs.get(volume_id) else {
+                let Some(volume_clip_oct) = pvs.get(volume_id) else {
                     break 'volume_traverse;
                 };
-                let volume_clip_rect = *volume_clip_rect;
+                let volume_clip_oct = *volume_clip_oct;
 
                 // Insert volume in render set
-                inv_render_set.push((*volume_id, volume_clip_rect));
+                inv_render_set.push((*volume_id, volume_clip_oct));
 
                 let volume = self.map.get_volume(*volume_id).unwrap();
 
@@ -1025,7 +967,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
 
                         // Do not calculate projection for near portals
                         if portal_plane_distance <= 8.0 {
-                            break 'portal_validation volume_clip_rect;
+                            break 'portal_validation volume_clip_oct;
                         }
 
                         let mut polygon_points = portal_polygon.points
@@ -1045,20 +987,20 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                             continue 'portal_rendering;
                         }
 
-                        let proj_rect = geom::ClipRect::from_points_xy(
+                        let proj_oct = geom::ClipOct::from_points_xy(
                             proj_polygon_points
                                 .iter()
                                 .map(|v| v.xyz())
                         );
 
-                        let Some(clip_rect) = geom::ClipRect::intersection(
-                            volume_clip_rect,
-                            proj_rect.extend(Vec2f::new(1.0, 1.0))
+                        let Some(clip_oct) = geom::ClipOct::intersection(
+                            &volume_clip_oct,
+                            &proj_oct.extend(1.0, 1.0, 1.0, 1.0)
                         ) else {
                             continue 'portal_rendering;
                         };
 
-                        clip_rect
+                        clip_oct
                     };
 
 
@@ -1068,8 +1010,8 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
 
                     match pvs_entry {
                         std::collections::btree_map::Entry::Occupied(mut occupied) => {
-                            let existing_rect: &mut geom::ClipRect = occupied.get_mut();
-                            *existing_rect = existing_rect.union(clip_rect);
+                            let existing_rect: &mut geom::ClipOct = occupied.get_mut();
+                            *existing_rect = existing_rect.union(&clip_rect);
                         }
                         std::collections::btree_map::Entry::Vacant(vacant) => {
                             vacant.insert(clip_rect);
@@ -1083,39 +1025,37 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
 
     /// Render scene starting from certain volume
     pub fn render(&mut self, start_volume_id: bsp::VolumeId) {
-        let screen_clip_rect = self.get_screen_clip_rect();
+        let screen_clip_oct = geom::ClipOct::from_clip_rect(self.get_screen_clip_rect());
 
         let mut pvs = BTreeMap::new();
         let mut inv_render_set = Vec::new();
 
-        pvs.insert(start_volume_id, screen_clip_rect);
+        pvs.insert(start_volume_id, screen_clip_oct);
 
-        self.render_build_render_set(self.map.get_bsp(), &mut pvs, &mut inv_render_set);
+        self.build_render_set(self.map.get_bsp(), &mut pvs, &mut inv_render_set);
 
         if let Some(ctx) = self.slow_render_context.as_ref() {
             (ctx.present_func)(self.frame_pixels, self.frame_width, self.frame_height, self.frame_stride);
             std::thread::sleep(ctx.delta_time);
         }
 
-        for (volume_id, volume_clip_rect) in inv_render_set
+        for (volume_id, volume_clip_oct) in inv_render_set
             .iter()
             .rev()
             .copied()
         {
 
-            let Some(clip_rect) = volume_clip_rect.intersection(screen_clip_rect) else {
-                continue;
-            };
+            // let Some(clip_rect) = volume_clip_oct.intersection(&screen_clip_rect) else {
+            //     continue;
+            // };
+            // if self.slow_render_context.is_some() {
+            //     self.render_clip_rect(clip_rect, 0x0000FF);
+            //     let ctx = self.slow_render_context.as_ref().unwrap();
+            //     (ctx.present_func)(self.frame_pixels, self.frame_width, self.frame_height, self.frame_stride);
+            //     std::thread::sleep(ctx.delta_time);
+            // }
 
-            if self.slow_render_context.is_some() {
-                self.render_clip_rect(clip_rect, 0x0000FF);
-
-                let ctx = self.slow_render_context.as_ref().unwrap();
-                (ctx.present_func)(self.frame_pixels, self.frame_width, self.frame_height, self.frame_stride);
-                std::thread::sleep(ctx.delta_time);
-            }
-
-            self.render_volume(volume_id, volume_clip_rect);
+            self.render_volume(volume_id, &volume_clip_oct);
 
             if let Some(ctx) = self.slow_render_context.as_ref() {
                 (ctx.present_func)(self.frame_pixels, self.frame_width, self.frame_height, self.frame_stride);
@@ -1128,8 +1068,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
     /// Build correct volume set rendering order
     fn order_rendered_volume_set(
         bsp: &bsp::Bsp,
-        visible_set: &mut BTreeMap<bsp::VolumeId, geom::ClipRect>,
-        render_set: &mut Vec<(bsp::VolumeId, geom::ClipRect)>,
+        render_set: &mut Vec<bsp::VolumeId>,
         camera_location: Vec3f
     ) {
         match bsp {
@@ -1147,14 +1086,12 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
 
                 Self::order_rendered_volume_set(
                     first,
-                    visible_set,
                     render_set,
                     camera_location
                 );
 
                 Self::order_rendered_volume_set(
                     &second,
-                    visible_set,
                     render_set,
                     camera_location
                 );
@@ -1162,9 +1099,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
 
             // Move volume to render set if it's visible
             bsp::Bsp::Volume(id) => {
-                if let Some(clip_rect) = visible_set.remove(id) {
-                    render_set.push((*id, clip_rect));
-                }
+                render_set.push(*id);
             }
 
             // Just ignore this case)
@@ -1174,24 +1109,18 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
 
     /// Display ALL level volumes
     fn render_all(&mut self) {
-        let screen_clip_rect = self.get_screen_clip_rect();
+        let screen_clip_oct = geom::ClipOct::from_clip_rect(self.get_screen_clip_rect());
 
-        let mut visible_set = BTreeMap::from_iter(self
-            .map
-            .all_volume_ids()
-            .map(|id| (id, screen_clip_rect))
-        );
         let mut render_set = Vec::new();
 
         Self::order_rendered_volume_set(
             self.map.get_bsp(),
-            &mut visible_set,
             &mut render_set,
             self.camera_location
         );
 
-        for (id, clip_rect) in render_set {
-            self.render_volume(id, clip_rect);
+        for id in render_set {
+            self.render_volume(id, &screen_clip_oct);
         }
     }
 }

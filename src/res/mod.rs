@@ -26,6 +26,9 @@ pub struct ImageRef<'t> {
 
 /// Mipmapped texture
 pub struct Texture {
+    /// Base UV scale
+    uv_scale: f32,
+
     /// Texture width
     width: usize,
 
@@ -40,19 +43,14 @@ pub struct Texture {
 }
 
 impl Texture {
+    /// Get default 'not found' texture
     pub fn default() -> Self {
-        let m = 0xFF00FF;
-
         Self {
-            width: 4,
-            height: 4,
+            uv_scale: 32.0,
+            width: 2,
+            height: 2,
             offsets: vec![0],
-            data: vec![
-                0, 0, m, m,
-                0, 0, m, m,
-                m, m, 0, 0,
-                m, m, 0, 0,
-            ],
+            data: vec![0x000000, 0xFF00FF, 0xFF00FF, 0x000000],
         }
     }
 
@@ -62,7 +60,8 @@ impl Texture {
     }
 
     /// Mip image reference
-    pub fn get_mipmap<'t>(&'t self, index: usize) -> (ImageRef<'t>, usize) {
+    /// Returns (image, uv_scale) pair with UV account
+    pub fn get_mipmap<'t>(&'t self, index: usize) -> (ImageRef<'t>, f32) {
         // Clamp mipmap index
         let index = usize::min(index, self.offsets.len() - 1);
 
@@ -77,7 +76,9 @@ impl Texture {
                 width,
                 height,
             },
-            index
+
+            // Calculate texture UV scale
+            (1 << index) as f32 * self.uv_scale
         )
     }
 }
@@ -312,6 +313,7 @@ impl MaterialTable {
                     let name = name.to_string().to_ascii_uppercase();
                     texture_index_map.insert(name, textures.len());
                     textures.push(Texture {
+                        uv_scale: 1.0,
                         width,
                         height,
                         offsets,

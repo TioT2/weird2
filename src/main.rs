@@ -420,92 +420,92 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
         }
     }
 
+    /// Clip polygon by octagon
+    fn clip_polygon_oct(&self, points: &mut Vec<Vec5UVf>, result: &mut Vec<Vec5UVf>, clip_oct: &geom::ClipOct) {
+        macro_rules! clip_edge {
+            ($metric: ident, $clip_val: expr, $cmp: tt) => {
+                for index in 0..points.len() {
+                    let curr = points[index];
+                    let next = points[(index + 1) % points.len()];
+
+                    if $metric!(curr) $cmp $clip_val {
+                        result.push(curr);
+
+                        if !($metric!(next) $cmp $clip_val) {
+                            let t = ($clip_val - $metric!(curr)) / ($metric!(next) - $metric!(curr));
+                            result.push((next - curr) * t + curr);
+                        }
+                    } else if $metric!(next) $cmp $clip_val {
+                        let t = ($clip_val - $metric!(curr)) / ($metric!(next) - $metric!(curr));
+                        result.push((next - curr) * t + curr);
+                    }
+                }
+            }
+        }
+
+        macro_rules! clip_metric_minmax {
+            ($metric: ident, $min: expr, $max: expr) => {
+                result.clear();
+                clip_edge!($metric, $min, >=);
+                std::mem::swap(points, result);
+        
+                result.clear();
+                clip_edge!($metric, $max, >=);
+                std::mem::swap(points, result);
+            };
+        }
+
+        macro_rules! metric_x { ($e: ident) => { ($e.x) } }
+        macro_rules! metric_y { ($e: ident) => { ($e.y) } }
+        macro_rules! metric_y_a_x { ($e: ident) => { ($e.y + $e.x) } }
+        macro_rules! metric_y_s_x { ($e: ident) => { ($e.y - $e.x) } }
+
+        clip_metric_minmax!(metric_x, clip_oct.min_x, clip_oct.max_x);
+        clip_metric_minmax!(metric_y, clip_oct.min_y, clip_oct.max_y);
+        clip_metric_minmax!(metric_y_a_x, clip_oct.min_y_a_x, clip_oct.max_y_a_x);
+        clip_metric_minmax!(metric_y_s_x, clip_oct.min_y_s_x, clip_oct.max_y_s_x);
+    }
+
     /// Clip polygon by some rectangle
     fn clip_polygon_rect(&self, points: &mut Vec<Vec5UVf>, result: &mut Vec<Vec5UVf>, clip_rect: geom::ClipRect) {
-        for index in 0..points.len() {
-            let curr = points[index];
-            let next = points[(index + 1) % points.len()];
+        // Common clipping instruction
+        macro_rules! clip_edge {
+            ($metric: ident, $clip_val: expr, $cmp: tt) => {
+                for index in 0..points.len() {
+                    let curr = points[index];
+                    let next = points[(index + 1) % points.len()];
 
-            if curr.x >= clip_rect.min.x {
-                result.push(curr);
+                    if $metric!(curr) $cmp $clip_val {
+                        result.push(curr);
 
-                if next.x < clip_rect.min.x {
-                    let t = (clip_rect.min.x - curr.x) / (next.x - curr.x);
-
-                    result.push((next - curr) * t + curr);
+                        if !($metric!(next) $cmp $clip_val) {
+                            let t = ($clip_val - $metric!(curr)) / ($metric!(next) - $metric!(curr));
+                            result.push((next - curr) * t + curr);
+                        }
+                    } else if $metric!(next) $cmp $clip_val {
+                        let t = ($clip_val - $metric!(curr)) / ($metric!(next) - $metric!(curr));
+                        result.push((next - curr) * t + curr);
+                    }
                 }
-            } else if next.x >= clip_rect.min.x {
-                let t = (clip_rect.min.x - curr.x) / (next.x - curr.x);
-
-                result.push((next - curr) * t + curr);
             }
         }
 
-        std::mem::swap(points, result);
-        
-        result.clear();
-        for index in 0..points.len() {
-            let curr = points[index];
-            let next = points[(index + 1) % points.len()];
+        macro_rules! metric_x { ($e: ident) => { $e.x } }
+        macro_rules! metric_y { ($e: ident) => { $e.y } }
 
-            if curr.y >= clip_rect.min.y {
-                result.push(curr);
-
-                if next.y < clip_rect.min.y {
-                    let t = (clip_rect.min.y - curr.y) / (next.y - curr.y);
-
-                    result.push((next - curr) * t + curr);
-                }
-            } else if next.y >= clip_rect.min.y {
-                let t = (clip_rect.min.y - curr.y) / (next.y - curr.y);
-
-                result.push((next - curr) * t + curr);
-            }
-        }
-
+        clip_edge!(metric_x, clip_rect.min.x, >=);
         std::mem::swap(points, result);
 
         result.clear();
-        for index in 0..points.len() {
-            let curr = points[index];
-            let next = points[(index + 1) % points.len()];
-
-            if curr.x <= clip_rect.max.x {
-                result.push(curr);
-
-                if next.x > clip_rect.max.x {
-                    let t = (clip_rect.max.x - curr.x) / (next.x - curr.x);
-
-                    result.push((next - curr) * t + curr);
-                }
-            } else if next.x <= clip_rect.max.x {
-                let t = (clip_rect.max.x - curr.x) / (next.x - curr.x);
-
-                result.push((next - curr) * t + curr);
-            }
-        }
-
+        clip_edge!(metric_y, clip_rect.min.y, >=);
         std::mem::swap(points, result);
 
         result.clear();
-        for index in 0..points.len() {
-            let curr = points[index];
-            let next = points[(index + 1) % points.len()];
+        clip_edge!(metric_x, clip_rect.max.x, <=);
+        std::mem::swap(points, result);
 
-            if curr.y <= clip_rect.max.y {
-                result.push(curr);
-
-                if next.y > clip_rect.max.y {
-                    let t = (clip_rect.max.y - curr.y) / (next.y - curr.y);
-
-                    result.push((next - curr) * t + curr);
-                }
-            } else if next.y <= clip_rect.max.y {
-                let t = (clip_rect.max.y - curr.y) / (next.y - curr.y);
-
-                result.push((next - curr) * t + curr);
-            }
-        }
+        result.clear();
+        clip_edge!(metric_y, clip_rect.max.y, <=);
     }
 
     /// Project polygon on screen
@@ -622,7 +622,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
         const DY_EPSILON: f32 = 0.01;
 
         // Calculate polygon bounds
-        let first_line = usize::min(min_y_value.floor() as usize, self.frame_height - 1);
+        let first_line = usize::min(min_y_value.floor() as usize, self.frame_height);
         let last_line = usize::min(max_y_value.ceil() as usize, self.frame_height);
 
         let mut left_index = ind_next!(min_y_index);
@@ -742,15 +742,15 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
 
                     *pixel_ptr = color * (((xi >> 5) ^ (yi >> 5)) & 1) as u32;
                 } else if MODE == RasterizationMode::Textured as u32 {
-                    let uv = Vec2f::new(
-                        zuv.y / zuv.x,
-                        zuv.z / zuv.x,
-                    );
+                    let u = ((zuv.y / zuv.x) as isize)
+                        .rem_euclid(texture.width as isize)
+                        .unsigned_abs();
 
-                    let xi: usize = (uv.x as isize).rem_euclid(texture.width as isize) as usize;
-                    let yi: usize = (uv.y as isize).rem_euclid(texture.height as isize) as usize;
+                    let v = ((zuv.z / zuv.x) as isize)
+                        .rem_euclid(texture.height as isize)
+                        .unsigned_abs();
 
-                    *pixel_ptr = texture.data[yi * texture.width + xi];
+                    *pixel_ptr = *texture.data.get_unchecked(v * texture.width + u);
                 } else {
                     panic!("Unknown rasterization mode: {}", MODE);
                 }
@@ -881,7 +881,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                 ((min_dist_2 / 32768.0).log2() / 2.0) as usize
             };
 
-            let (image, mip_map_index) = texture.get_mipmap(mip_index);
+            let (image, image_uv_scale) = texture.get_mipmap(mip_index);
 
             // Calculate simple per-face diffuse light
             let light_diffuse = Vec3f::new(0.30, 0.47, 0.80)
@@ -900,18 +900,15 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                 (color.b as f32 * light) as u8,
             ];
 
-            // Calculate UV scale based on mipmap index
-            let uv_scale = (1 << mip_map_index) as f32;
-
             self.render_polygon(
                 &polygon,
                 geom::Plane {
-                    normal: surface.u.normal / uv_scale,
-                    distance: surface.u.distance / uv_scale,
+                    normal: surface.u.normal / image_uv_scale,
+                    distance: surface.u.distance / image_uv_scale,
                 },
                 geom::Plane {
-                    normal: surface.v.normal / uv_scale,
-                    distance: surface.v.distance / uv_scale,
+                    normal: surface.v.normal / image_uv_scale,
+                    distance: surface.v.distance / image_uv_scale,
                 },
                 color,
                 image,
@@ -1480,10 +1477,6 @@ fn main() {
         // Build render context
         let mut render_context = RenderContext {
             camera_location: logical_camera.location,
-            // camera_plane: geom::Plane::from_point_normal(
-            //     logical_camera.location,
-            //     logical_camera.direction
-            // ),
             view_projection_matrix,
             map: &map,
             material_table: &material_reference_table,

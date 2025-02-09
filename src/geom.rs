@@ -581,6 +581,14 @@ pub struct ClipOct {
 }
 
 impl ClipOct {
+    /// Build empty clipping octagon
+    pub fn empty() -> Self {
+        Self {
+            max_x: 0.0, max_y: 0.0, max_y_a_x: 0.0, max_y_s_x: 0.0,
+            min_x: 0.0, min_y: 0.0, min_y_a_x: 0.0, min_y_s_x: 0.0,
+        }
+    }
+
     /// Calculate conservative clipping octagon of clipping rectangle
     pub fn from_clip_rect(clip_rect: ClipRect) -> Self {
         Self {

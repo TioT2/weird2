@@ -69,6 +69,9 @@ pub struct Surface {
 
     /// True if transparent, false if not
     pub is_transparent: u8,
+
+    /// Sky flag
+    pub is_sky: u8,
 }
 
 impl Into<geom::Plane> for Plane {

@@ -25,6 +25,12 @@ pub struct BrushFace {
 
     /// Index of material in map material table
     pub mtl_name: String,
+
+    /// True if face is transparent, false if not
+    pub is_transparent: bool,
+
+    /// True if this is sky
+    pub is_sky: bool,
 }
 
 /// Map brush

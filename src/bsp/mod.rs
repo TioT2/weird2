@@ -48,6 +48,9 @@ pub struct Surface {
     /// Surface transparency flag
     pub is_transparent: bool,
 
+    /// True if sky, false if not
+    pub is_sky: bool,
+
     /// U texture-mapping axis
     pub u: geom::Plane,
 
@@ -596,6 +599,7 @@ impl Map {
                         material_id: MaterialId::from_index(surface.material_index as usize),
                         polygon_id: PolygonId::from_index(surface.polygon_index as usize),
                         is_transparent: surface.is_transparent != 0,
+                        is_sky: surface.is_sky != 0,
 
                         u: surface.u.into(),
                         v: surface.v.into(),
@@ -721,6 +725,7 @@ impl Map {
                 u: surface.u.into(),
                 v: surface.v.into(),
                 is_transparent: surface.is_transparent as u8,
+                is_sky: surface.is_sky as u8,
             })
         )?;
 

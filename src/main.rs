@@ -329,8 +329,8 @@ struct RenderContext<'t, 'ref_table> {
     /// Camera location
     camera_location: Vec3f,
 
-    /// Camera visibility plane
-    // camera_plane: geom::Plane,
+    /// Camera direction
+    camera_direction: Vec3f,
 
     /// VP matrix
     view_projection_matrix: Mat4f,
@@ -477,7 +477,42 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
     }
 
     /// Project polygon on screen
-    pub fn get_screenspace_polygon(&self, points: &mut Vec<Vec5UVf>, point_dst: &mut Vec<Vec5UVf>) {
+    pub fn get_screenspace_polygon<const IS_SKY: bool>(&self, points: &mut Vec<Vec5UVf>, point_dst: &mut Vec<Vec5UVf>) {
+        if IS_SKY {
+            // Distance of sky from camera
+            const DIST: f32 = 128.0;
+
+            for point in points.iter_mut() {
+                let rel_pos = point.xyz() - self.camera_location;
+
+                let inv_z_2 = (rel_pos.z * rel_pos.z).recip();
+
+                let u = {
+                    let dir_len_2 = rel_pos.x * rel_pos.x + rel_pos.z * rel_pos.z;
+
+                    DIST.copysign(rel_pos.x) * (dir_len_2 * inv_z_2 - 1.0).sqrt()
+                };
+
+                let v = {
+                    let dir_len_2 = rel_pos.y * rel_pos.y + rel_pos.z * rel_pos.z;
+
+                    DIST.copysign(rel_pos.y) * (dir_len_2 * inv_z_2 - 1.0).sqrt()
+                };
+
+                // let new_pos = Vec3f::new(u, v, DIST.copysign(rel_pos.z));
+                // let rn = rel_pos ^ new_pos;
+                // let pos = rel_pos * (rn / rel_pos.length2()) + self.camera_location;
+
+                *point = Vec5UVf::new(
+                    u + self.camera_location.x,
+                    v + self.camera_location.y,
+                    DIST.copysign(rel_pos.z) + self.camera_location.z,
+                    u,
+                    v,
+                );
+            }
+        }
+
         // Calculate projection-space points
         point_dst.clear();
         for pt in points.iter() {
@@ -498,25 +533,19 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
         let height = self.frame_height as f32 * 0.5;
 
         point_dst.clear();
-        for v in points.iter() {
+        for pt in points.iter() {
             point_dst.push(Vec5UVf::new(
-                (1.0 + v.x / v.z) * width,
-                (1.0 - v.y / v.z) * height,
-                1.0 / v.z,
-                v.u / v.z,
-                v.v / v.z,
+                (1.0 + pt.x / pt.z) * width,
+                (1.0 - pt.y / pt.z) * height,
+                1.0 / pt.z,
+                pt.u / pt.z,
+                pt.v / pt.z,
             ));
         }
     }
 
     /// Render already clipped polygon
     unsafe fn render_clipped_polygon(&mut self, is_transparent: bool, points: &[Vec5UVf], color: u32, texture: res::ImageRef) {
-        // // Prevent optimization of entire function call
-        // std::hint::black_box(&is_transparent);
-        // std::hint::black_box(&points);
-        // std::hint::black_box(&color);
-        // std::hint::black_box(&texture);
-
         if is_transparent {
             match self.rasterization_mode {
                 RasterizationMode::Standard => self.render_clipped_polygon_impl::<0, true>(&points, color, texture),
@@ -735,6 +764,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
         color: [u8; 3],
         texture: res::ImageRef,
         is_transparent: bool,
+        is_sky: bool,
         clip_oct: &geom::ClipOct
     ) {
         // Calculate polygon point set
@@ -751,7 +781,12 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
         let mut point_dst = Vec::with_capacity(polygon.points.len());
 
         // Get projected polygons
-        self.get_screenspace_polygon(&mut points, &mut point_dst);
+
+        if is_sky {
+            self.get_screenspace_polygon::<true>(&mut points, &mut point_dst);
+        } else {
+            self.get_screenspace_polygon::<false>(&mut points, &mut point_dst);
+        }
         std::mem::swap(&mut points, &mut point_dst);
 
         // Clip polygon by volume clipping rectangle
@@ -790,6 +825,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
         let volume = self.map.get_volume(id).unwrap();
 
         'polygon_rendering: for surface in volume.get_surfaces() {
+
             let polygon = self.map.get_polygon(surface.polygon_id).unwrap();
 
             // Perform backface culling
@@ -809,7 +845,9 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                 .unwrap();
 
             // Find mip index
-            let mip_index = {
+            let mip_index = if surface.is_sky {
+                0
+            } else {
                 let mut min_dist_2 = f32::MAX;
     
                 for point in &polygon.points {
@@ -855,6 +893,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                 color,
                 image,
                 surface.is_transparent,
+                surface.is_sky,
                 clip_oct
             );
         }
@@ -929,6 +968,13 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
 
                 let volume = self.map.get_volume(*volume_id).unwrap();
 
+                // 'sky_rendering: for surface in volume.get_surfaces() {
+                //     if !surface.is_sky {
+                //         continue 'sky_rendering;
+                //     }
+                //     *sky_clip_oct = sky_clip_oct.union(&volume_clip_oct);
+                // }
+
                 'portal_rendering: for portal in volume.get_portals() {
                     let portal_polygon = self.map
                         .get_polygon(portal.polygon_id)
@@ -980,7 +1026,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                             polygon_points.reverse();
                         }
 
-                        self.get_screenspace_polygon(&mut polygon_points, &mut proj_polygon_points);
+                        self.get_screenspace_polygon::<false>(&mut polygon_points, &mut proj_polygon_points);
 
                         // Check if it's even a polygon
                         if proj_polygon_points.len() < 3 {
@@ -1002,7 +1048,6 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
 
                         clip_oct
                     };
-
 
                     // Insert clipping rectangle in PVS
                     let pvs_entry = pvs
@@ -1406,6 +1451,7 @@ fn main() {
         // Build render context
         let mut render_context = RenderContext {
             camera_location: logical_camera.location,
+            camera_direction: logical_camera.direction,
             view_projection_matrix,
             map: &map,
             material_table: &material_reference_table,

@@ -411,6 +411,8 @@ impl Map {
                             distance: face.texture_offset_y,
                         },
                         mtl_name: face.texture_name.clone(),
+                        is_transparent: face.texture_name.starts_with('*'),
+                        is_sky: face.texture_name.starts_with("SKY"),
                     });
                 }
 

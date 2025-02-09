@@ -99,10 +99,9 @@ impl map::Map {
                     continue;
                 }
 
-                let is_transparent = f1.mtl_name.starts_with("*");
                 let points = geom::sort_points_by_angle(points, f1.plane.normal);
 
-                if is_transparent {
+                if f1.is_transparent {
                     physical_polygons.push(PhysicalPolygon {
                         polygon: geom::Polygon {
                             points: {
@@ -115,7 +114,8 @@ impl map::Map {
                         material_index: *mtlid,
                         material_u: f1.u,
                         material_v: f1.v,
-                        is_transparent,
+                        is_transparent: true,
+                        is_sky: f1.is_sky,
                     });
                 }
 
@@ -128,7 +128,8 @@ impl map::Map {
                     material_index: *mtlid,
                     material_u: f1.u,
                     material_v: f1.v,
-                    is_transparent,
+                    is_transparent: f1.is_transparent,
+                    is_sky: f1.is_sky,
                 });
             }
         }
@@ -153,6 +154,9 @@ pub struct PhysicalPolygon {
 
     /// True if physical polygon is built from transparent material, false if not
     pub is_transparent: bool,
+
+    /// True if this physical polygon refers to sky, false if not
+    pub is_sky: bool,
 }
 
 /// Reference to another volume
@@ -438,6 +442,7 @@ impl HullVolume {
                                     material_u: physical_polygon.material_u,
                                     material_v: physical_polygon.material_v,
                                     is_transparent: physical_polygon.is_transparent,
+                                    is_sky: physical_polygon.is_sky,
                                 });
 
                                 back_physical_polygons.push(PhysicalPolygon {
@@ -446,6 +451,7 @@ impl HullVolume {
                                     material_u: physical_polygon.material_u,
                                     material_v: physical_polygon.material_v,
                                     is_transparent: physical_polygon.is_transparent,
+                                    is_sky: physical_polygon.is_sky,
                                 });
                             }
                             geom::PolygonSplitResult::Coplanar => {
@@ -690,6 +696,7 @@ impl Builder {
                         material_u: physical_polygon.material_u,
                         material_v: physical_polygon.material_v,
                         is_transparent: physical_polygon.is_transparent,
+                        is_sky: physical_polygon.is_sky,
                     });
 
                     back_polygons.push(PhysicalPolygon {
@@ -698,6 +705,7 @@ impl Builder {
                         material_u: physical_polygon.material_u,
                         material_v: physical_polygon.material_v,
                         is_transparent: physical_polygon.is_transparent,
+                        is_sky: physical_polygon.is_sky,
                     });
                 }
             }
@@ -1259,6 +1267,7 @@ impl Builder {
                                 u: physical_polygon.material_u,
                                 v: physical_polygon.material_v,
                                 is_transparent: physical_polygon.is_transparent,
+                                is_sky: physical_polygon.is_sky,
                             }
                         })
                     );

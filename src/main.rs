@@ -9,8 +9,6 @@
 // WDAT - Data format, contains 'final' project with location BSP's.
 
 use std::collections::{BTreeMap, HashMap};
-use bsp::VolumeId;
-use geom::ClipOct;
 use math::{Mat4f, Vec2f, Vec3f, Vec5UVf};
 use sdl2::keyboard::Scancode;
 
@@ -331,8 +329,11 @@ struct RenderContext<'t, 'ref_table> {
     /// Camera location
     camera_location: Vec3f,
 
-    /// Camera direction
-    camera_direction: Vec3f,
+    /// Quake-like Sky backround UV offset
+    sky_background_uv_offset: Vec2f,
+
+    /// Quake-like sky foreground UV offset
+    sky_foreground_uv_offset: Vec2f,
 
     /// VP matrix
     view_projection_matrix: Mat4f,
@@ -520,81 +521,94 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
             point_dst.push(Vec3f::new(
                 (1.0 + pt.x / pt.z) * width,
                 (1.0 - pt.y / pt.z) * height,
-                1.0 / pt.z,
+                0.0,
             ));
         }
     }
 
-    /// Project polygon on screen
-    pub fn get_screenspace_polygon<const IS_SKY: bool>(&self, points: &mut Vec<Vec5UVf>, point_dst: &mut Vec<Vec5UVf>) {
-        // Check if points need reprojection
-        // Distance of sky from camera
+    /// Apply projection to sky polygon
+    pub fn get_projected_sky_polygon(
+        &self,
+        polygon: &geom::Polygon,
+        point_dst: &mut Vec<Vec5UVf>
+    ) {
+        for point in polygon.points.iter() {
+            // Distance
+            const DIST: f32 = 128.0;
 
-        point_dst.clear();
-        for point in points.iter() {
-            if IS_SKY {
-                // Distance
-                const DIST: f32 = 128.0;
+            let rp = *point - self.camera_location;
 
-                let rp = point.xyz() - self.camera_location;
+            // Copy z sign to correct back-z case
+            let s_dist = DIST.copysign(rp.z);
 
-                let s_dist = DIST.copysign(rp.z);
+            let u = rp.x / rp.z * s_dist;
+            let v = rp.y / rp.z * s_dist;
 
-                let u = rp.x / rp.z * s_dist;
-                let v = rp.y / rp.z * s_dist;
-
-                point_dst.push(Vec5UVf::from_32(
-                    // Vector-only transform is used here to don't add camera location back.
-                    self.view_projection_matrix.transform_vector(Vec3f::new(u, v, s_dist)),
-                    Vec2f::new(u, v)
-                ));
-            } else {
-                point_dst.push(Vec5UVf::from_32(
-                    self.view_projection_matrix.transform_point(point.xyz()),
-                    point.uv()
-                ));
-            }
+            point_dst.push(Vec5UVf::from_32(
+                // Vector-only transform is used here to don't add camera location back.
+                self.view_projection_matrix.transform_vector(Vec3f::new(u, v, s_dist)),
+                Vec2f::new(u, v)
+            ));
         }
-        std::mem::swap(points, point_dst);
+    }
 
-        // Clip polygon invisible part
+    /// Apply projection to default polygon
+    pub fn get_projected_polygon(
+        &self,
+        polygon: &geom::Polygon,
+        material_u: geom::Plane,
+        material_v: geom::Plane,
+        point_dst: &mut Vec<Vec5UVf>,
+    ) {
         point_dst.clear();
-        self.clip_viewspace_back(points, point_dst);
-        std::mem::swap(points, point_dst);
-
-        // Calculate screen-space points
-        let width = self.frame_width as f32 * 0.5;
-        let height = self.frame_height as f32 * 0.5;
-
-        point_dst.clear();
-        for pt in points.iter() {
-            point_dst.push(Vec5UVf::new(
-                (1.0 + pt.x / pt.z) * width,
-                (1.0 - pt.y / pt.z) * height,
-                1.0 / pt.z,
-                pt.u / pt.z,
-                pt.v / pt.z,
+        for point in polygon.points.iter() {
+            point_dst.push(Vec5UVf::from_32(
+                self.view_projection_matrix.transform_point(*point),
+                Vec2f::new(
+                    point.dot(material_u.normal) + material_u.distance,
+                    point.dot(material_v.normal) + material_v.distance,
+                )
             ));
         }
     }
 
     /// Render already clipped polygon
-    unsafe fn render_clipped_polygon(&mut self, is_transparent: bool, points: &[Vec5UVf], color: u32, texture: res::ImageRef) {
-        if is_transparent {
-            match self.rasterization_mode {
-                RasterizationMode::Standard => self.render_clipped_polygon_impl::<0, true>(&points, color, texture),
-                RasterizationMode::Overdraw => self.render_clipped_polygon_impl::<1, true>(&points, color, texture),
-                RasterizationMode::Depth    => self.render_clipped_polygon_impl::<2, true>(&points, color, texture),
-                RasterizationMode::UV       => self.render_clipped_polygon_impl::<3, true>(&points, color, texture),
-                RasterizationMode::Textured => self.render_clipped_polygon_impl::<4, true>(&points, color, texture),
+    unsafe fn render_clipped_polygon(&mut self, is_transparent: bool, is_sky: bool, points: &[Vec5UVf], color: u32, texture: res::ImageRef) {
+        if is_sky {
+            if is_transparent {
+                match self.rasterization_mode {
+                    RasterizationMode::Standard => self.render_clipped_polygon_impl::<0, true, true>(&points, color, texture),
+                    RasterizationMode::Overdraw => self.render_clipped_polygon_impl::<1, true, true>(&points, color, texture),
+                    RasterizationMode::Depth    => self.render_clipped_polygon_impl::<2, true, true>(&points, color, texture),
+                    RasterizationMode::UV       => self.render_clipped_polygon_impl::<3, true, true>(&points, color, texture),
+                    RasterizationMode::Textured => self.render_clipped_polygon_impl::<4, true, true>(&points, color, texture),
+                }
+            } else {
+                match self.rasterization_mode {
+                    RasterizationMode::Standard => self.render_clipped_polygon_impl::<0, false, true>(&points, color, texture),
+                    RasterizationMode::Overdraw => self.render_clipped_polygon_impl::<1, false, true>(&points, color, texture),
+                    RasterizationMode::Depth    => self.render_clipped_polygon_impl::<2, false, true>(&points, color, texture),
+                    RasterizationMode::UV       => self.render_clipped_polygon_impl::<3, false, true>(&points, color, texture),
+                    RasterizationMode::Textured => self.render_clipped_polygon_impl::<4, false, true>(&points, color, texture),
+                }
             }
         } else {
-            match self.rasterization_mode {
-                RasterizationMode::Standard => self.render_clipped_polygon_impl::<0, false>(&points, color, texture),
-                RasterizationMode::Overdraw => self.render_clipped_polygon_impl::<1, false>(&points, color, texture),
-                RasterizationMode::Depth    => self.render_clipped_polygon_impl::<2, false>(&points, color, texture),
-                RasterizationMode::UV       => self.render_clipped_polygon_impl::<3, false>(&points, color, texture),
-                RasterizationMode::Textured => self.render_clipped_polygon_impl::<4, false>(&points, color, texture),
+            if is_transparent {
+                match self.rasterization_mode {
+                    RasterizationMode::Standard => self.render_clipped_polygon_impl::<0, true, false>(&points, color, texture),
+                    RasterizationMode::Overdraw => self.render_clipped_polygon_impl::<1, true, false>(&points, color, texture),
+                    RasterizationMode::Depth    => self.render_clipped_polygon_impl::<2, true, false>(&points, color, texture),
+                    RasterizationMode::UV       => self.render_clipped_polygon_impl::<3, true, false>(&points, color, texture),
+                    RasterizationMode::Textured => self.render_clipped_polygon_impl::<4, true, false>(&points, color, texture),
+                }
+            } else {
+                match self.rasterization_mode {
+                    RasterizationMode::Standard => self.render_clipped_polygon_impl::<0, false, false>(&points, color, texture),
+                    RasterizationMode::Overdraw => self.render_clipped_polygon_impl::<1, false, false>(&points, color, texture),
+                    RasterizationMode::Depth    => self.render_clipped_polygon_impl::<2, false, false>(&points, color, texture),
+                    RasterizationMode::UV       => self.render_clipped_polygon_impl::<3, false, false>(&points, color, texture),
+                    RasterizationMode::Textured => self.render_clipped_polygon_impl::<4, false, false>(&points, color, texture),
+                }
             }
         }
     }
@@ -603,6 +617,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
     unsafe fn render_clipped_polygon_impl<
         const MODE: u32,
         const IS_TRANSPARENT: bool,
+        const IS_SKY: bool,
     >(
         &mut self,
         points: &[Vec5UVf],
@@ -773,15 +788,43 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
 
                     *pixel_ptr = color * (((xi >> 5) ^ (yi >> 5)) & 1) as u32;
                 } else if MODE == RasterizationMode::Textured as u32 {
-                    let u = ((zuv.y / zuv.x) as isize)
-                        .rem_euclid(texture.width as isize)
-                        .unsigned_abs();
+                    if IS_SKY {
+                        let fg_u = ((zuv.y / zuv.x + self.sky_foreground_uv_offset.x) as isize)
+                            .rem_euclid(texture.width as isize >> 1)
+                            .unsigned_abs();
 
-                    let v = ((zuv.z / zuv.x) as isize)
-                        .rem_euclid(texture.height as isize)
-                        .unsigned_abs();
+                        let fg_v = ((zuv.z / zuv.x + self.sky_foreground_uv_offset.y) as isize)
+                            .rem_euclid(texture.height as isize)
+                            .unsigned_abs();
 
-                    *pixel_ptr = *texture.data.get_unchecked(v * texture.width + u);
+                        let fg_color = *texture.data.get_unchecked(fg_v * texture.width + fg_u);
+
+                        if fg_color == 0 {
+                            let bg_u = ((zuv.y / zuv.x + self.sky_background_uv_offset.x) as isize)
+                                .rem_euclid(texture.width as isize >> 1)
+                                .unsigned_abs();
+
+                            let bg_v = ((zuv.z / zuv.x + self.sky_background_uv_offset.y) as isize)
+                                .rem_euclid(texture.height as isize)
+                                .unsigned_abs();
+
+                            *pixel_ptr = *texture.data.get_unchecked(bg_v * texture.width + bg_u + (texture.width >> 1));
+                        } else {
+                            *pixel_ptr = fg_color;
+                        }
+    
+                    } else {
+                        let u = ((zuv.y / zuv.x) as isize)
+                            .rem_euclid(texture.width as isize)
+                            .unsigned_abs();
+    
+                        let v = ((zuv.z / zuv.x) as isize)
+                            .rem_euclid(texture.height as isize)
+                            .unsigned_abs();
+    
+                        *pixel_ptr = *texture.data.get_unchecked(v * texture.width + u);
+                    }
+
                 } else {
                     panic!("Unknown rasterization mode: {}", MODE);
                 }
@@ -793,8 +836,8 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
     fn render_polygon(
         &mut self,
         polygon: &geom::Polygon,
-        plane_u: geom::Plane,
-        plane_v: geom::Plane,
+        material_u: geom::Plane,
+        material_v: geom::Plane,
         color: [u8; 3],
         texture: res::ImageRef,
         is_transparent: bool,
@@ -802,29 +845,43 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
         clip_oct: &geom::ClipOct
     ) {
         // Calculate polygon point set
-        let mut points = polygon.points
-            .iter()
-            .map(|v| Vec5UVf::from_32(
-                *v,
-                Vec2f::new(
-                    (*v ^ plane_u.normal) + plane_u.distance,
-                    (*v ^ plane_v.normal) + plane_v.distance,
-                )
-            ))
-            .collect::<Vec<_>>();
+        let mut points = Vec::with_capacity(polygon.points.len());
         let mut point_dst = Vec::with_capacity(polygon.points.len());
 
         // Get projected polygons
 
-        // Sky polygons have slightly different projection rules
+        // Apply projection (and calculate UVs)
         if is_sky {
-            self.get_screenspace_polygon::<true>(&mut points, &mut point_dst);
+            self.get_projected_sky_polygon(polygon, &mut points);
         } else {
-            self.get_screenspace_polygon::<false>(&mut points, &mut point_dst);
+            self.get_projected_polygon(polygon, material_u, material_v, &mut points);
         }
+
+        // Clip polygon invisible part
+        point_dst.clear();
+        self.clip_viewspace_back(&mut points, &mut point_dst);
         std::mem::swap(&mut points, &mut point_dst);
 
-        // Clip polygon by volume clipping rectangle
+        // Calculate screen-space points
+        let width = self.frame_width as f32 * 0.5;
+        let height = self.frame_height as f32 * 0.5;
+
+        point_dst.clear();
+        for pt in points.iter() {
+            let inv_z = pt.z.recip();
+
+            point_dst.push(Vec5UVf::new(
+                (1.0 + pt.x * inv_z) * width,
+                (1.0 - pt.y * inv_z) * height,
+                inv_z,
+                pt.u * inv_z,
+                pt.v * inv_z,
+            ));
+        }
+        
+        std::mem::swap(&mut points, &mut point_dst);
+
+        // Clip polygon by volume clipping octagon
         point_dst.clear();
         self.clip_polygon_oct(&mut points, &mut point_dst, clip_oct);
         std::mem::swap(&mut points, &mut point_dst);
@@ -848,6 +905,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
         unsafe {
             self.render_clipped_polygon(
                 is_transparent,
+                is_sky,
                 &points,
                 color_u32,
                 texture
@@ -879,7 +937,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                 .get_texture(surface.material_id)
                 .unwrap();
 
-            // Find mip index
+            // Find mip index (sky uses 0 by default)
             let mip_index = if surface.is_sky {
                 0
             } else {
@@ -968,154 +1026,11 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
     /// rectangles.
     pub fn build_render_set(
         &self,
-        start_volume_id: bsp::VolumeId,
-    ) -> Vec<(VolumeId, ClipOct)> {
-        let mut stack = Vec::new();
-
-        let mut pvs = BTreeMap::new();
-        let mut inv_render_set = Vec::new();
-        
-        pvs.insert(
-            start_volume_id,
-            geom::ClipOct::from_clip_rect(self.get_screen_clip_rect())
-        );
-
-        stack.push(self.map.get_bsp());
-
-        while let Some(bsp_elem) = stack.pop() {
-            match bsp_elem {
-                bsp::Bsp::Partition {
-                    splitter_plane,
-                    front,
-                    back
-                } => {
-                    let rel = splitter_plane.get_point_relation(self.camera_location);
-    
-                    let (first, second) = match rel {
-                        geom::PointRelation::Front | geom::PointRelation::OnPlane => {
-                            (front, back)
-                        }
-                        geom::PointRelation::Back => {
-                            (back, front)
-                        }
-                    };
-    
-                    stack.push(second);
-                    stack.push(first);
-                }
-                bsp::Bsp::Volume(volume_id) => 'volume_traverse: {
-                    let Some(volume_clip_oct) = pvs.get(volume_id) else {
-                        break 'volume_traverse;
-                    };
-                    let volume_clip_oct = *volume_clip_oct;
-    
-                    // Insert volume in render set
-                    inv_render_set.push((*volume_id, volume_clip_oct));
-    
-                    let volume = self.map.get_volume(*volume_id).unwrap();
-    
-                    // 'sky_rendering: for surface in volume.get_surfaces() {
-                    //     if !surface.is_sky {
-                    //         continue 'sky_rendering;
-                    //     }
-                    //     *sky_clip_oct = sky_clip_oct.union(&volume_clip_oct);
-                    // }
-    
-                    'portal_rendering: for portal in volume.get_portals() {
-                        let portal_polygon = self.map
-                            .get_polygon(portal.polygon_id)
-                            .unwrap();
-    
-                        // Perform modified backface culling
-                        let backface_cull_result =
-                            (portal_polygon.plane.normal ^ self.camera_location) - portal_polygon.plane.distance
-                            >= 0.0;
-                        if backface_cull_result != portal.is_facing_front {
-                            continue 'portal_rendering;
-                        }
-    
-                        let clip_rect = 'portal_validation: {
-                            /*
-                            I think, that projection is main source of the 'black bug'
-                            is (kinda) infinite points during polygon projection process.
-                            Possibly, it can be solved with early visible portion clipping
-                            or automatic enabling of polygon based on it's relative
-                            location from camera.
-    
-                            Reason: bug disappears if we just don't use projection at all.
-                                (proved by distance clip fix)
-    
-                            TODO: add some distance coefficent
-                            Constant works quite bad, because
-                            on small-metric maps it allows too much,
-                            and on huge ones it (theoretically) don't
-                            saves us from the bug.
-                            */
-    
-                            let portal_plane_distance = portal_polygon
-                                .plane
-                                .get_signed_distance(self.camera_location)
-                                .abs();
-    
-                            // Do not calculate projection for near portals
-                            if portal_plane_distance <= 8.0 {
-                                break 'portal_validation volume_clip_oct;
-                            }
-    
-                            let mut polygon_points = portal_polygon.points.clone();
-                            let mut proj_polygon_points = Vec::new();
-    
-                            if !portal.is_facing_front {
-                                polygon_points.reverse();
-                            }
-    
-                            self.get_screenspace_portal_polygon(
-                                &mut polygon_points,
-                                &mut proj_polygon_points
-                            );
-    
-                            // Check if it's even a polygon
-                            if proj_polygon_points.len() < 3 {
-                                continue 'portal_rendering;
-                            }
-    
-                            let proj_oct = geom::ClipOct::from_points_xy(
-                                proj_polygon_points.iter().copied()
-                            );
-    
-                            let Some(clip_oct) = geom::ClipOct::intersection(
-                                &volume_clip_oct,
-                                &proj_oct.extend(1.0, 1.0, 1.0, 1.0)
-                            ) else {
-                                continue 'portal_rendering;
-                            };
-    
-                            clip_oct
-                        };
-    
-                        // Insert clipping rectangle in PVS
-                        let pvs_entry = pvs
-                            .entry(portal.dst_volume_id);
-    
-                        match pvs_entry {
-                            std::collections::btree_map::Entry::Occupied(mut occupied) => {
-                                let existing_rect: &mut geom::ClipOct = occupied.get_mut();
-                                *existing_rect = existing_rect.union(&clip_rect);
-                            }
-                            std::collections::btree_map::Entry::Vacant(vacant) => {
-                                vacant.insert(clip_rect);
-                            }
-                        }
-                    }
-                }
-                bsp::Bsp::Void => {}
-            }
-        }
-
-        return inv_render_set;
-
-        #[cfg(not)]
-        match bsp_elem {
+        bsp: &bsp::Bsp,
+        pvs: &mut BTreeMap<bsp::VolumeId, geom::ClipOct>,
+        inv_render_set: &mut Vec<(bsp::VolumeId, geom::ClipOct)>,
+    ) {
+        match bsp {
             bsp::Bsp::Partition {
                 splitter_plane,
                 front,
@@ -1246,7 +1161,16 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
 
     /// Render scene starting from certain volume
     pub fn render(&mut self, start_volume_id: bsp::VolumeId) {
-        let inv_render_set = self.build_render_set(start_volume_id);
+        let inv_render_set = {
+            let mut pvs = BTreeMap::new();
+            let mut inv_render_set = Vec::new();
+
+            pvs.insert(start_volume_id, geom::ClipOct::from_clip_rect(self.get_screen_clip_rect()));
+
+            self.build_render_set(self.map.get_bsp(), &mut pvs, &mut inv_render_set);
+
+            inv_render_set
+        };
 
         if let Some(ctx) = self.slow_render_context.as_ref() {
             (ctx.present_func)(self.frame_pixels, self.frame_width, self.frame_height, self.frame_stride);
@@ -1620,10 +1544,19 @@ fn main() {
         // Build render context
         let mut render_context = RenderContext {
             camera_location: logical_camera.location,
-            camera_direction: logical_camera.direction,
             view_projection_matrix,
             map: &map,
             material_table: &material_reference_table,
+
+            sky_background_uv_offset: Vec2f::new(
+                timer.get_time() * 4.0,
+                timer.get_time() * 4.0,
+            ),
+
+            sky_foreground_uv_offset: Vec2f::new(
+                timer.get_time() * 16.0,
+                timer.get_time() * 16.0,
+            ),
 
             frame_pixels: frame_buffer.as_mut_ptr(),
             frame_width: frame_width,

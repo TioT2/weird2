@@ -1,3 +1,5 @@
+///! WBSP compiler implementation file
+
 /*
 1. Build BSP polyhedra from plane sets
 2. Calculate hull volume
@@ -11,131 +13,126 @@
 use std::{collections::{BTreeMap, BTreeSet, HashMap}, num::NonZeroU32};
 use crate::{geom, math::{Mat3f, Vec3f}, map};
 
-impl map::Map {
-    /// Build physical polygon set
-    pub fn build_world_physical_polygons(&self) -> (Vec<PhysicalPolygon>, Vec<String>) {
-        // 'material -> physical polygon color' table
-        let mut texture_mtlid_talbe = HashMap::<String, usize>::new();
+/// Build entity physical polygon set
+pub fn build_entity_physical_polygons(
+    worldspawn: &map::Entity,
+    texture_mtlid_table: &mut HashMap<String, usize>,
+    material_names: &mut Vec<String>
+) -> Vec<PhysicalPolygon> {
 
-        let Some(worldspawn) = self.find_entity("classname", Some("worldspawn")) else {
-            return (Vec::new(), Vec::new());
-        };
+    let mut physical_polygons = Vec::<PhysicalPolygon>::new();
 
-        let mut physical_polygons = Vec::<PhysicalPolygon>::new();
-        let mut materials = Vec::<String>::new();
+    'brush_polygon_building: for brush in &worldspawn.brushes {
+        // Don't merge clip brushes into render BSP
+        if brush.is_invisible {
+            continue 'brush_polygon_building;
+        }
 
-        'brush_polygon_building: for brush in &worldspawn.brushes {
-            // Don't merge clip brushes into render BSP
-            if brush.is_invisible {
-                continue 'brush_polygon_building;
-            }
+        let planes = brush.faces
+            .iter()
+            .map(|face| {
+                let mtlid = texture_mtlid_table
+                    .get(&face.mtl_name)
+                    .copied()
+                    .unwrap_or_else(|| {
+                        let mtlid = material_names.len();
+                        texture_mtlid_table.insert(face.mtl_name.clone(), mtlid);
+                        material_names.push(face.mtl_name.clone());
 
-            let planes = brush.faces
-                .iter()
-                .map(|face| {
-                    let mtlid = texture_mtlid_talbe
-                        .get(&face.mtl_name)
-                        .copied()
-                        .unwrap_or_else(|| {
-                            let mtlid = materials.len();
-                            texture_mtlid_talbe.insert(face.mtl_name.clone(), mtlid);
-                            materials.push(face.mtl_name.clone());
+                        mtlid
+                    });
 
-                            mtlid
-                        });
+                (face, mtlid)
+            })
+            .collect::<Vec<_>>();
 
-                    (face, mtlid)
-                })
-                .collect::<Vec<_>>();
+        for (f1, mtlid) in &planes {
 
-            for (f1, mtlid) in &planes {
+            let mut points = Vec::<Vec3f>::new();
 
-                let mut points = Vec::<Vec3f>::new();
-
-                for (f2, _) in &planes {
-                    if std::ptr::eq(f1, f2) {
-                        continue;
-                    }
-
-                    for (f3, _) in &planes {
-                        if std::ptr::eq(f1, f3) || std::ptr::eq(f2, f3) {
-                            continue;
-                        }
-
-                        let mat = Mat3f::from_rows(
-                            f1.plane.normal,
-                            f2.plane.normal,
-                            f3.plane.normal
-                        );
-
-                        let inv = match mat.inversed() {
-                            Some(m) => m,
-                            None => continue,
-                        };
-                        let intersection_point = inv * Vec3f::new(
-                            f1.plane.distance,
-                            f2.plane.distance,
-                            f3.plane.distance,
-                        );
-    
-                        points.push(intersection_point);
-                    }
-                }
-
-                points = points
-                    .into_iter()
-                    .filter(|point| planes
-                        .iter()
-                        .all(|(face, _)| {
-                            face.plane.get_point_relation(*point) != geom::PointRelation::Front
-                        })
-                    )
-                    .collect::<Vec<_>>();
-
-                points = geom::deduplicate_points(points);
-
-                if points.len() < 3 {
-                    // It's not even a polygon, actually
+            for (f2, _) in &planes {
+                if std::ptr::eq(f1, f2) {
                     continue;
                 }
 
-                let points = geom::sort_points_by_angle(points, f1.plane.normal);
+                for (f3, _) in &planes {
+                    if std::ptr::eq(f1, f3) || std::ptr::eq(f2, f3) {
+                        continue;
+                    }
 
-                if f1.is_transparent {
-                    physical_polygons.push(PhysicalPolygon {
-                        polygon: geom::Polygon {
-                            points: {
-                                let mut pts = points.clone();
-                                pts.reverse();
-                                pts
-                            },
-                            plane: f1.plane.negate_direction(),
-                        },
-                        material_index: *mtlid,
-                        material_u: f1.u,
-                        material_v: f1.v,
-                        is_transparent: true,
-                        is_sky: f1.is_sky,
-                    });
+                    let mat = Mat3f::from_rows(
+                        f1.plane.normal,
+                        f2.plane.normal,
+                        f3.plane.normal
+                    );
+
+                    let inv = match mat.inversed() {
+                        Some(m) => m,
+                        None => continue,
+                    };
+                    let intersection_point = inv * Vec3f::new(
+                        f1.plane.distance,
+                        f2.plane.distance,
+                        f3.plane.distance,
+                    );
+
+                    points.push(intersection_point);
                 }
+            }
 
-                // Build physical polygon
+            points = points
+                .into_iter()
+                .filter(|point| planes
+                    .iter()
+                    .all(|(face, _)| {
+                        face.plane.get_point_relation(*point) != geom::PointRelation::Front
+                    })
+                )
+                .collect::<Vec<_>>();
+
+            points = geom::deduplicate_points(points);
+
+            if points.len() < 3 {
+                // It's not even a polygon, actually
+                continue;
+            }
+
+            let points = geom::sort_points_by_angle(points, f1.plane.normal);
+
+            if f1.is_transparent {
                 physical_polygons.push(PhysicalPolygon {
                     polygon: geom::Polygon {
-                        points: points,
-                        plane: f1.plane,
+                        points: {
+                            let mut pts = points.clone();
+                            pts.reverse();
+                            pts
+                        },
+                        plane: f1.plane.negate_direction(),
                     },
                     material_index: *mtlid,
                     material_u: f1.u,
                     material_v: f1.v,
-                    is_transparent: f1.is_transparent,
+                    is_transparent: true,
                     is_sky: f1.is_sky,
                 });
             }
-        }
 
-        (physical_polygons, materials)
+            // Build physical polygon
+            physical_polygons.push(PhysicalPolygon {
+                polygon: geom::Polygon {
+                    points: points,
+                    plane: f1.plane,
+                },
+                material_index: *mtlid,
+                material_u: f1.u,
+                material_v: f1.v,
+                is_transparent: f1.is_transparent,
+                is_sky: f1.is_sky,
+            });
+        }
     }
+
+    physical_polygons
 }
 
 /// Polygon that should be drawn
@@ -1291,13 +1288,31 @@ impl Builder {
     }
 }
 
-/// Builder
-pub fn build(map: &map::Map) -> super::Map {
+/// World building error
+#[derive(Debug)]
+pub enum Error {
+    /// No worldspawn entity
+    NoWorldspawn,
+}
+
+/// Build WBSP from map
+pub fn compile(map: &map::Map) -> Result<super::Map, Error> {
     let mut builder = Builder::new();
+
+    let Some(worldspawn) = map.find_entity("classname", Some("worldspawn")) else {
+        return Err(Error::NoWorldspawn);
+    };
+
+    let mut material_name_table = HashMap::new();
 
     let physical_polygons;
 
-    (physical_polygons, builder.materials_names) = map.build_world_physical_polygons();
+    // Build physical polygons of worldspawn entity
+    physical_polygons = build_entity_physical_polygons(
+        worldspawn,
+        &mut material_name_table,
+        &mut builder.materials_names
+    );
 
     // Build volumes & volume BSP
     builder.start_build_volumes(physical_polygons);
@@ -1309,7 +1324,7 @@ pub fn build(map: &map::Map) -> super::Map {
     builder.start_remove_invisible(map.get_all_origins());
 
     // Finalize building
-    builder.start_build_map()
+    Ok(builder.start_build_map())
 }
 
 // builder.rs

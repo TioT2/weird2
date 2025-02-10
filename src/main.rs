@@ -8,7 +8,7 @@
 // WRES - Resource format, contains textures/sounds/models/etc.
 // WDAT - Data format, contains 'final' project with location BSP's.
 
-use std::collections::{BTreeMap, HashMap};
+use std::{collections::{BTreeMap, HashMap}, ops::Add, sync::Arc};
 use math::{Mat4f, Vec2f, Vec3f, Vec5UVf};
 use sdl2::keyboard::Scancode;
 
@@ -315,25 +315,16 @@ impl Camera {
     }
 }
 
-/// Necessary data for slow rendering
-struct SlowRenderContext<'t> {
-    /// Frame presentation function reference
-    pub present_func: &'t dyn Fn(*mut u32, usize, usize, usize) -> (),
-
-    /// Duration between frames rendered
-    pub delta_time: std::time::Duration,
-}
-
 /// Render context
 struct RenderContext<'t, 'ref_table> {
     /// Camera location
     camera_location: Vec3f,
 
-    /// Quake-like Sky backround UV offset
+    /// Offset of background from foreground
     sky_background_uv_offset: Vec2f,
 
-    /// Quake-like sky foreground UV offset
-    sky_foreground_uv_offset: Vec2f,
+    /// Foreground offset
+    sky_uv_offset: Vec2f,
 
     /// VP matrix
     view_projection_matrix: Mat4f,
@@ -357,8 +348,6 @@ struct RenderContext<'t, 'ref_table> {
 
     /// Rasterization mode
     rasterization_mode: RasterizationMode,
-
-    slow_render_context: Option<SlowRenderContext<'t>>,
 }
 
 /// Different rasterization modes
@@ -547,7 +536,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
             point_dst.push(Vec5UVf::from_32(
                 // Vector-only transform is used here to don't add camera location back.
                 self.view_projection_matrix.transform_vector(Vec3f::new(u, v, s_dist)),
-                Vec2f::new(u, v)
+                Vec2f::new(u + self.sky_uv_offset.x, v + self.sky_uv_offset.y)
             ));
         }
     }
@@ -684,6 +673,13 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
         let mut right_curr = points[right_index];
         let mut right_slope = (right_curr - right_prev) / (right_curr.y - right_prev.y);
 
+        let width = if IS_SKY {
+            texture.width as isize >> 1
+        } else {
+            texture.width as isize
+        };
+        let height = texture.height as isize;
+
         // Scan for lines
         'line_loop: for pixel_y in first_line..last_line {
             // Get current pixel y
@@ -789,37 +785,41 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                     *pixel_ptr = color * (((xi >> 5) ^ (yi >> 5)) & 1) as u32;
                 } else if MODE == RasterizationMode::Textured as u32 {
                     if IS_SKY {
-                        let fg_u = ((zuv.y / zuv.x + self.sky_foreground_uv_offset.x) as isize)
-                            .rem_euclid(texture.width as isize >> 1)
+                        let u = zuv.y / zuv.x;
+                        let v = zuv.z / zuv.x;
+
+                        let fg_u = (u as isize)
+                            .rem_euclid(width)
                             .unsigned_abs();
 
-                        let fg_v = ((zuv.z / zuv.x + self.sky_foreground_uv_offset.y) as isize)
-                            .rem_euclid(texture.height as isize)
+                        let fg_v = (v as isize)
+                            .rem_euclid(height)
                             .unsigned_abs();
 
                         let fg_color = *texture.data.get_unchecked(fg_v * texture.width + fg_u);
 
+                        // Check foreground color and fetch backround if foreground is transparent
                         if fg_color == 0 {
-                            let bg_u = ((zuv.y / zuv.x + self.sky_background_uv_offset.x) as isize)
-                                .rem_euclid(texture.width as isize >> 1)
+                            let bg_u = ((u + self.sky_background_uv_offset.x) as isize)
+                                .rem_euclid(width)
+                                .add(width)
                                 .unsigned_abs();
 
-                            let bg_v = ((zuv.z / zuv.x + self.sky_background_uv_offset.y) as isize)
-                                .rem_euclid(texture.height as isize)
+                            let bg_v = ((v + self.sky_background_uv_offset.y) as isize)
+                                .rem_euclid(height)
                                 .unsigned_abs();
 
-                            *pixel_ptr = *texture.data.get_unchecked(bg_v * texture.width + bg_u + (texture.width >> 1));
+                            *pixel_ptr = *texture.data.get_unchecked(bg_v * texture.width + bg_u);
                         } else {
                             *pixel_ptr = fg_color;
                         }
-    
                     } else {
                         let u = ((zuv.y / zuv.x) as isize)
-                            .rem_euclid(texture.width as isize)
+                            .rem_euclid(width)
                             .unsigned_abs();
-    
+
                         let v = ((zuv.z / zuv.x) as isize)
-                            .rem_euclid(texture.height as isize)
+                            .rem_euclid(height)
                             .unsigned_abs();
     
                         *pixel_ptr = *texture.data.get_unchecked(v * texture.width + u);
@@ -878,7 +878,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                 pt.v * inv_z,
             ));
         }
-        
+
         std::mem::swap(&mut points, &mut point_dst);
 
         // Clip polygon by volume clipping octagon
@@ -1172,17 +1172,11 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
             inv_render_set
         };
 
-        if let Some(ctx) = self.slow_render_context.as_ref() {
-            (ctx.present_func)(self.frame_pixels, self.frame_width, self.frame_height, self.frame_stride);
-            std::thread::sleep(ctx.delta_time);
-        }
-
         for (volume_id, volume_clip_oct) in inv_render_set
             .iter()
             .rev()
             .copied()
         {
-
             // let Some(clip_rect) = volume_clip_oct.intersection(&screen_clip_rect) else {
             //     continue;
             // };
@@ -1194,12 +1188,6 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
             // }
 
             self.render_volume(volume_id, &volume_clip_oct);
-
-            if let Some(ctx) = self.slow_render_context.as_ref() {
-                (ctx.present_func)(self.frame_pixels, self.frame_width, self.frame_height, self.frame_stride);
-
-                std::thread::sleep(ctx.delta_time);
-            }
         }
     }
 
@@ -1299,7 +1287,7 @@ fn main() {
                     let source = std::fs::read_to_string(&map_path).unwrap();
                     let q1_location_map = map::q1_map::Map::parse(&source).unwrap();
                     let location_map = q1_location_map.build_wmap();
-                    let compiled_map = bsp::builder::build(&location_map);
+                    let compiled_map = bsp::Map::compile(&location_map).unwrap();
 
                     if let Some(directory) = std::path::Path::new(&wbsp_path).parent() {
                         _ = std::fs::create_dir(directory);
@@ -1317,18 +1305,17 @@ fn main() {
             let source = std::fs::read_to_string(&map_path).unwrap();
             let q1_location_map = map::q1_map::Map::parse(&source).unwrap();
             let location_map = q1_location_map.build_wmap();
-            bsp::builder::build(&location_map)
+            bsp::Map::compile(&location_map).unwrap()
         }
     };
+    let map = Arc::new(map);
 
     let material_table = {
         let mut wad_file = std::fs::File::open("temp/q1/gfx/base.wad").unwrap();
 
         res::MaterialTable::load_wad2(&mut wad_file).unwrap()
     };
-
-    let material_reference_table = material_table
-        .build_reference_table(&map);
+    let material_table = Arc::new(material_table);
 
     struct BspStatBuilder {
         pub volume_count: usize,
@@ -1388,12 +1375,14 @@ fn main() {
     let mut input = Input::new();
     let mut camera = Camera::new();
 
-    // Set spectial camera location
-    camera.location = Vec3f::new(-174.0, 2114.6, -64.5); // -200, 2000, -50
-    camera.direction = Vec3f::new(-0.4, 0.9, 0.1);
+    // camera.location = Vec3f::new(-174.0, 2114.6, -64.5); // -200, 2000, -50
+    // camera.direction = Vec3f::new(-0.4, 0.9, 0.1);
 
     camera.location = Vec3f::new(1402.4, 1913.7, -86.3);
     camera.direction = Vec3f::new(-0.74, 0.63, -0.24);
+
+    // camera.location = Vec3f::new(-72.9, 698.3, -118.8);
+    // camera.direction = Vec3f::new(0.37, 0.68, 0.63);
 
     // camera.location = Vec3f::new(30.0, 40.0, 50.0);
 
@@ -1402,6 +1391,150 @@ fn main() {
 
     // Buffer that contains software-rendered pixels
     let mut frame_buffer = Vec::<u32>::new();
+
+    /// Input render message
+    enum RenderInputMessage {
+        NewFrame {
+            frame_buffer: Vec<u32>,
+            width: u32,
+            height: u32,
+            camera: Camera,
+            view_projection_matrix: Mat4f,
+            rasterization_mode: RasterizationMode,
+        }
+    }
+
+    /// Render output message
+    enum RenderOutputMessage {
+        /// Rendered frame
+        RenderedFrame {
+            frame_buffer: Vec<u32>,
+            width: u32,
+            height: u32,
+        }
+    }
+
+    let (render_in_sender, render_out_reciever) = {
+
+        let (render_in_sender, render_in_reciever) =
+            std::sync::mpsc::channel::<RenderInputMessage>();
+        let (render_out_sender, render_out_reciever) =
+            std::sync::mpsc::channel::<RenderOutputMessage>();
+
+        let map = map.clone();
+        let material_table = material_table.clone();
+
+        // Spawn render thread
+        _ = std::thread::spawn(move || {
+            // Create new local timer
+            let mut timer = Timer::new();
+
+            let render_in_reciever = render_in_reciever;
+            let render_out_sender = render_out_sender;
+
+            // Map reference
+            let map_arc = map.clone();
+            let material_table_arc = material_table;
+
+
+            let map = map_arc.as_ref();
+            let material_table = material_table_arc.as_ref();
+
+            let material_reference_table = material_table
+                .build_reference_table(&map);
+
+            // Send empty frame
+
+            let init_send_result = render_out_sender.send(RenderOutputMessage::RenderedFrame {
+                frame_buffer: Vec::new(),
+                width: 0,
+                height: 0,
+            });
+
+            if let Err(_) = init_send_result {
+                eprintln!("Send error occured");
+                return;
+            }
+
+            'frame_render_loop: loop {
+                let message = match render_in_reciever.try_recv() {
+                    Ok(message) => message,
+                    Err(err) => match err {
+                        std::sync::mpsc::TryRecvError::Disconnected => break 'frame_render_loop,
+                        std::sync::mpsc::TryRecvError::Empty => continue 'frame_render_loop,
+                    }
+                };
+
+                match message {
+                    RenderInputMessage::NewFrame {
+                        mut frame_buffer,
+                        width,
+                        height,
+                        camera,
+                        view_projection_matrix,
+                        rasterization_mode
+                    } => {
+                        timer.response();
+
+                        let time = timer.get_time();
+
+                        let mut render_context = RenderContext {
+                            camera_location: camera.location,
+                            frame_width: width as usize,
+                            frame_height: height as usize,
+                            frame_stride: width as usize,
+                            frame_pixels: frame_buffer.as_mut_ptr(),
+                            map: &map,
+                            material_table: &material_reference_table,
+                            rasterization_mode,
+                            sky_background_uv_offset: Vec2f::new(
+                                time * -12.0,
+                                time * -12.0,
+                            ),
+                
+                            sky_uv_offset: Vec2f::new(
+                                time * 16.0,
+                                time * 16.0,
+                            ),
+                            view_projection_matrix,
+                        };
+
+                        // Clear framebuffer
+                        unsafe {
+                            std::ptr::write_bytes(
+                                frame_buffer.as_mut_ptr(),
+                                0,
+                                frame_buffer.len()
+                            );
+                        }
+            
+                        let start_volume_id_opt = map
+                            .get_bsp()
+                            .traverse(camera.location);
+
+                        if let Some(start_volume_id) = start_volume_id_opt {
+                            render_context.render(start_volume_id);
+                        } else {
+                            render_context.render_all();
+                        }
+
+                        // Send output message
+                        let result = render_out_sender.send(RenderOutputMessage::RenderedFrame {
+                            frame_buffer,
+                            width,
+                            height
+                        });
+
+                        if let Err(_) = result {
+                            eprintln!("Render thread result sending error occured");
+                        }
+                    }
+                }
+            }
+        });
+
+        (render_in_sender, render_out_reciever)
+    };
 
     'main_loop: loop {
         input.release_changed();
@@ -1492,9 +1625,6 @@ fn main() {
 
         let view_projection_matrix = view_matrix * projection_matrix;
 
-        // Resize frame buffer to fit window's size
-        frame_buffer.resize(frame_width * frame_height, 0);
-
         let present_frame = |frame_buffer: *mut u32, frame_width: usize, frame_height: usize, frame_stride: usize| {
             let mut window_surface = match window.surface(&event_pump) {
                 Ok(window_surface) => window_surface,
@@ -1540,69 +1670,60 @@ fn main() {
                 eprintln!("Window update failed: {}", err);
             }
         };
+        
+        // Resize frame buffer to fit window's size
+        frame_buffer.resize(frame_width * frame_height, 0);
 
-        // Build render context
-        let mut render_context = RenderContext {
-            camera_location: logical_camera.location,
+        let send_res = render_in_sender.send(RenderInputMessage::NewFrame {
+            frame_buffer,
+            width: frame_width as u32,
+            height: frame_height as u32,
+            camera: logical_camera,
             view_projection_matrix,
-            map: &map,
-            material_table: &material_reference_table,
-
-            sky_background_uv_offset: Vec2f::new(
-                timer.get_time() * 4.0,
-                timer.get_time() * 4.0,
-            ),
-
-            sky_foreground_uv_offset: Vec2f::new(
-                timer.get_time() * 16.0,
-                timer.get_time() * 16.0,
-            ),
-
-            frame_pixels: frame_buffer.as_mut_ptr(),
-            frame_width: frame_width,
-            frame_height: frame_height,
-            frame_stride: frame_width,
-
             rasterization_mode,
-            slow_render_context: if do_enable_slow_rendering {
-                Some(SlowRenderContext {
-                    delta_time: std::time::Duration::from_millis(50),
-                    present_func: &present_frame,
-                })
-            } else {
-                None
-            },
-        };
+        });
 
-        // TODO: Parallel rendering/presentation
-
-        // Clear framebuffer
-        // frame_buffer.fill(0xCC774C);
-        unsafe {
-            std::ptr::write_bytes(
-                frame_buffer.as_mut_ptr(),
-                0,
-                frame_buffer.len()
-            );
+        if let Err(_) = send_res {
+            break 'main_loop;
         }
 
-        // Render frame
-        let start_volume_index_opt = map
-            .get_bsp()
-            .traverse(logical_camera.location);
+        // Previous frame contents
+        let prev_frame;
 
-        if let Some(start_volume_id) = start_volume_index_opt {
-            render_context.render(start_volume_id);
-        } else {
-            render_context.render_all();
+        'res_await_loop: loop {
+            let render_result = match render_out_reciever.try_recv() {
+                Ok(result) => result,
+                Err(err) => match err {
+                    std::sync::mpsc::TryRecvError::Disconnected => {
+                        eprintln!("Render thread dropped");
+                        break 'main_loop;
+                    },
+                    std::sync::mpsc::TryRecvError::Empty => continue 'res_await_loop,
+                }
+            };
+    
+            match render_result {
+                RenderOutputMessage::RenderedFrame {
+                    frame_buffer: mut rendered_frame_buffer,
+                    width,
+                    height
+                } => {
+                    // Present frame
+                    present_frame(
+                        rendered_frame_buffer.as_mut_ptr(),
+                        width as usize,
+                        height as usize,
+                        width as usize,
+                    );
+
+                    prev_frame = Some(rendered_frame_buffer);
+
+                    break 'res_await_loop;
+                }
+            }
         }
 
-        present_frame(
-            frame_buffer.as_mut_ptr(),
-            frame_width,
-            frame_height,
-            frame_width
-        );
+        frame_buffer = prev_frame.unwrap_or(Vec::new());
     }
 }
 

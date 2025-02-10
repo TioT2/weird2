@@ -149,7 +149,7 @@ impl From<std::ffi::FromBytesUntilNulError> for Wad2LoadingError {
 
 /// Table of references to certain WAD
 pub struct MaterialReferenceTable<'t> {
-    /// id.index -> (&texture, some random color) mapping
+    /// id.index -> (&texture, 'canonical' random color)
     ref_table: Vec<(&'t Texture, u32)>,
 }
 

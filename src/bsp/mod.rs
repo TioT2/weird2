@@ -2,10 +2,10 @@
 
 use std::num::NonZeroU32;
 use bytemuck::Zeroable;
-use crate::{geom, math::Vec3f};
+use crate::{geom, map, math::Vec3f};
 
 /// Declare actual map builder module
-pub mod builder;
+pub mod compiler;
 
 /// WBSP description module
 pub mod wbsp;
@@ -372,7 +372,15 @@ impl From<std::io::Error> for MapLoadingError {
     }
 }
 
+/// 
+pub use compiler::Error as MapCompilationError;
+
 impl Map {
+    /// Compile map to WBSP
+    pub fn compile(map: &map::Map) -> Result<Self, MapCompilationError> {
+        compiler::compile(map)
+    }
+
     /// Load map from WBSP file
     pub fn load(src: &mut dyn std::io::Read) -> Result<Self, MapLoadingError> {
         let mut header = wbsp::Header::zeroed();

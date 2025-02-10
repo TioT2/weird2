@@ -897,6 +897,29 @@ impl Mat4<f32> {
     } // fn projection_ortho
 
     /// Frustum projection matrix create function
+    /// # Inputs
+    /// * `l`, `r` - left and right boundaries
+    /// * `b`, `t` - bottom and top
+    /// * `n` - near plane
+    /// 
+    /// # Result
+    /// Projection matrix
+    /// 
+    /// # Note
+    /// Far plane is assumed to be infinite. This
+    /// matrix may be used with inverse z technique.
+    pub fn projection_frustum_inf_far(l: f32, r: f32, b: f32, t: f32, n: f32) -> Mat4<f32> {
+        Self {
+            data: [
+                [2.0 * n / (r - l), 0.0,               0.0,  0.0  ],
+                [0.0,               2.0 * n / (t - b), 0.0,  0.0  ],
+                [(r + l) / (r - l), (t + b) / (t - b), -1.0, -1.0 ],
+                [0.0,               0.0,               0.0,  0.0  ],
+            ],
+        }
+    } // fn projection_frustum
+
+    /// Frustum projection matrix create function
     /// * `l`, `r` - left and right boundaries
     /// * `b`, `t` - bottom and top
     /// * `n`, `f` - near and far
@@ -904,15 +927,10 @@ impl Mat4<f32> {
     pub fn projection_frustum(l: f32, r: f32, b: f32, t: f32, n: f32, f: f32) -> Mat4<f32> {
         Self {
             data: [
-                [2.0 * n / (r - l), 0.0, 0.0, 0.0],
-                [0.0, 2.0 * n / (t - b), 0.0, 0.0],
-                [
-                    (r + l) / (r - l),
-                    (t + b) / (t - b),
-                    -(f + n) / (f - n),
-                    -1.0,
-                ],
-                [0.0, 0.0, -2.0 * n * f / (f - n), 0.0],
+                [2.0 * n / (r - l), 0.0,               0.0,                    0.0  ],
+                [0.0,               2.0 * n / (t - b), 0.0,                    0.0  ],
+                [(r + l) / (r - l), (t + b) / (t - b), -(f + n) / (f - n),     -1.0 ],
+                [0.0,               0.0,               -2.0 * n * f / (f - n), 0.0  ],
             ],
         }
     } // fn projection_frustum

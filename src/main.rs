@@ -9,6 +9,8 @@
 // WDAT - Data format, contains 'final' project with location BSP's.
 
 use std::collections::{BTreeMap, HashMap};
+use bsp::VolumeId;
+use geom::ClipOct;
 use math::{Mat4f, Vec2f, Vec3f, Vec5UVf};
 use sdl2::keyboard::Scancode;
 
@@ -477,49 +479,81 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
     }
 
     /// Project polygon on screen
-    pub fn get_screenspace_polygon<const IS_SKY: bool>(&self, points: &mut Vec<Vec5UVf>, point_dst: &mut Vec<Vec5UVf>) {
-        if IS_SKY {
-            // Distance of sky from camera
-            const DIST: f32 = 128.0;
+    pub fn get_screenspace_portal_polygon(&self, points: &mut Vec<Vec3f>, point_dst: &mut Vec<Vec3f>) {
+        // Check if points need reprojection
+        // Distance of sky from camera
 
-            for point in points.iter_mut() {
-                let rel_pos = point.xyz() - self.camera_location;
+        point_dst.clear();
+        for point in points.iter() {
+            point_dst.push(self.view_projection_matrix.transform_point(*point));
+        }
+        std::mem::swap(points, point_dst);
 
-                let inv_z_2 = (rel_pos.z * rel_pos.z).recip();
+        // Clip polygon invisible part
+        point_dst.clear();
+        for index in 0..points.len() {
+            let curr = points[index];
+            let next = points[(index + 1) % points.len()];
 
-                let u = {
-                    let dir_len_2 = rel_pos.x * rel_pos.x + rel_pos.z * rel_pos.z;
+            if curr.z > 1.0 {
+                point_dst.push(curr);
 
-                    DIST.copysign(rel_pos.x) * (dir_len_2 * inv_z_2 - 1.0).sqrt()
-                };
+                if next.z < 1.0 {
+                    let t = (1.0 - curr.z) / (next.z - curr.z);
 
-                let v = {
-                    let dir_len_2 = rel_pos.y * rel_pos.y + rel_pos.z * rel_pos.z;
+                    point_dst.push((next - curr) * t + curr);
+                }
+            } else if next.z > 1.0 {
+                let t = (1.0 - curr.z) / (next.z - curr.z);
 
-                    DIST.copysign(rel_pos.y) * (dir_len_2 * inv_z_2 - 1.0).sqrt()
-                };
-
-                // let new_pos = Vec3f::new(u, v, DIST.copysign(rel_pos.z));
-                // let rn = rel_pos ^ new_pos;
-                // let pos = rel_pos * (rn / rel_pos.length2()) + self.camera_location;
-
-                *point = Vec5UVf::new(
-                    u + self.camera_location.x,
-                    v + self.camera_location.y,
-                    DIST.copysign(rel_pos.z) + self.camera_location.z,
-                    u,
-                    v,
-                );
+                point_dst.push((next - curr) * t + curr);
             }
         }
+        std::mem::swap(points, point_dst);
 
-        // Calculate projection-space points
+        // Calculate screen-space points
+        let width = self.frame_width as f32 * 0.5;
+        let height = self.frame_height as f32 * 0.5;
+
         point_dst.clear();
         for pt in points.iter() {
-            point_dst.push(Vec5UVf::from_32(
-                self.view_projection_matrix.transform_point(pt.xyz()),
-                pt.uv()
+            point_dst.push(Vec3f::new(
+                (1.0 + pt.x / pt.z) * width,
+                (1.0 - pt.y / pt.z) * height,
+                1.0 / pt.z,
             ));
+        }
+    }
+
+    /// Project polygon on screen
+    pub fn get_screenspace_polygon<const IS_SKY: bool>(&self, points: &mut Vec<Vec5UVf>, point_dst: &mut Vec<Vec5UVf>) {
+        // Check if points need reprojection
+        // Distance of sky from camera
+
+        point_dst.clear();
+        for point in points.iter() {
+            if IS_SKY {
+                // Distance
+                const DIST: f32 = 128.0;
+
+                let rp = point.xyz() - self.camera_location;
+
+                let s_dist = DIST.copysign(rp.z);
+
+                let u = rp.x / rp.z * s_dist;
+                let v = rp.y / rp.z * s_dist;
+
+                point_dst.push(Vec5UVf::from_32(
+                    // Vector-only transform is used here to don't add camera location back.
+                    self.view_projection_matrix.transform_vector(Vec3f::new(u, v, s_dist)),
+                    Vec2f::new(u, v)
+                ));
+            } else {
+                point_dst.push(Vec5UVf::from_32(
+                    self.view_projection_matrix.transform_point(point.xyz()),
+                    point.uv()
+                ));
+            }
         }
         std::mem::swap(points, point_dst);
 
@@ -782,6 +816,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
 
         // Get projected polygons
 
+        // Sky polygons have slightly different projection rules
         if is_sky {
             self.get_screenspace_polygon::<true>(&mut points, &mut point_dst);
         } else {
@@ -933,10 +968,153 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
     /// rectangles.
     pub fn build_render_set(
         &self,
-        bsp_elem: &bsp::Bsp,
-        pvs: &mut BTreeMap<bsp::VolumeId, geom::ClipOct>,
-        inv_render_set: &mut Vec<(bsp::VolumeId, geom::ClipOct)>,
-    ) {
+        start_volume_id: bsp::VolumeId,
+    ) -> Vec<(VolumeId, ClipOct)> {
+        let mut stack = Vec::new();
+
+        let mut pvs = BTreeMap::new();
+        let mut inv_render_set = Vec::new();
+        
+        pvs.insert(
+            start_volume_id,
+            geom::ClipOct::from_clip_rect(self.get_screen_clip_rect())
+        );
+
+        stack.push(self.map.get_bsp());
+
+        while let Some(bsp_elem) = stack.pop() {
+            match bsp_elem {
+                bsp::Bsp::Partition {
+                    splitter_plane,
+                    front,
+                    back
+                } => {
+                    let rel = splitter_plane.get_point_relation(self.camera_location);
+    
+                    let (first, second) = match rel {
+                        geom::PointRelation::Front | geom::PointRelation::OnPlane => {
+                            (front, back)
+                        }
+                        geom::PointRelation::Back => {
+                            (back, front)
+                        }
+                    };
+    
+                    stack.push(second);
+                    stack.push(first);
+                }
+                bsp::Bsp::Volume(volume_id) => 'volume_traverse: {
+                    let Some(volume_clip_oct) = pvs.get(volume_id) else {
+                        break 'volume_traverse;
+                    };
+                    let volume_clip_oct = *volume_clip_oct;
+    
+                    // Insert volume in render set
+                    inv_render_set.push((*volume_id, volume_clip_oct));
+    
+                    let volume = self.map.get_volume(*volume_id).unwrap();
+    
+                    // 'sky_rendering: for surface in volume.get_surfaces() {
+                    //     if !surface.is_sky {
+                    //         continue 'sky_rendering;
+                    //     }
+                    //     *sky_clip_oct = sky_clip_oct.union(&volume_clip_oct);
+                    // }
+    
+                    'portal_rendering: for portal in volume.get_portals() {
+                        let portal_polygon = self.map
+                            .get_polygon(portal.polygon_id)
+                            .unwrap();
+    
+                        // Perform modified backface culling
+                        let backface_cull_result =
+                            (portal_polygon.plane.normal ^ self.camera_location) - portal_polygon.plane.distance
+                            >= 0.0;
+                        if backface_cull_result != portal.is_facing_front {
+                            continue 'portal_rendering;
+                        }
+    
+                        let clip_rect = 'portal_validation: {
+                            /*
+                            I think, that projection is main source of the 'black bug'
+                            is (kinda) infinite points during polygon projection process.
+                            Possibly, it can be solved with early visible portion clipping
+                            or automatic enabling of polygon based on it's relative
+                            location from camera.
+    
+                            Reason: bug disappears if we just don't use projection at all.
+                                (proved by distance clip fix)
+    
+                            TODO: add some distance coefficent
+                            Constant works quite bad, because
+                            on small-metric maps it allows too much,
+                            and on huge ones it (theoretically) don't
+                            saves us from the bug.
+                            */
+    
+                            let portal_plane_distance = portal_polygon
+                                .plane
+                                .get_signed_distance(self.camera_location)
+                                .abs();
+    
+                            // Do not calculate projection for near portals
+                            if portal_plane_distance <= 8.0 {
+                                break 'portal_validation volume_clip_oct;
+                            }
+    
+                            let mut polygon_points = portal_polygon.points.clone();
+                            let mut proj_polygon_points = Vec::new();
+    
+                            if !portal.is_facing_front {
+                                polygon_points.reverse();
+                            }
+    
+                            self.get_screenspace_portal_polygon(
+                                &mut polygon_points,
+                                &mut proj_polygon_points
+                            );
+    
+                            // Check if it's even a polygon
+                            if proj_polygon_points.len() < 3 {
+                                continue 'portal_rendering;
+                            }
+    
+                            let proj_oct = geom::ClipOct::from_points_xy(
+                                proj_polygon_points.iter().copied()
+                            );
+    
+                            let Some(clip_oct) = geom::ClipOct::intersection(
+                                &volume_clip_oct,
+                                &proj_oct.extend(1.0, 1.0, 1.0, 1.0)
+                            ) else {
+                                continue 'portal_rendering;
+                            };
+    
+                            clip_oct
+                        };
+    
+                        // Insert clipping rectangle in PVS
+                        let pvs_entry = pvs
+                            .entry(portal.dst_volume_id);
+    
+                        match pvs_entry {
+                            std::collections::btree_map::Entry::Occupied(mut occupied) => {
+                                let existing_rect: &mut geom::ClipOct = occupied.get_mut();
+                                *existing_rect = existing_rect.union(&clip_rect);
+                            }
+                            std::collections::btree_map::Entry::Vacant(vacant) => {
+                                vacant.insert(clip_rect);
+                            }
+                        }
+                    }
+                }
+                bsp::Bsp::Void => {}
+            }
+        }
+
+        return inv_render_set;
+
+        #[cfg(not)]
         match bsp_elem {
             bsp::Bsp::Partition {
                 splitter_plane,
@@ -1016,17 +1194,17 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                             break 'portal_validation volume_clip_oct;
                         }
 
-                        let mut polygon_points = portal_polygon.points
-                            .iter()
-                            .map(|point| Vec5UVf::from_32(*point, Vec2f::zero()))
-                            .collect::<Vec<_>>();
-                        let mut proj_polygon_points: Vec<Vec5UVf> = Vec::with_capacity(polygon_points.len());
+                        let mut polygon_points = portal_polygon.points.clone();
+                        let mut proj_polygon_points = Vec::new();
 
                         if !portal.is_facing_front {
                             polygon_points.reverse();
                         }
 
-                        self.get_screenspace_polygon::<false>(&mut polygon_points, &mut proj_polygon_points);
+                        self.get_screenspace_portal_polygon(
+                            &mut polygon_points,
+                            &mut proj_polygon_points
+                        );
 
                         // Check if it's even a polygon
                         if proj_polygon_points.len() < 3 {
@@ -1034,9 +1212,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                         }
 
                         let proj_oct = geom::ClipOct::from_points_xy(
-                            proj_polygon_points
-                                .iter()
-                                .map(|v| v.xyz())
+                            proj_polygon_points.iter().copied()
                         );
 
                         let Some(clip_oct) = geom::ClipOct::intersection(
@@ -1070,14 +1246,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
 
     /// Render scene starting from certain volume
     pub fn render(&mut self, start_volume_id: bsp::VolumeId) {
-        let screen_clip_oct = geom::ClipOct::from_clip_rect(self.get_screen_clip_rect());
-
-        let mut pvs = BTreeMap::new();
-        let mut inv_render_set = Vec::new();
-
-        pvs.insert(start_volume_id, screen_clip_oct);
-
-        self.build_render_set(self.map.get_bsp(), &mut pvs, &mut inv_render_set);
+        let inv_render_set = self.build_render_set(start_volume_id);
 
         if let Some(ctx) = self.slow_render_context.as_ref() {
             (ctx.present_func)(self.frame_pixels, self.frame_width, self.frame_height, self.frame_stride);
@@ -1390,11 +1559,11 @@ fn main() {
             (1.0, window_height as f32 / window_width as f32)
         };
 
-        // Compute projection matrix
-        let projection_matrix = Mat4f::projection_frustum(
+        // Get projection matrix
+        let projection_matrix = Mat4f::projection_frustum_inf_far(
             -0.5 * aspect_x, 0.5 * aspect_x,
             -0.5 * aspect_y, 0.5 * aspect_y,
-            0.66, 100.0
+            0.66
         );
 
         let view_projection_matrix = view_matrix * projection_matrix;

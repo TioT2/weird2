@@ -1069,4 +1069,12 @@ impl Mat4<f32> {
     } // fn transform_4x4
 } // impl Mat4x4
 
+/// Quaternion structure
+pub struct Quat<T> {
+    pub w: T,
+    pub x: T,
+    pub y: T,
+    pub z: T,
+}
+
 // mod.rs

@@ -665,9 +665,6 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
         let mut left_curr = points[left_index];
         let mut left_slope = (left_curr - left_prev) / (left_curr.y - left_prev.y);
 
-        // let mut left_inv_slope = (left_curr.x - left_prev.x) / (left_curr.y - left_prev.y);
-        // let mut left_inv_z_slope = (left_curr.z - left_prev.z) / (left_curr.y - left_prev.y);
-
         let mut right_index = ind_prev!(min_y_index);
         let mut right_prev = points[min_y_index];
         let mut right_curr = points[right_index];
@@ -838,7 +835,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
         polygon: &geom::Polygon,
         material_u: geom::Plane,
         material_v: geom::Plane,
-        color: [u8; 3],
+        color: u32,
         texture: res::ImageRef,
         is_transparent: bool,
         is_sky: bool,
@@ -898,16 +895,13 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
             return;
         }
 
-        // Build color U32
-        let color_u32 = u32::from_le_bytes([color[0], color[1], color[2], 0]);
-
         // Rasterize polygon
         unsafe {
             self.render_clipped_polygon(
                 is_transparent,
                 is_sky,
                 &points,
-                color_u32,
+                color,
                 texture
             );
         }
@@ -925,13 +919,6 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
             if (polygon.plane.normal ^ self.camera_location) - polygon.plane.distance <= 0.0 {
                 continue 'polygon_rendering;
             }
-
-            // Get surface material
-            let color: bsp::Rgb8 = self
-                .material_table
-                .get_color(surface.material_id)
-                .unwrap()
-                .into();
 
             let texture = self.material_table
                 .get_texture(surface.material_id)
@@ -966,12 +953,20 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
             // Add ambient)
             let light = light_diffuse * 0.9 + 0.09;
 
+            // Get surface color
+            let color: [u8; 4] = self
+                .material_table
+                .get_color(surface.material_id)
+                .unwrap()
+                .to_le_bytes();
+
             // Calculate color, based on material and light
-            let color = [
-                (color.r as f32 * light) as u8,
-                (color.g as f32 * light) as u8,
-                (color.b as f32 * light) as u8,
-            ];
+            let color = u32::from_le_bytes([
+                (color[0] as f32 * light) as u8,
+                (color[1] as f32 * light) as u8,
+                (color[2] as f32 * light) as u8,
+                0
+            ]);
 
             self.render_polygon(
                 &polygon,
@@ -1167,7 +1162,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
 
             pvs.insert(start_volume_id, geom::ClipOct::from_clip_rect(self.get_screen_clip_rect()));
 
-            self.build_render_set(self.map.get_bsp(), &mut pvs, &mut inv_render_set);
+            self.build_render_set(self.map.get_world_model().get_bsp(), &mut pvs, &mut inv_render_set);
 
             inv_render_set
         };
@@ -1239,8 +1234,10 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
 
         let mut render_set = Vec::new();
 
+        let bsp = self.map.get_world_model().get_bsp();
+
         Self::order_rendered_volume_set(
-            self.map.get_bsp(),
+            bsp,
             &mut render_set,
             self.camera_location
         );
@@ -1255,7 +1252,7 @@ fn main() {
     print!("\n\n\n\n\n\n\n\n");
 
     // Enable/disable map caching
-    let do_enable_map_caching = true;
+    let do_enable_map_caching = false;
 
     // Synchronize visible-set-building and projection cameras
     let mut do_sync_logical_camera = true;
@@ -1277,6 +1274,9 @@ fn main() {
         let map_path = format!("{}{}.map", data_path, map_name);
 
         if do_enable_map_caching {
+            panic!("Map caching is temporarely disabled.");
+
+            #[cfg(not)]
             match std::fs::File::open(&wbsp_path) {
                 Ok(mut bsp_file) => {
                     // Load map from map cache
@@ -1349,7 +1349,7 @@ fn main() {
         volume_count: 0
     };
 
-    stat.visit(map.get_bsp());
+    stat.visit(map.get_world_model().get_bsp());
 
     let stat_total = stat.partition_count + stat.void_count + stat.volume_count;
 
@@ -1378,11 +1378,11 @@ fn main() {
     // camera.location = Vec3f::new(-174.0, 2114.6, -64.5); // -200, 2000, -50
     // camera.direction = Vec3f::new(-0.4, 0.9, 0.1);
 
-    camera.location = Vec3f::new(1402.4, 1913.7, -86.3);
-    camera.direction = Vec3f::new(-0.74, 0.63, -0.24);
+    // camera.location = Vec3f::new(1402.4, 1913.7, -86.3);
+    // camera.direction = Vec3f::new(-0.74, 0.63, -0.24);
 
-    // camera.location = Vec3f::new(-72.9, 698.3, -118.8);
-    // camera.direction = Vec3f::new(0.37, 0.68, 0.63);
+    camera.location = Vec3f::new(-72.9, 698.3, -118.8);
+    camera.direction = Vec3f::new(0.37, 0.68, 0.63);
 
     // camera.location = Vec3f::new(30.0, 40.0, 50.0);
 
@@ -1509,6 +1509,7 @@ fn main() {
                         }
             
                         let start_volume_id_opt = map
+                            .get_world_model()
                             .get_bsp()
                             .traverse(camera.location);
 

@@ -352,3 +352,5 @@ impl MaterialTable {
         MaterialReferenceTable { ref_table }
     }
 }
+
+// mod.rs

@@ -11,129 +11,7 @@
 */
 
 use std::{collections::{BTreeMap, BTreeSet, HashMap}, num::NonZeroU32};
-use crate::{geom, math::{Mat3f, Vec3f}, map};
-
-/// Build entity physical polygon set
-pub fn build_entity_physical_polygons(
-    worldspawn: &map::Entity,
-    texture_mtlid_table: &mut HashMap<String, usize>,
-    material_names: &mut Vec<String>
-) -> Vec<PhysicalPolygon> {
-
-    let mut physical_polygons = Vec::<PhysicalPolygon>::new();
-
-    'brush_polygon_building: for brush in &worldspawn.brushes {
-        // Don't merge clip brushes into render BSP
-        if brush.is_invisible {
-            continue 'brush_polygon_building;
-        }
-
-        let planes = brush.faces
-            .iter()
-            .map(|face| {
-                let mtlid = texture_mtlid_table
-                    .get(&face.mtl_name)
-                    .copied()
-                    .unwrap_or_else(|| {
-                        let mtlid = material_names.len();
-                        texture_mtlid_table.insert(face.mtl_name.clone(), mtlid);
-                        material_names.push(face.mtl_name.clone());
-
-                        mtlid
-                    });
-
-                (face, mtlid)
-            })
-            .collect::<Vec<_>>();
-
-        for (f1, mtlid) in &planes {
-
-            let mut points = Vec::<Vec3f>::new();
-
-            for (f2, _) in &planes {
-                if std::ptr::eq(f1, f2) {
-                    continue;
-                }
-
-                for (f3, _) in &planes {
-                    if std::ptr::eq(f1, f3) || std::ptr::eq(f2, f3) {
-                        continue;
-                    }
-
-                    let mat = Mat3f::from_rows(
-                        f1.plane.normal,
-                        f2.plane.normal,
-                        f3.plane.normal
-                    );
-
-                    let inv = match mat.inversed() {
-                        Some(m) => m,
-                        None => continue,
-                    };
-                    let intersection_point = inv * Vec3f::new(
-                        f1.plane.distance,
-                        f2.plane.distance,
-                        f3.plane.distance,
-                    );
-
-                    points.push(intersection_point);
-                }
-            }
-
-            points = points
-                .into_iter()
-                .filter(|point| planes
-                    .iter()
-                    .all(|(face, _)| {
-                        face.plane.get_point_relation(*point) != geom::PointRelation::Front
-                    })
-                )
-                .collect::<Vec<_>>();
-
-            points = geom::deduplicate_points(points);
-
-            if points.len() < 3 {
-                // It's not even a polygon, actually
-                continue;
-            }
-
-            let points = geom::sort_points_by_angle(points, f1.plane.normal);
-
-            if f1.is_transparent {
-                physical_polygons.push(PhysicalPolygon {
-                    polygon: geom::Polygon {
-                        points: {
-                            let mut pts = points.clone();
-                            pts.reverse();
-                            pts
-                        },
-                        plane: f1.plane.negate_direction(),
-                    },
-                    material_index: *mtlid,
-                    material_u: f1.u,
-                    material_v: f1.v,
-                    is_transparent: true,
-                    is_sky: f1.is_sky,
-                });
-            }
-
-            // Build physical polygon
-            physical_polygons.push(PhysicalPolygon {
-                polygon: geom::Polygon {
-                    points: points,
-                    plane: f1.plane,
-                },
-                material_index: *mtlid,
-                material_u: f1.u,
-                material_v: f1.v,
-                is_transparent: f1.is_transparent,
-                is_sky: f1.is_sky,
-            });
-        }
-    }
-
-    physical_polygons
-}
+use crate::{geom, map, math::{Mat3f, Vec3f}};
 
 /// Polygon that should be drawn
 pub struct PhysicalPolygon {
@@ -534,13 +412,10 @@ pub struct SplitTaskPolygon {
     pub polygon: geom::Polygon,
 }
 
-/// Map builder structure
-pub struct Builder {
-    /// Final volumes
+/// Single BSP model compilation context
+pub struct BspModelCompileContext {
+    /// 'Final' volumes
     pub volumes: Vec<HullVolume>,
-
-    /// Material set
-    pub materials_names: Vec<String>,
 
     /// Split infos
     pub split_infos: Vec<SplitInfo>,
@@ -550,16 +425,19 @@ pub struct Builder {
 
     /// Set of portal polygons (They should be shared to optimize total memory consume)
     pub portal_polygons: Vec<geom::Polygon>,
+
+    /// Global bounding box
+    pub bound_box: geom::BoundBox,
 }
 
-impl Builder {
+impl BspModelCompileContext {
     pub fn new() -> Self {
         Self {
             volumes: Vec::new(),
-            materials_names: Vec::new(),
             split_infos: Vec::new(),
             portal_polygons: Vec::new(),
             volume_bsp: None,
+            bound_box: geom::BoundBox::zero(),
         }
     }
 
@@ -738,7 +616,8 @@ impl Builder {
     /// Start volume building pass
     pub fn start_build_volumes(&mut self, physical_polygons: Vec<PhysicalPolygon>) {
 
-        let hull = geom::BoundBox::for_points(physical_polygons
+        // Calculate boundbox
+        self.bound_box = geom::BoundBox::for_points(physical_polygons
             .iter()
             .flat_map(|polygon| polygon
                 .polygon
@@ -746,11 +625,12 @@ impl Builder {
                 .iter()
                 .copied()
             )
-        // Extend volumes by 200
-        ).extend(Vec3f::new(200.0, 200.0, 200.0));
+        );
 
         // calculate hull volume
-        let hull_volume = HullVolume::from_bound_box(hull);
+        let hull_volume = HullVolume::from_bound_box(
+            self.bound_box.extend(Vec3f::new(200.0, 200.0, 200.0))
+        );
 
         // Build volumes
         let volume_bsp = self.build_volume(hull_volume, physical_polygons);
@@ -1217,10 +1097,147 @@ impl Builder {
 
         self.remove_volumes(removed_index_set);
     }
+}
 
-    /// Start map building
-    pub fn start_build_map(self) -> super::Map {
-        fn map_bsp(vbsp: Option<Box<VolumeBsp>>) -> super::Bsp {
+pub struct CompileContext {
+    /// Set of already added polygons
+    pub polygon_set: Vec<geom::Polygon>,
+
+    /// Set of material names
+    pub material_name_set: Vec<String>,
+
+    /// Material name table
+    pub material_name_table: HashMap<String, usize>,
+
+    /// Set of volumes
+    pub volume_set: Vec<super::Volume>,
+
+    /// Set of BSP models
+    pub bsp_models: Vec<super::BspModel>,
+}
+
+impl CompileContext {
+    // Build entity physical polygon set
+    pub fn build_entity_physical_polygons(&mut self, entity: &map::Entity) -> Vec<PhysicalPolygon> {
+
+        let mut physical_polygons = Vec::<PhysicalPolygon>::new();
+
+        'brush_polygon_building: for brush in &entity.brushes {
+            // Don't merge clip brushes into render BSP
+            if brush.is_invisible {
+                continue 'brush_polygon_building;
+            }
+    
+            let planes = brush.faces
+                .iter()
+                .map(|face| {
+                    let mtlid = self.material_name_table
+                        .get(&face.mtl_name)
+                        .copied()
+                        .unwrap_or_else(|| {
+                            let mtlid = self.material_name_set.len();
+                            self.material_name_table.insert(face.mtl_name.clone(), mtlid);
+                            self.material_name_set.push(face.mtl_name.clone());
+    
+                            mtlid
+                        });
+    
+                    (face, mtlid)
+                })
+                .collect::<Vec<_>>();
+    
+            for (f1, mtlid) in &planes {
+    
+                let mut points = Vec::<Vec3f>::new();
+    
+                for (f2, _) in &planes {
+                    if std::ptr::eq(f1, f2) {
+                        continue;
+                    }
+    
+                    for (f3, _) in &planes {
+                        if std::ptr::eq(f1, f3) || std::ptr::eq(f2, f3) {
+                            continue;
+                        }
+    
+                        let mat = Mat3f::from_rows(
+                            f1.plane.normal,
+                            f2.plane.normal,
+                            f3.plane.normal
+                        );
+    
+                        let inv = match mat.inversed() {
+                            Some(m) => m,
+                            None => continue,
+                        };
+                        let intersection_point = inv * Vec3f::new(
+                            f1.plane.distance,
+                            f2.plane.distance,
+                            f3.plane.distance,
+                        );
+    
+                        points.push(intersection_point);
+                    }
+                }
+    
+                points = points
+                    .into_iter()
+                    .filter(|point| planes
+                        .iter()
+                        .all(|(face, _)| {
+                            face.plane.get_point_relation(*point) != geom::PointRelation::Front
+                        })
+                    )
+                    .collect::<Vec<_>>();
+    
+                points = geom::deduplicate_points(points);
+    
+                if points.len() < 3 {
+                    // It's not even a polygon, actually
+                    continue;
+                }
+    
+                let points = geom::sort_points_by_angle(points, f1.plane.normal);
+    
+                if f1.is_transparent {
+                    physical_polygons.push(PhysicalPolygon {
+                        polygon: geom::Polygon {
+                            points: {
+                                let mut pts = points.clone();
+                                pts.reverse();
+                                pts
+                            },
+                            plane: f1.plane.negate_direction(),
+                        },
+                        material_index: *mtlid,
+                        material_u: f1.u,
+                        material_v: f1.v,
+                        is_transparent: true,
+                        is_sky: f1.is_sky,
+                    });
+                }
+    
+                // Build physical polygon
+                physical_polygons.push(PhysicalPolygon {
+                    polygon: geom::Polygon {
+                        points: points,
+                        plane: f1.plane,
+                    },
+                    material_index: *mtlid,
+                    material_u: f1.u,
+                    material_v: f1.v,
+                    is_transparent: f1.is_transparent,
+                    is_sky: f1.is_sky,
+                });
+            }
+        }
+    
+        physical_polygons
+    }
+
+    /// Add model to final BSP
+    pub fn add_model(&mut self, ctx: BspModelCompileContext) -> usize {
+        fn map_bsp(vbsp: Option<Box<VolumeBsp>>, offset: usize) -> super::Bsp {
             let Some(bsp) = vbsp else {
                 return super::Bsp::Void;
             };
@@ -1232,18 +1249,29 @@ impl Builder {
                     back
                 } => super::Bsp::Partition {
                     splitter_plane: plane,
-                    front: Box::new(map_bsp(front)),
-                    back: Box::new(map_bsp(back)),
+                    front: Box::new(map_bsp(front, offset)),
+                    back: Box::new(map_bsp(back, offset)),
                 },
-                VolumeBsp::Leaf(index) => super::Bsp::Volume(super::VolumeId::from_index(index)),
+                VolumeBsp::Leaf(index) =>
+                    super::Bsp::Volume(super::VolumeId::from_index(index + offset)),
             }
         }
 
-        let bsp = Box::new(map_bsp(self.volume_bsp));
+        // Portal polygon index offset
+        let portal_index_offset = self.polygon_set.len();
 
-        let mut polygon_set = self.portal_polygons;
+        // Volume index offset
+        let volume_index_offset = self.volume_set.len();
 
-        let volume_set = self.volumes
+        // Build BSP
+        let bsp = Box::new(map_bsp(ctx.volume_bsp, volume_index_offset));
+
+        // Extend polygon set with portals
+        self.polygon_set.extend_from_slice(ctx.portal_polygons.as_slice());
+
+        // Extend volume set with iterator
+        self.volume_set.extend(ctx
+            .volumes
             .into_iter()
             .map(|hull_volume| {
                 let mut surfaces = Vec::new();
@@ -1254,9 +1282,9 @@ impl Builder {
                         .physical_polygons
                         .into_iter()
                         .map(|physical_polygon| {
-                            let polygon_index = polygon_set.len();
+                            let polygon_index = self.polygon_set.len();
 
-                            polygon_set.push(physical_polygon.polygon);
+                            self.polygon_set.push(physical_polygon.polygon);
 
                             super::Surface {
                                 material_id: super::MaterialId::from_index(physical_polygon.material_index),
@@ -1273,8 +1301,15 @@ impl Builder {
                         .portal_polygons
                         .into_iter()
                         .map(|portal_polygon| super::Portal {
-                            dst_volume_id: super::VolumeId::from_index(portal_polygon.dst_volume_index),
-                            polygon_id: super::PolygonId::from_index(portal_polygon.polygon_set_index),
+
+                            dst_volume_id: super::VolumeId::from_index(
+                                portal_polygon.dst_volume_index + volume_index_offset
+                            ),
+
+                            polygon_id: super::PolygonId::from_index(
+                                portal_polygon.polygon_set_index + portal_index_offset
+                            ),
+
                             is_facing_front: portal_polygon.is_front,
                         })
                     );
@@ -1282,9 +1317,23 @@ impl Builder {
 
                 super::Volume { portals, surfaces }
             })
-            .collect::<Vec<_>>();
+        );
 
-        super::Map::new(bsp, polygon_set, self.materials_names, volume_set)
+        self.bsp_models.push(super::BspModel { bound_box: ctx.bound_box, bsp });
+
+        self.bsp_models.len() - 1
+    }
+
+    /// Finish compilation
+    pub fn finish(self, world_model_index: usize) -> super::Map {
+        super::Map {
+            bsp_models: self.bsp_models,
+            material_name_set: self.material_name_set,
+            polygon_set: self.polygon_set,
+            volume_set: self.volume_set,
+            world_model_id: super::BspModelId::from_index(world_model_index),
+            dynamic_models: Vec::new(),
+        }
     }
 }
 
@@ -1297,34 +1346,63 @@ pub enum Error {
 
 /// Build WBSP from map
 pub fn compile(map: &map::Map) -> Result<super::Map, Error> {
-    let mut builder = Builder::new();
+    let mut context = CompileContext {
+        bsp_models: Vec::new(),
+        material_name_set: Vec::new(),
+        material_name_table: HashMap::new(),
+        polygon_set: Vec::new(),
+        volume_set: Vec::new(),
+    };
 
-    let Some(worldspawn) = map.find_entity("classname", Some("worldspawn")) else {
+    let mut worldspawn_entity_index_opt: Option<usize> = None;
+
+    // Get all 'origin' properties
+    let map_origins = map.get_all_origins();
+
+    'entity_compilation_loop: for entity in map.entities.iter() {
+        // Do not compile entities without any geometry
+        if entity.brushes.is_empty() {
+            continue 'entity_compilation_loop;
+        }
+
+        let classname = entity.properties.get("classname")
+            .map(|name| name.as_str())
+            .unwrap_or("");
+
+        let is_worldspawn = classname == "worldspawn";
+
+        let mut model_compile_context = BspModelCompileContext {
+            bound_box: geom::BoundBox::zero(),
+            portal_polygons: Vec::new(),
+            split_infos: Vec::new(),
+            volume_bsp: None,
+            volumes: Vec::new(),
+        };
+
+        let physical_polygons = context.build_entity_physical_polygons(entity);
+
+        model_compile_context.start_build_volumes(physical_polygons);
+        model_compile_context.start_resolve_portals();
+
+        // Invisible removal pass is actual only for external volumes
+        if is_worldspawn {
+            model_compile_context.start_remove_invisible(map_origins.clone());
+        } else {
+            // TODO (?): Remove non-external (e.g. unreachable) volumes in non-worldspawn entities
+        }
+
+        let index = context.add_model(model_compile_context);
+
+        if is_worldspawn {
+            worldspawn_entity_index_opt = Some(index);
+        }
+    }
+
+    let Some(worldspawn_entity_index) = worldspawn_entity_index_opt else {
         return Err(Error::NoWorldspawn);
     };
 
-    let mut material_name_table = HashMap::new();
-
-    let physical_polygons;
-
-    // Build physical polygons of worldspawn entity
-    physical_polygons = build_entity_physical_polygons(
-        worldspawn,
-        &mut material_name_table,
-        &mut builder.materials_names
-    );
-
-    // Build volumes & volume BSP
-    builder.start_build_volumes(physical_polygons);
-
-    // Resolve volume portals
-    builder.start_resolve_portals();
-
-    // Remove invisible surfaces
-    builder.start_remove_invisible(map.get_all_origins());
-
-    // Finalize building
-    Ok(builder.start_build_map())
+    Ok(context.finish(worldspawn_entity_index))
 }
 
 // builder.rs

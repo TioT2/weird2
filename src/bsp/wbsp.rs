@@ -7,11 +7,41 @@ use crate::geom;
 /// .WBSP file Magic number
 pub const MAGIC: u32 = u32::from_le_bytes(*b"WBSP");
 
-#[derive(Copy, Clone)]
+// Binary format
+macro_rules! bin_format {
+    ($name: ident) => {
+        unsafe impl Zeroable for $name {}
+        unsafe impl AnyBitPattern for $name {}
+        unsafe impl NoUninit for $name {}
+    };
+
+    ($head: ident, $($tail: ident),* $(,)?) => {
+        bin_format!($head);
+
+        bin_format!($($tail),*);
+    };
+}
+
+/// Span in any kind of set
 #[repr(C, packed)]
+#[derive(Copy, Clone)]
+pub struct Span {
+    /// String offset
+    pub offset: u32,
+
+    /// String size
+    pub size: u32,
+}
+
+/// Header
+#[repr(C, packed)]
+#[derive(Copy, Clone)]
 pub struct Header {
     /// WBSP file magic
     pub magic: u32,
+
+    /// Length of material string set
+    pub string_buffer_length: u32,
 
     /// Count of polygon lengths
     pub polygon_length_count: u32,
@@ -19,11 +49,8 @@ pub struct Header {
     /// Count of points
     pub polygon_point_count: u32,
 
-    /// Count of polygons
-    pub material_name_length_count: u32,
-
-    /// Length of material string set
-    pub material_name_chars_length: u32,
+    /// Material name spans
+    pub material_name_span_count: u32,
 
     /// Surface count
     pub volume_surface_count: u32,
@@ -33,23 +60,10 @@ pub struct Header {
 
     /// Volume total count
     pub volume_count: u32,
+
+    /// Count of BSP entries
+    pub bsp_element_count: u32,
 }
-
-
-unsafe impl Zeroable for Header {}
-unsafe impl AnyBitPattern for Header {}
-unsafe impl NoUninit for Header {}
-
-#[repr(C, packed)]
-#[derive(Copy, Clone)]
-pub struct Plane {
-    pub normal: Vec3,
-    pub distance: f32,
-}
-
-unsafe impl Zeroable for Plane {}
-unsafe impl AnyBitPattern for Plane {}
-unsafe impl NoUninit for Plane {}
 
 /// Visible volume face piece
 #[repr(C, packed)]
@@ -74,6 +88,13 @@ pub struct Surface {
     pub is_sky: u8,
 }
 
+#[repr(C, packed)]
+#[derive(Copy, Clone)]
+pub struct Plane {
+    pub normal: Vec3,
+    pub distance: f32,
+}
+
 impl Into<geom::Plane> for Plane {
     fn into(self) -> geom::Plane {
         geom::Plane { distance: self.distance, normal: self.normal.into() }
@@ -85,10 +106,6 @@ impl From<geom::Plane> for Plane {
         Self { distance: value.distance, normal: value.normal.into() }
     }
 }
-
-unsafe impl Zeroable for Surface {}
-unsafe impl AnyBitPattern for Surface {}
-unsafe impl NoUninit for Surface {}
 
 /// Portal (volume-volume connection)
 #[repr(C, packed)]
@@ -104,48 +121,14 @@ pub struct Portal {
     pub is_facing_front: u32,
 }
 
-unsafe impl Zeroable for Portal {}
-unsafe impl AnyBitPattern for Portal {}
-unsafe impl NoUninit for Portal {}
-
 #[repr(C, packed)]
 #[derive(Copy, Clone)]
 pub struct Volume {
-    /// Count of volume surfaces
-    pub surface_count: u32,
+    /// Surface span
+    pub surfaces: Span,
 
-    /// Count of polygon portals
-    pub portal_count: u32,
-}
-
-unsafe impl Zeroable for Volume {}
-unsafe impl AnyBitPattern for Volume {}
-unsafe impl NoUninit for Volume {}
-
-/// BSP entry type
-#[repr(C)]
-pub enum BspType {
-    /// Partitions, BspPartition strucutre and two Bsp's (left and right children) are written after
-    Partition = 1,
-
-    /// Volume, BspVolume strucutre is written after
-    Volume = 2,
-
-    /// Void, nothing is written after
-    Void = 3,
-}
-
-impl TryFrom<u32> for BspType {
-    type Error = u32;
-
-    fn try_from(value: u32) -> Result<Self, Self::Error> {
-        Ok(match value {
-            1 => Self::Partition,
-            2 => Self::Volume,
-            3 => Self::Void,
-            _ => return Err(value),
-        })
-    }
+    /// Portal span
+    pub portals: Span,
 }
 
 /// Stable (e.g. with certain field order) 3-component float vector
@@ -162,10 +145,6 @@ pub struct Vec3 {
     pub z: f32,
 }
 
-unsafe impl Zeroable for Vec3 {}
-unsafe impl AnyBitPattern for Vec3 {}
-unsafe impl NoUninit for Vec3 {}
-
 impl Into<super::Vec3f> for Vec3 {
     fn into(self) -> super::Vec3f {
         super::Vec3f { x: self.x, y: self.y, z: self.z }
@@ -175,6 +154,53 @@ impl Into<super::Vec3f> for Vec3 {
 impl From<super::Vec3f> for Vec3 {
     fn from(value: super::Vec3f) -> Self {
         Self { x: value.x, y: value.y, z: value.z }
+    }
+}
+
+/// BSP entry type
+#[repr(C)]
+pub enum BspType {
+    /// Partitions, BspPartition strucutre and two Bsp's (left and right children) are written after
+    Partition = 1,
+
+    /// Volume, BspVolume strucutre is written after
+    Volume = 2,
+
+    /// Void, nothing is written after
+    Void = 3,
+}
+
+#[repr(C, packed)]
+#[derive(Copy, Clone)]
+pub struct BspElement {
+    /// Element type byte
+    pub ty: u8,
+
+    /// Element contents
+    pub data: BspElementData,
+}
+
+/// BSP element data
+#[repr(C, packed)]
+#[derive(Copy, Clone)]
+pub union BspElementData {
+    /// Volume contents
+    pub volume: BspVolume,
+
+    /// Partition contents
+    pub partition: BspPartition,
+}
+
+impl TryFrom<u32> for BspType {
+    type Error = u32;
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        Ok(match value {
+            1 => Self::Partition,
+            2 => Self::Volume,
+            3 => Self::Void,
+            _ => return Err(value),
+        })
     }
 }
 
@@ -189,10 +215,6 @@ pub struct BspPartition {
     pub plane_normal: Vec3,
 }
 
-unsafe impl Zeroable for BspPartition {}
-unsafe impl AnyBitPattern for BspPartition {}
-unsafe impl NoUninit for BspPartition {}
-
 /// BSP helper structure
 #[repr(C, packed)]
 #[derive(Copy, Clone)]
@@ -201,8 +223,28 @@ pub struct BspVolume {
     pub volume_index: u32,
 }
 
-unsafe impl Zeroable for BspVolume {}
-unsafe impl AnyBitPattern for BspVolume {}
-unsafe impl NoUninit for BspVolume {}
+#[repr(C, packed)]
+#[derive(Copy, Clone)]
+pub struct BspModel {
+    /// BSP head offset
+    pub bsp_head_offset: u32,
+}
+
+// Binary format
+bin_format!(
+    BspElement,
+    BspElementData,
+    BspVolume,
+    BspPartition,
+
+    BspModel,
+    Span,
+    Header,
+    Vec3,
+    Volume,
+    Portal,
+    Surface,
+    Plane,
+);
 
 // wbsp.rs

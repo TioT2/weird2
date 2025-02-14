@@ -1,7 +1,8 @@
+use bytemuck::Zeroable;
 ///! Main project BSP structure declaration module
 
+pub use compiler::Error as MapCompilationError;
 use std::num::NonZeroU32;
-use bytemuck::Zeroable;
 use crate::{geom, map, math::Vec3f};
 
 /// Declare actual map builder module
@@ -34,6 +35,8 @@ macro_rules! impl_id {
 impl_id!(VolumeId);
 impl_id!(PolygonId);
 impl_id!(MaterialId);
+impl_id!(BspModelId);
+impl_id!(DynamicModelId);
 
 // TODO: Rename surface into smth more logical.
 
@@ -92,33 +95,6 @@ impl Volume {
     }
 }
 
-#[repr(C, packed)]
-#[derive(Copy, Clone, PartialEq, Eq)]
-pub struct Rgb8 {
-    /// Red color component
-    pub r: u8,
-
-    /// Gree color component
-    pub g: u8,
-
-    /// Blue color component
-    pub b: u8,
-}
-
-impl From<u32> for Rgb8 {
-    fn from(value: u32) -> Self {
-        let [r, g, b, _] = value.to_le_bytes();
-
-        Self { r, g, b }
-    }
-}
-
-impl Into<u32> for Rgb8 {
-    fn into(self) -> u32 {
-        u32::from_le_bytes([self.r, self.g, self.b, 0])
-    }
-}
-
 /// Binary Space Partition, used during
 pub enum Bsp {
     /// Space partition
@@ -162,19 +138,59 @@ impl Bsp {
     /// Calculate BSP tree depth
     pub fn depth(&self) -> usize {
         match self {
-            Bsp::Partition { splitter_plane: _, front, back } =>
-                usize::max(front.depth(), back.depth()) + 1,
-            _ =>
-                1,
+            Bsp::Partition { splitter_plane: _, front, back }
+                => usize::max(front.depth(), back.depth()) + 1,
+            _
+                => 1,
+        }
+    }
+
+    /// Count of BSP elements
+    pub fn size(&self) -> usize {
+        match self {
+            Bsp::Partition { splitter_plane: _, front, back }
+                => front.size() + back.size() + 1,
+            _
+                => 1,
         }
     }
 }
 
-/// Map
-pub struct Map {
-    /// Map (visible) BSP.
+/// Static model
+pub struct BspModel {
+    /// Model BSP
     bsp: Box<Bsp>,
 
+    /// (Simple) Bounding volume, used during splitting process
+    bound_box: geom::BoundBox,
+}
+
+impl BspModel {
+    /// Get BSP 
+    pub fn get_bsp(&self) -> &Bsp {
+        &self.bsp
+    }
+
+    /// Get bounding volume
+    pub fn get_bound_box(&self) -> &geom::BoundBox {
+        &self.bound_box
+    }
+}
+
+/// Dynamic BSP element
+pub struct DynamicModel {
+    /// Model translation
+    pub origin: Vec3f,
+
+    /// Model rotation (along Y axis)
+    pub rotation: f32,
+
+    /// Corresponding BSP model Id
+    pub model_id: BspModelId,
+}
+
+/// Map
+pub struct Map {
     /// Set of map polygons
     polygon_set: Vec<geom::Polygon>,
 
@@ -183,25 +199,18 @@ pub struct Map {
 
     /// Set of map volumes
     volume_set: Vec<Volume>,
+
+    /// Set of BSP models
+    bsp_models: Vec<BspModel>,
+
+    /// World BSP model
+    world_model_id: BspModelId,
+
+    /// Set of dynamically-rendered objects
+    dynamic_models: Vec<DynamicModel>,
 }
 
 impl Map {
-    /// Build map from BSP and sets.
-    pub fn new(
-        bsp: Box<Bsp>,
-        polygon_set: Vec<geom::Polygon>,
-        material_name_set: Vec<String>,
-        volume_set: Vec<Volume>
-    ) -> Self {
-
-        Self {
-            bsp,
-            polygon_set,
-            material_name_set,
-            volume_set
-        }
-    }
-
     /// Get volume by id
     pub fn get_volume(&self, id: VolumeId) -> Option<&Volume> {
         self.volume_set.get(id.into_index())
@@ -209,8 +218,12 @@ impl Map {
 
     /// Get iterator on ids of all volumes
     pub fn all_volume_ids(&self) -> impl Iterator<Item = VolumeId> {
-        (0..self.volume_set.len())
-            .map(VolumeId::from_index)
+        (0..self.volume_set.len()).map(VolumeId::from_index)
+    }
+
+    /// Iterate though dynamic model IDs
+    pub fn all_dynamic_model_ids(&self) -> impl Iterator<Item = DynamicModelId> {
+        (0..self.volume_set.len()).map(DynamicModelId::from_index)
     }
 
     /// Get material name by it's id
@@ -226,14 +239,27 @@ impl Map {
             .map(|(index, name)| (MaterialId::from_index(index), name.as_ref()))
     }
 
+    /// Get dynamic model by id
+    pub fn get_dynamic_model(&self, id: DynamicModelId) -> Option<&DynamicModel> {
+        self.dynamic_models.get(id.into_index())
+    }
+
     /// Get polygon by id
     pub fn get_polygon(&self, id: PolygonId) -> Option<&geom::Polygon> {
         self.polygon_set.get(id.into_index())
     }
 
-    /// Get location BSP
-    pub fn get_bsp(&self) -> &Bsp {
-        &self.bsp
+    pub fn get_world_model_id(&self) -> BspModelId {
+        self.world_model_id
+    }
+
+    pub fn get_world_model(&self) -> &BspModel {
+        self.bsp_models.get(self.world_model_id.into_index()).unwrap()
+    }
+
+    /// Get BSP model by id
+    pub fn get_bsp_model(&self, id: BspModelId) -> Option<&BspModel> {
+        self.bsp_models.get(id.into_index())
     }
 
     /// Test if volume contains point or not
@@ -262,44 +288,6 @@ impl Map {
 
         Some(true)
     }
-
-    /// Remove voids from BSP
-    pub fn _remove_bsp_voids(&mut self) {
-        fn remove_voids(bsp: Bsp) -> Option<Bsp> {
-            match bsp {
-                Bsp::Partition { splitter_plane, front, back } => {
-                    let front = remove_voids(*front);
-                    let back = remove_voids(*back);
-
-                    if let Some(front) = front {
-                        if let Some(back) = back {
-                            Some(Bsp::Partition {
-                                splitter_plane,
-                                front: Box::new(front),
-                                back: Box::new(back)
-                            })
-                        } else {
-                            Some(front)
-                        }
-                    } else {
-                        if let Some(back) = back {
-                            Some(back)
-                        } else {
-                            None
-                        }
-                    }
-                }
-                Bsp::Volume(id) => Some(Bsp::Volume(id)),
-                Bsp::Void => None,
-            }
-        }
-
-        let old_bsp = std::mem::replace(&mut self.bsp, Box::new(Bsp::Void));
-
-        if let Some(bsp) = remove_voids(*old_bsp) {
-            self.bsp = Box::new(bsp);
-        }
-    }
 }
 
 /// Map from file loading error
@@ -313,6 +301,14 @@ pub enum MapLoadingError {
 
     /// Invalid magic value
     InvalidMagic(u32),
+
+    /// Invalid span occured
+    InvalidSpan {
+        kind: &'static str,
+        buffer_size: u32,
+        offset: u32,
+        size: u32,
+    },
 
     /// 
     PolygonLengthsSumMoreThanPolygonCount {
@@ -372,15 +368,16 @@ impl From<std::io::Error> for MapLoadingError {
     }
 }
 
-/// 
-pub use compiler::Error as MapCompilationError;
-
 impl Map {
     /// Compile map to WBSP
     pub fn compile(map: &map::Map) -> Result<Self, MapCompilationError> {
         compiler::compile(map)
     }
+}
 
+// Load/Save implementation
+#[cfg(not)]
+impl Map {
     /// Load map from WBSP file
     pub fn load(src: &mut dyn std::io::Read) -> Result<Self, MapLoadingError> {
         let mut header = wbsp::Header::zeroed();
@@ -410,11 +407,12 @@ impl Map {
 
         let polygon_lengths = read_vec::<u32>(src, header.polygon_length_count)?;
         let polygon_points = read_vec::<wbsp::Vec3>(src, header.polygon_point_count)?;
-        let material_name_lengths = read_vec::<u32>(src, header.material_name_length_count)?;
-        let material_name_bytes = read_vec::<u8>(src, header.material_name_chars_length)?;
+        let material_name_chars = read_vec::<u8>(src, header.string_buffer_length)?;
+        let material_name_spans = read_vec::<wbsp::Span>(src, header.material_name_span_count)?;
         let volume_portals = read_vec::<wbsp::Portal>(src, header.volume_portal_count)?;
         let volume_surfaces = read_vec::<wbsp::Surface>(src, header.volume_surface_count)?;
         let volumes = read_vec::<wbsp::Volume>(src, header.volume_count)?;
+        let bsp_elements = read_vec::<wbsp::BspElement>(src, header.bsp_element_count)?;
 
         let bsp = {
             fn read_bsp(
@@ -504,28 +502,22 @@ impl Map {
         };
 
         let material_name_set = {
-            let length_sum = material_name_lengths.iter().sum();
-
-            if length_sum as usize > material_name_bytes.len() {
-                return Err(MapLoadingError::ShortMaterialNameByteSet {
-                    name_length_sum: length_sum,
-                    name_bytes_count: material_name_bytes.len() as u32
-                });
-            }
-
-            let mut material_name_bytes_rest = material_name_bytes.as_slice();
-
-            material_name_lengths
+            material_name_spans
                 .iter()
-                .map(|len| {
-                    let bytes;
-                    (bytes, material_name_bytes_rest) =
-                        material_name_bytes_rest.split_at(*len as usize);
+                .map(|span| {
+                    let name = material_name_chars
+                        .get(span.offset as usize..(span.offset + span.size) as usize)
+                        .ok_or(MapLoadingError::InvalidSpan {
+                            kind: "material name span",
+                            buffer_size: material_name_chars.len() as u32,
+                            offset: span.offset,
+                            size: span.size,
+                        })?;
 
-                    String::from_utf8(bytes.to_vec())
+                    String::from_utf8(name.to_vec())
+                        .map_err(MapLoadingError::StringFromUtf8Error)
                 })
                 .collect::<Result<Vec<_>, _>>()
-                .map_err(MapLoadingError::StringFromUtf8Error)
                 ?
         };
 
@@ -588,10 +580,9 @@ impl Map {
                 portal_offset += volume.portal_count as usize;
 
                 for surface in &volume_surfaces[surface_offset..surface_offset + volume.surface_count as usize] {
-                    // Validate material index
-                    if surface.material_index >= header.material_name_length_count {
+                    if surface.material_index >= header.material_name_span_count {
                         return Err(MapLoadingError::InvalidMaterialIndex {
-                            material_count: header.material_name_length_count,
+                            material_count: header.material_name_span_count,
                             material_index: surface.material_index,
                         });
                     }
@@ -631,22 +622,23 @@ impl Map {
 
     /// Save map in WBSP format
     pub fn save(&self, dst: &mut dyn std::io::Write) -> Result<(), std::io::Error> {
-
         // Construct WBSP file header
         let header = wbsp::Header {
             magic: wbsp::MAGIC,
+
+            string_buffer_length: self
+                .material_name_set
+                .iter()
+                .map(|name| name.len() as u32)
+                .sum(),
+
             polygon_length_count: self.polygon_set.len() as u32,
             polygon_point_count: self
                 .polygon_set
                 .iter()
                 .map(|polygon| polygon.points.len() as u32)
                 .sum(),
-            material_name_chars_length: self
-                .material_name_set
-                .iter()
-                .map(|name| name.len() as u32)
-                .sum(),
-            material_name_length_count: self.material_name_set.len() as u32,
+            material_name_span_count: self.material_name_set.len() as u32,
             volume_portal_count: self.volume_set
                 .iter()
                 .map(|volume| volume.get_portals().len() as u32)
@@ -656,6 +648,11 @@ impl Map {
                 .map(|volume| volume.get_surfaces().len() as u32)
                 .sum(),
             volume_count: self.volume_set.len() as u32,
+
+            bsp_element_count: self.bsp_models
+                .iter()
+                .map(|m| m.get_bsp().size())
+                .sum::<usize>() as u32,
         };
 
         // Write header
@@ -751,36 +748,39 @@ impl Map {
         fn write_bsp(bsp: &Bsp, dst: &mut dyn std::io::Write) -> Result<(), std::io::Error> {
             match bsp {
                 Bsp::Partition { splitter_plane, front, back } => {
-                    dst.write(bytemuck::bytes_of(&(wbsp::BspType::Partition as u32)))?;
+                    dst.write(bytemuck::bytes_of(&wbsp::BspElement {
+                        ty: wbsp::BspType::Partition as u8,
+                        data: wbsp::BspElementData {
+                            partition: wbsp::BspPartition {
+                                plane_distance: splitter_plane.distance,
+                                plane_normal: splitter_plane.normal.into(),
+                            }
+                        },
+                    }));
 
-                    dst.write(bytemuck::bytes_of(&wbsp::BspPartition {
-                        plane_distance: splitter_plane.distance,
-                        plane_normal: wbsp::Vec3 {
-                            x: splitter_plane.normal.x,
-                            y: splitter_plane.normal.y,
-                            z: splitter_plane.normal.z,
-                        }
-                    }))?;
                     write_bsp(front.as_ref(), dst)?;
                     write_bsp(back.as_ref(), dst)?;
                 }
                 Bsp::Volume(id) => {
-                    dst.write(bytemuck::bytes_of(&(wbsp::BspType::Volume as u32)))?;
-
-                    dst.write(bytemuck::bytes_of(&wbsp::BspVolume {
-                        volume_index: id.into_index() as u32,
-                    }))?;
+                    dst.write(bytemuck::bytes_of(&wbsp::BspElement {
+                        ty: wbsp::BspType::Partition as u8,
+                        data: wbsp::BspElementData {
+                            volume: wbsp::BspVolume {
+                                volume_index: id.into_index() as u32
+                            },
+                        },
+                    }));
                 }
                 Bsp::Void => {
-                    dst.write(bytemuck::bytes_of(&(wbsp::BspType::Void as u32)))?;
+                    dst.write(bytemuck::bytes_of(&wbsp::BspElement {
+                        ty: wbsp::BspType::Partition as u8,
+                        data: wbsp::BspElementData::zeroed(),
+                    }));
                 }
             }
 
             Ok(())
         }
-
-        // Write BSP
-        write_bsp(self.bsp.as_ref(), dst)?;
 
         Ok(())
     }

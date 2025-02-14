@@ -1101,6 +1101,7 @@ impl BspModelCompileContext {
     }
 }
 
+/// Compilation context
 pub struct CompileContext {
     /// Set of already added polygons
     pub polygon_set: Vec<geom::Polygon>,
@@ -1116,6 +1117,9 @@ pub struct CompileContext {
 
     /// Set of BSP models
     pub bsp_models: Vec<super::BspModel>,
+
+    /// Dynamic model set
+    pub dynamic_models: Vec<super::DynamicModel>,
 }
 
 impl CompileContext {
@@ -1237,6 +1241,17 @@ impl CompileContext {
         physical_polygons
     }
 
+    /// Add dynamic model to BSP
+    pub fn add_dynamic_model(&mut self, origin: Vec3f, rotation: f32, index: usize) -> usize {
+        self.dynamic_models.push(super::DynamicModel {
+            model_id: super::BspModelId::from_index(index),
+            origin,
+            rotation,
+        });
+
+        self.dynamic_models.len() - 1
+    }
+
     /// Add model to final BSP
     pub fn add_model(&mut self, ctx: BspModelCompileContext) -> usize {
         fn map_bsp(vbsp: Option<Box<VolumeBsp>>, offset: usize) -> super::Bsp {
@@ -1333,8 +1348,8 @@ impl CompileContext {
             material_name_set: self.material_name_set,
             polygon_set: self.polygon_set,
             volume_set: self.volume_set,
+            dynamic_models: self.dynamic_models,
             world_model_id: super::BspModelId::from_index(world_model_index),
-            dynamic_models: Vec::new(),
         }
     }
 }
@@ -1354,6 +1369,7 @@ pub fn compile(map: &map::Map) -> Result<super::Map, Error> {
         material_name_table: HashMap::new(),
         polygon_set: Vec::new(),
         volume_set: Vec::new(),
+        dynamic_models: Vec::new(),
     };
 
     let mut worldspawn_entity_index_opt: Option<usize> = None;
@@ -1397,6 +1413,37 @@ pub fn compile(map: &map::Map) -> Result<super::Map, Error> {
 
         if is_worldspawn {
             worldspawn_entity_index_opt = Some(index);
+        }
+
+        let mut origin: Option<Vec3f> = None;
+        let mut angle: Option<f32> = None;
+
+        'parse_origin: {
+            if let Some(origin_str) = entity.properties.get("origin") {
+                let vs = origin_str.split_whitespace()
+                    .map(|v| v.parse::<f32>()).collect::<Result<Vec<_>, _>>().ok();
+    
+                let Some(vs) = vs else {
+                    break 'parse_origin;
+                };
+
+                let Some([x, y, z]) = vs.get(..) else {
+                    break 'parse_origin;
+                };
+
+                origin = Some(Vec3f::new(*x, *y, *z));
+            }
+        }
+
+        if let Some(angle_str) = entity.properties.get("angle") {
+            angle = angle_str.parse::<f32>().ok();
+        }
+
+        if origin.is_some() || angle.is_some() {
+            let origin = origin.unwrap_or(Vec3f::zero());
+            let angle = angle.unwrap_or(0.0);
+
+            _ = context.add_dynamic_model(origin, angle, index);
         }
     }
 

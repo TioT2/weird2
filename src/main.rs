@@ -1252,7 +1252,7 @@ fn main() {
     print!("\n\n\n\n\n\n\n\n");
 
     // Enable/disable map caching
-    let do_enable_map_caching = false;
+    let do_enable_map_caching = true;
 
     // Synchronize visible-set-building and projection cameras
     let mut do_sync_logical_camera = true;
@@ -1274,9 +1274,6 @@ fn main() {
         let map_path = format!("{}{}.map", data_path, map_name);
 
         if do_enable_map_caching {
-            panic!("Map caching is temporarely disabled.");
-
-            #[cfg(not)]
             match std::fs::File::open(&wbsp_path) {
                 Ok(mut bsp_file) => {
                     // Load map from map cache

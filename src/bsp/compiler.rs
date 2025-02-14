@@ -13,6 +13,8 @@
 use std::{collections::{BTreeMap, BTreeSet, HashMap}, num::NonZeroU32};
 use crate::{geom, map, math::{Mat3f, Vec3f}};
 
+use super::Id;
+
 /// Polygon that should be drawn
 pub struct PhysicalPolygon {
     /// Actual polygon

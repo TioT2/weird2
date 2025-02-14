@@ -4,7 +4,7 @@
 pub mod q1_wad2;
 
 use std::{collections::BTreeMap, ffi::CStr};
-use crate::{bsp, rand};
+use crate::{bsp::{self, Id}, rand};
 
 /// Image reference
 /// # Note

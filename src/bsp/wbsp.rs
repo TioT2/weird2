@@ -25,12 +25,35 @@ macro_rules! bin_format {
 /// Span in any kind of set
 #[repr(C, packed)]
 #[derive(Copy, Clone)]
+#[derive(Debug)]
 pub struct Span {
     /// String offset
     pub offset: u32,
 
     /// String size
     pub size: u32,
+}
+
+impl Span {
+    pub const fn zero() -> Self {
+        Self { offset: 0, size: 0 }
+    }
+
+    /// Range
+    pub fn range(self) -> std::ops::Range<usize> {
+        std::ops::Range::<usize> {
+            start: self.offset as usize,
+            end: self.offset as usize + self.size as usize,
+        }
+    }
+
+    // TODO: TryFrom
+    pub fn from_range(range: std::ops::Range<usize>) -> Self {
+        Self {
+            offset: range.start as u32,
+            size: (range.end - range.start) as u32,
+        }
+    }
 }
 
 /// Header
@@ -40,29 +63,45 @@ pub struct Header {
     /// WBSP file magic
     pub magic: u32,
 
-    /// Length of material string set
-    pub string_buffer_length: u32,
+    /// World BSP model index
+    pub world_bsp_model_index: u32,
 
-    /// Count of polygon lengths
-    pub polygon_length_count: u32,
+    /// Length of material string set
+    pub chars: Span,
 
     /// Count of points
-    pub polygon_point_count: u32,
+    pub points: Span,
+
+    /// Count of polygon lengths
+    pub polygons: Span,
 
     /// Material name spans
-    pub material_name_span_count: u32,
+    pub material_names: Span,
 
     /// Surface count
-    pub volume_surface_count: u32,
+    pub volume_surfaces: Span,
 
     /// Portal count
-    pub volume_portal_count: u32,
+    pub volume_portals: Span,
 
-    /// Volume total count
-    pub volume_count: u32,
+    /// Total volume count
+    pub volumes: Span,
 
-    /// Count of BSP entries
-    pub bsp_element_count: u32,
+    /// BSP element span
+    pub bsp_elements: Span,
+
+    /// BSP model span
+    pub bsp_models: Span,
+
+    /// Dynamic BSP models
+    pub dynamic_models: Span,
+}
+
+#[repr(C, packed)]
+#[derive(Copy, Clone)]
+pub struct Material {
+    /// In 'chars' span
+    pub name: Span,
 }
 
 /// Visible volume face piece
@@ -91,7 +130,10 @@ pub struct Surface {
 #[repr(C, packed)]
 #[derive(Copy, Clone)]
 pub struct Plane {
+    /// Plane normal vector
     pub normal: Vec3,
+
+    /// Distance from point to plane
     pub distance: f32,
 }
 
@@ -118,9 +160,10 @@ pub struct Portal {
     pub dst_volume_index: u32,
 
     /// If true, portal polygon is faced towards camera
-    pub is_facing_front: u32,
+    pub is_facing_front: u8,
 }
 
+/// Volume structure
 #[repr(C, packed)]
 #[derive(Copy, Clone)]
 pub struct Volume {
@@ -170,6 +213,19 @@ pub enum BspType {
     Void = 3,
 }
 
+impl TryFrom<u8> for BspType {
+    type Error = u8;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        Ok(match value {
+            1 => Self::Partition,
+            2 => Self::Volume,
+            3 => Self::Void,
+            _ => return Err(value),
+        })
+    }
+}
+
 #[repr(C, packed)]
 #[derive(Copy, Clone)]
 pub struct BspElement {
@@ -189,19 +245,9 @@ pub union BspElementData {
 
     /// Partition contents
     pub partition: BspPartition,
-}
 
-impl TryFrom<u32> for BspType {
-    type Error = u32;
-
-    fn try_from(value: u32) -> Result<Self, Self::Error> {
-        Ok(match value {
-            1 => Self::Partition,
-            2 => Self::Volume,
-            3 => Self::Void,
-            _ => return Err(value),
-        })
-    }
+    /// Void case
+    pub void: (),
 }
 
 /// BSP helper structure
@@ -209,10 +255,7 @@ impl TryFrom<u32> for BspType {
 #[derive(Copy, Clone)]
 pub struct BspPartition {
     /// Partition plane's distance
-    pub plane_distance: f32,
-
-    /// Partition plane's normal
-    pub plane_normal: Vec3,
+    pub plane: Plane,
 }
 
 /// BSP helper structure
@@ -227,7 +270,27 @@ pub struct BspVolume {
 #[derive(Copy, Clone)]
 pub struct BspModel {
     /// BSP head offset
-    pub bsp_head_offset: u32,
+    pub bsp_root_index: u32,
+
+    /// Bounding box minimum
+    pub bound_box_min: Vec3,
+
+    /// Bounding box maximum
+    pub bound_box_max: Vec3,
+}
+
+/// Dynamic model (moving stuff, like doors etc.)
+#[repr(C, packed)]
+#[derive(Copy, Clone)]
+pub struct DynamicModel {
+    /// BSP model index
+    pub bsp_model_index: u32,
+
+    /// Position
+    pub origin: Vec3,
+
+    /// Rotation
+    pub rotation: f32,
 }
 
 // Binary format
@@ -236,8 +299,9 @@ bin_format!(
     BspElementData,
     BspVolume,
     BspPartition,
-
     BspModel,
+    DynamicModel,
+    Material,
     Span,
     Header,
     Vec3,

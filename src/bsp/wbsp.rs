@@ -172,6 +172,12 @@ pub struct Volume {
 
     /// Portal span
     pub portals: Span,
+
+    /// Boundbox min
+    pub bound_box_min: Vec3,
+
+    /// Boundbox max
+    pub bound_box_max: Vec3,
 }
 
 /// Stable (e.g. with certain field order) 3-component float vector

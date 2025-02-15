@@ -61,6 +61,17 @@ impl BoundBox {
         }
     }
 
+    /// Get conservative bounding box of **any** rotation
+    pub fn rotate(&self) -> Self {
+        let center = (self.min + self.max) / 2.0;
+        let extent = (self.min - self.max).length() / 2.0;
+
+        Self {
+            min: center - extent,
+            max: center + extent,
+        }
+    }
+
     /// Build minimal boundbox that contains this pair of points
     pub fn new(p1: Vec3f, p2: Vec3f) -> Self {
         Self {

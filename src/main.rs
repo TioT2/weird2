@@ -84,21 +84,6 @@ pub struct Polyhedron {
     pub index_set: Vec<Option<std::num::NonZeroU32>>,
 }
 
-/// Calculate convex hull of point set
-/*
-pub fn convex_hull(point_set: Vec<Vec3f>) -> Vec<Vec3f> {
-    let mut extreme_points = Vec::new();
-
-    let mut min = Vec3f::from_single(f32::MAX);
-    let mut max = Vec3f::from_single(f32::MIN);
-
-    // Find extreme points
-    for point in point_set {
-
-    }
-}
-*/
-
 pub struct PhysicalBsp {
     elements: Vec<PhysicalBspElement>,
 }

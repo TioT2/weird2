@@ -87,6 +87,9 @@ pub struct Volume {
 
     /// Set of connections to another volumes
     portals: Vec<Portal>,
+
+    /// Volume bounding box
+    bound_box: geom::BoundBox,
 }
 
 impl Volume {
@@ -98,6 +101,11 @@ impl Volume {
     /// Get portal set
     pub fn get_portals(&self) -> &[Portal] {
         &self.portals
+    }
+
+    /// Get bounding box
+    pub fn get_bound_box(&self) -> &geom::BoundBox {
+        &self.bound_box
     }
 }
 
@@ -186,13 +194,27 @@ impl BspModel {
 /// Dynamic BSP element
 pub struct DynamicModel {
     /// Model translation
-    pub origin: Vec3f,
+    origin: Vec3f,
 
     /// Model rotation (along Y axis)
-    pub rotation: f32,
+    rotation: f32,
 
     /// Corresponding BSP model Id
-    pub model_id: BspModelId,
+    model_id: BspModelId,
+}
+
+impl DynamicModel {
+    pub fn get_origin(&self) -> Vec3f {
+        self.origin
+    }
+
+    pub fn get_rotation(&self) -> f32 {
+        self.rotation
+    }
+
+    pub fn get_model_id(&self) -> BspModelId {
+        self.model_id
+    }
 }
 
 /// Map
@@ -229,7 +251,7 @@ impl Map {
 
     /// Iterate though dynamic model IDs
     pub fn all_dynamic_model_ids(&self) -> impl Iterator<Item = DynamicModelId> {
-        (0..self.volume_set.len()).map(DynamicModelId::from_index)
+        (0..self.dynamic_models.len()).map(DynamicModelId::from_index)
     }
 
     /// Get material name by it's id
@@ -566,6 +588,10 @@ impl Map {
                                     })
                                 })
                                 .collect::<Result<Vec<_>, MapLoadingError>>()?,
+                            bound_box: geom::BoundBox::new(
+                                volume.bound_box_min.into(),
+                                volume.bound_box_max.into(),
+                            ),
                         })
                     })
                     .collect::<Result<Vec<_>, MapLoadingError>>()?
@@ -692,6 +718,8 @@ impl Map {
                     offset: volume_surfaces.len() as u32,
                     size: volume.surfaces.len() as u32,
                 },
+                bound_box_min: volume.bound_box.min().into(),
+                bound_box_max: volume.bound_box.max().into(),
             });
 
             for surface in &volume.surfaces {

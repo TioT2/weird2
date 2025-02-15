@@ -1291,6 +1291,14 @@ impl CompileContext {
             .volumes
             .into_iter()
             .map(|hull_volume| {
+                let mut bound_box = geom::BoundBox::zero();
+
+                for face in &hull_volume.faces {
+                    bound_box = bound_box.total(
+                        &geom::BoundBox::for_points(face.polygon.points.iter().copied())
+                    );
+                }
+
                 let mut surfaces = Vec::new();
                 let mut portals = Vec::new();
 
@@ -1332,7 +1340,7 @@ impl CompileContext {
                     );
                 }
 
-                super::Volume { portals, surfaces }
+                super::Volume { portals, surfaces, bound_box }
             })
         );
 

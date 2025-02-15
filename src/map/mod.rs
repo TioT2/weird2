@@ -6,6 +6,9 @@ use crate::{geom, math::Vec3f};
 /// Quake 1 map
 pub mod q1_map;
 
+/// Source map
+pub mod source_vmf;
+
 /// Map material
 pub struct Material {
     /// Straight color

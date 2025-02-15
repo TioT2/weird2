@@ -1250,6 +1250,23 @@ fn main() {
 
     // Load map
     let map = {
+        /*
+        {
+            let canals = map::source_vmf::Entry::parse_vmf(include_str!("../temp/canals.vmf"))
+                .unwrap()
+                .build_wmap()
+                .unwrap();
+    
+            let map = bsp::Map::compile(&canals).unwrap();
+
+            let mut file = std::fs::File::create("temp/wbsp/canals.wbsp").unwrap();
+    
+            map.save(&mut file).unwrap();
+
+            break 'map map;
+        }
+        */
+
         // yay, this code will not compile on non-local builds)))
         // --
         let map_name = "q1/e1m1";

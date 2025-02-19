@@ -12,8 +12,10 @@ pub mod wbsp;
 
 /// Id type
 pub trait Id: Copy + Clone + Eq + PartialEq + std::hash::Hash + std::fmt::Debug + Ord + PartialOrd {
+    /// Construct Id from index
     fn from_index(index: usize) -> Self;
 
+    /// Build Id into index
     fn into_index(self) -> usize;
 }
 

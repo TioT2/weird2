@@ -300,6 +300,47 @@ impl Camera {
     }
 }
 
+/// Different rasterization modes
+#[derive(Copy, Clone, PartialEq, Eq)]
+pub enum RasterizationMode {
+    /// Solid color
+    Standard = 0,
+
+    /// Overdraw
+    Overdraw = 1,
+
+    /// Inverse depth
+    Depth = 2,
+
+    /// Checker texture
+    UV = 3,
+
+    /// Textuers, actually
+    Textured = 4,
+}
+
+impl RasterizationMode {
+    // Rasterization mode count
+    const COUNT: u32 = 5;
+
+    /// Build rasterization mode from u32
+    pub const fn from_u32(n: u32) -> Option<RasterizationMode> {
+        Some(match n {
+            0 => RasterizationMode::Standard,
+            1 => RasterizationMode::Overdraw,
+            2 => RasterizationMode::Depth,
+            3 => RasterizationMode::UV,
+            4 => RasterizationMode::Textured,
+            _ => return None,
+        })
+    }
+
+    /// Get next rasterization mode
+    pub const fn next(self) -> RasterizationMode {
+        Self::from_u32((self as u32 + 1) % Self::COUNT).unwrap()
+    }
+}
+
 /// Render context
 struct RenderContext<'t, 'ref_table> {
     /// Camera location
@@ -333,46 +374,6 @@ struct RenderContext<'t, 'ref_table> {
 
     /// Rasterization mode
     rasterization_mode: RasterizationMode,
-}
-
-/// Different rasterization modes
-#[derive(Copy, Clone, PartialEq, Eq)]
-enum RasterizationMode {
-    /// Solid color
-    Standard = 0,
-
-    /// Overdraw
-    Overdraw = 1,
-
-    /// Inverse depth
-    Depth = 2,
-
-    /// Checker texture
-    UV = 3,
-
-    /// Textuers, actually
-    Textured = 4,
-}
-
-impl RasterizationMode {
-    // Rasterization mode count
-    const COUNT: u32 = 5;
-
-    /// Build rasterization mode from u32
-    pub const fn from_u32(n: u32) -> Option<RasterizationMode> {
-        Some(match n {
-            0 => RasterizationMode::Standard,
-            1 => RasterizationMode::Overdraw,
-            2 => RasterizationMode::Depth,
-            3 => RasterizationMode::UV,
-            4 => RasterizationMode::Textured,
-            _ => return None,
-        })
-    }
-
-    pub const fn next(self) -> RasterizationMode {
-        Self::from_u32((self as u32 + 1) % Self::COUNT).unwrap()
-    }
 }
 
 impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
@@ -507,7 +508,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
         point_dst: &mut Vec<Vec5UVf>
     ) {
         for point in polygon.points.iter() {
-            // Distance
+            // Skyplane distance
             const DIST: f32 = 128.0;
 
             let rp = *point - self.camera_location;
@@ -548,43 +549,40 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
 
     /// Render already clipped polygon
     unsafe fn render_clipped_polygon(&mut self, is_transparent: bool, is_sky: bool, points: &[Vec5UVf], color: u32, texture: res::ImageRef) {
-        if is_sky {
-            if is_transparent {
-                match self.rasterization_mode {
-                    RasterizationMode::Standard => self.render_clipped_polygon_impl::<0, true, true>(&points, color, texture),
-                    RasterizationMode::Overdraw => self.render_clipped_polygon_impl::<1, true, true>(&points, color, texture),
-                    RasterizationMode::Depth    => self.render_clipped_polygon_impl::<2, true, true>(&points, color, texture),
-                    RasterizationMode::UV       => self.render_clipped_polygon_impl::<3, true, true>(&points, color, texture),
-                    RasterizationMode::Textured => self.render_clipped_polygon_impl::<4, true, true>(&points, color, texture),
-                }
-            } else {
-                match self.rasterization_mode {
-                    RasterizationMode::Standard => self.render_clipped_polygon_impl::<0, false, true>(&points, color, texture),
-                    RasterizationMode::Overdraw => self.render_clipped_polygon_impl::<1, false, true>(&points, color, texture),
-                    RasterizationMode::Depth    => self.render_clipped_polygon_impl::<2, false, true>(&points, color, texture),
-                    RasterizationMode::UV       => self.render_clipped_polygon_impl::<3, false, true>(&points, color, texture),
-                    RasterizationMode::Textured => self.render_clipped_polygon_impl::<4, false, true>(&points, color, texture),
-                }
-            }
-        } else {
-            if is_transparent {
-                match self.rasterization_mode {
-                    RasterizationMode::Standard => self.render_clipped_polygon_impl::<0, true, false>(&points, color, texture),
-                    RasterizationMode::Overdraw => self.render_clipped_polygon_impl::<1, true, false>(&points, color, texture),
-                    RasterizationMode::Depth    => self.render_clipped_polygon_impl::<2, true, false>(&points, color, texture),
-                    RasterizationMode::UV       => self.render_clipped_polygon_impl::<3, true, false>(&points, color, texture),
-                    RasterizationMode::Textured => self.render_clipped_polygon_impl::<4, true, false>(&points, color, texture),
-                }
-            } else {
-                match self.rasterization_mode {
-                    RasterizationMode::Standard => self.render_clipped_polygon_impl::<0, false, false>(&points, color, texture),
-                    RasterizationMode::Overdraw => self.render_clipped_polygon_impl::<1, false, false>(&points, color, texture),
-                    RasterizationMode::Depth    => self.render_clipped_polygon_impl::<2, false, false>(&points, color, texture),
-                    RasterizationMode::UV       => self.render_clipped_polygon_impl::<3, false, false>(&points, color, texture),
-                    RasterizationMode::Textured => self.render_clipped_polygon_impl::<4, false, false>(&points, color, texture),
-                }
-            }
-        }
+        // Potential rasterization function set
+        let rasterize_fn = [
+            Self::render_clipped_polygon_impl::<0, false, false>,
+            Self::render_clipped_polygon_impl::<1, false, false>,
+            Self::render_clipped_polygon_impl::<2, false, false>,
+            Self::render_clipped_polygon_impl::<3, false, false>,
+            Self::render_clipped_polygon_impl::<4, false, false>,
+
+            Self::render_clipped_polygon_impl::<0, true, false>,
+            Self::render_clipped_polygon_impl::<1, true, false>,
+            Self::render_clipped_polygon_impl::<2, true, false>,
+            Self::render_clipped_polygon_impl::<3, true, false>,
+            Self::render_clipped_polygon_impl::<4, true, false>,
+
+            Self::render_clipped_polygon_impl::<0, false, true>,
+            Self::render_clipped_polygon_impl::<1, false, true>,
+            Self::render_clipped_polygon_impl::<2, false, true>,
+            Self::render_clipped_polygon_impl::<3, false, true>,
+            Self::render_clipped_polygon_impl::<4, false, true>,
+
+            Self::render_clipped_polygon_impl::<0, true, true>,
+            Self::render_clipped_polygon_impl::<1, true, true>,
+            Self::render_clipped_polygon_impl::<2, true, true>,
+            Self::render_clipped_polygon_impl::<3, true, true>,
+            Self::render_clipped_polygon_impl::<4, true, true>,
+        ];
+
+        // Generate rendering function id
+        let id = 0
+            + is_sky as usize * 10
+            + is_transparent as usize * 5
+            + self.rasterization_mode as usize;
+
+        rasterize_fn[id](self, points, color, texture);
     }
 
     /// render_clipped_polygon function optimized implementation
@@ -650,10 +648,22 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
         let mut left_curr = points[left_index];
         let mut left_slope = (left_curr - left_prev) / (left_curr.y - left_prev.y);
 
+        // let mut left_prev_xzuv: math::FVec4 = points[min_y_index].xzuv().into();
+        // let mut left_curr_xzuv: math::FVec4 = points[left_index].xzuv().into();
+        // let mut left_slope_xzuv: math::FVec4 = (left_curr_xzuv - left_prev_xzuv) / (left_curr.y - left_prev.y);
+        // let mut left_prev_y = points[min_y_index].y;
+        // let mut left_curr_y = points[left_index].y;
+
         let mut right_index = ind_prev!(min_y_index);
         let mut right_prev = points[min_y_index];
         let mut right_curr = points[right_index];
         let mut right_slope = (right_curr - right_prev) / (right_curr.y - right_prev.y);
+
+        // let mut right_prev_xzuv: math::FVec4 = points[min_y_index].xzuv().into();
+        // let mut right_curr_xzuv: math::FVec4 = points[right_index].xzuv().into();
+        // let mut right_slope_xzuv: math::FVec4 = (right_curr_xzuv - right_prev_xzuv) / (right_curr.y - right_prev.y);
+        // let mut right_prev_y = points[min_y_index].y;
+        // let mut right_curr_y = points[right_index].y;
 
         let width = if IS_SKY {
             texture.width as isize >> 1
@@ -923,6 +933,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                     }
                 }
     
+                // Strange, but...
                 ((min_dist_2 / 32768.0).log2() / 2.0) as usize
             };
 
@@ -990,6 +1001,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
         }
     }
 
+    
     /// Build set of rendered polygons
     /// 
     /// # Algorithm
@@ -1006,167 +1018,168 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
     /// rectangles.
     pub fn build_render_set(
         &self,
-        bsp: &bsp::Bsp,
-        pvs: &mut BTreeMap<bsp::VolumeId, geom::ClipOct>,
-        inv_render_set: &mut Vec<(bsp::VolumeId, geom::ClipOct)>,
-    ) {
-        match bsp {
-            bsp::Bsp::Partition {
-                splitter_plane,
-                front,
-                back
-            } => {
-                let rel = splitter_plane.get_point_relation(self.camera_location);
+        bsp_root: &bsp::Bsp,
+        start_volume_id: bsp::VolumeId,
+        start_clip_oct: &geom::ClipOct
+    ) -> Vec<(bsp::VolumeId, geom::ClipOct)> {
+        // Potentially visible set
+        let mut pvs = BTreeMap::<bsp::VolumeId, geom::ClipOct>::new();
 
-                let (first, second) = match rel {
-                    geom::PointRelation::Front | geom::PointRelation::OnPlane => {
-                        (front, back)
-                    }
-                    geom::PointRelation::Back => {
-                        (back, front)
-                    }
-                };
+        // Render set itself
+        let mut inv_render_set = Vec::new();
 
-                self.build_render_set(first, pvs, inv_render_set);
-                self.build_render_set(second, pvs, inv_render_set);
-            }
-            bsp::Bsp::Volume(volume_id) => 'volume_traverse: {
-                let Some(volume_clip_oct) = pvs.get(volume_id) else {
-                    break 'volume_traverse;
-                };
-                let volume_clip_oct = *volume_clip_oct;
+        // Visit stack (I don't want to use recursion here)
+        let mut visit_stack = Vec::<&bsp::Bsp>::new();
 
-                // Insert volume in render set
-                inv_render_set.push((*volume_id, volume_clip_oct));
+        // Initialize PVS
+        pvs.insert(start_volume_id, *start_clip_oct);
 
-                let volume = self.map.get_volume(*volume_id).unwrap();
+        // Initialize visit stack
+        visit_stack.push(bsp_root);
 
-                // 'sky_rendering: for surface in volume.get_surfaces() {
-                //     if !surface.is_sky {
-                //         continue 'sky_rendering;
-                //     }
-                //     *sky_clip_oct = sky_clip_oct.union(&volume_clip_oct);
-                // }
+        while let Some(bsp) = visit_stack.pop() {
+            match bsp {
+                bsp::Bsp::Partition { splitter_plane, front, back } => {
+                    let rel = splitter_plane.get_point_relation(self.camera_location);
 
-                'portal_rendering: for portal in volume.get_portals() {
-                    let portal_polygon = self.map
-                        .get_polygon(portal.polygon_id)
-                        .unwrap();
-
-                    // Perform modified backface culling
-                    let backface_cull_result =
-                        (portal_polygon.plane.normal ^ self.camera_location) - portal_polygon.plane.distance
-                        >= 0.0;
-                    if backface_cull_result != portal.is_facing_front {
-                        continue 'portal_rendering;
-                    }
-
-                    let clip_rect = 'portal_validation: {
-                        /*
-                        I think, that projection is main source of the 'black bug'
-                        is (kinda) infinite points during polygon projection process.
-                        Possibly, it can be solved with early visible portion clipping
-                        or automatic enabling of polygon based on it's relative
-                        location from camera.
-
-                        Reason: bug disappears if we just don't use projection at all.
-                            (proved by distance clip fix)
-
-                        TODO: add some distance coefficent
-                        Constant works quite bad, because
-                        on small-metric maps it allows too much,
-                        and on huge ones it (theoretically) don't
-                        saves us from the bug.
-                        */
-
-                        let portal_plane_distance = portal_polygon
-                            .plane
-                            .get_signed_distance(self.camera_location)
-                            .abs();
-
-                        // Do not calculate projection for near portals
-                        if portal_plane_distance <= 8.0 {
-                            break 'portal_validation volume_clip_oct;
+                    let (first, second) = match rel {
+                        geom::PointRelation::Front | geom::PointRelation::OnPlane => {
+                            (front, back)
                         }
-
-                        let mut polygon_points = portal_polygon.points.clone();
-                        let mut proj_polygon_points = Vec::new();
-
-                        if !portal.is_facing_front {
-                            polygon_points.reverse();
+                        geom::PointRelation::Back => {
+                            (back, front)
                         }
-
-                        self.get_screenspace_portal_polygon(
-                            &mut polygon_points,
-                            &mut proj_polygon_points
-                        );
-
-                        // Check if it's even a polygon
-                        if proj_polygon_points.len() < 3 {
-                            continue 'portal_rendering;
-                        }
-
-                        let proj_oct = geom::ClipOct::from_points_xy(
-                            proj_polygon_points.iter().copied()
-                        );
-
-                        let Some(clip_oct) = geom::ClipOct::intersection(
-                            &volume_clip_oct,
-                            &proj_oct.extend(1.0, 1.0, 1.0, 1.0)
-                        ) else {
-                            continue 'portal_rendering;
-                        };
-
-                        clip_oct
                     };
-
-                    // Insert clipping rectangle in PVS
-                    let pvs_entry = pvs
-                        .entry(portal.dst_volume_id);
-
-                    match pvs_entry {
-                        std::collections::btree_map::Entry::Occupied(mut occupied) => {
-                            let existing_rect: &mut geom::ClipOct = occupied.get_mut();
-                            *existing_rect = existing_rect.union(&clip_rect);
+    
+                    visit_stack.push(&second);
+                    visit_stack.push(&first);
+                }
+                bsp::Bsp::Volume(volume_id) => 'volume_traverse: {
+                    let Some(volume_clip_oct) = pvs.get(volume_id) else {
+                        break 'volume_traverse;
+                    };
+                    let volume_clip_oct = *volume_clip_oct;
+    
+                    // Insert volume in render set
+                    inv_render_set.push((*volume_id, volume_clip_oct));
+    
+                    let volume = self.map.get_volume(*volume_id).unwrap();
+    
+                    // 'sky_rendering: for surface in volume.get_surfaces() {
+                    //     if !surface.is_sky {
+                    //         continue 'sky_rendering;
+                    //     }
+                    //     *sky_clip_oct = sky_clip_oct.union(&volume_clip_oct);
+                    // }
+    
+                    'portal_rendering: for portal in volume.get_portals() {
+                        let portal_polygon = self.map
+                            .get_polygon(portal.polygon_id)
+                            .unwrap();
+    
+                        // Perform modified backface culling
+                        let backface_cull_result =
+                            (portal_polygon.plane.normal ^ self.camera_location) - portal_polygon.plane.distance
+                            >= 0.0;
+                        if backface_cull_result != portal.is_facing_front {
+                            continue 'portal_rendering;
                         }
-                        std::collections::btree_map::Entry::Vacant(vacant) => {
-                            vacant.insert(clip_rect);
+    
+                        let clip_rect = 'portal_validation: {
+                            /*
+                            I think, that projection is main source of the 'black bug'
+                            is (kinda) infinite points during polygon projection process.
+                            Possibly, it can be solved with early visible portion clipping
+                            or automatic enabling of polygon based on it's relative
+                            location from camera.
+    
+                            Reason: bug disappears if we just don't use projection at all.
+                                (proved by distance clip fix)
+    
+                            TODO: add some distance coefficent
+                            Constant works quite bad, because
+                            on small-metric maps it allows too much,
+                            and on huge ones it (theoretically) don't
+                            saves us from the bug.
+                            */
+    
+                            let portal_plane_distance = portal_polygon
+                                .plane
+                                .get_signed_distance(self.camera_location)
+                                .abs();
+    
+                            // Do not calculate projection for near portals
+                            if portal_plane_distance <= 8.0 {
+                                break 'portal_validation volume_clip_oct;
+                            }
+    
+                            let mut polygon_points = portal_polygon.points.clone();
+                            let mut proj_polygon_points = Vec::new();
+    
+                            if !portal.is_facing_front {
+                                polygon_points.reverse();
+                            }
+    
+                            self.get_screenspace_portal_polygon(
+                                &mut polygon_points,
+                                &mut proj_polygon_points
+                            );
+    
+                            // Check if it's even a polygon
+                            if proj_polygon_points.len() < 3 {
+                                continue 'portal_rendering;
+                            }
+    
+                            let proj_oct = geom::ClipOct::from_points_xy(
+                                proj_polygon_points.iter().copied()
+                            );
+    
+                            let Some(clip_oct) = geom::ClipOct::intersection(
+                                &volume_clip_oct,
+                                &proj_oct.extend(0.1, 0.1, 0.1, 0.1)
+                            ) else {
+                                continue 'portal_rendering;
+                            };
+    
+                            clip_oct
+                        };
+    
+                        // Insert clipping rectangle in PVS
+                        let pvs_entry = pvs
+                            .entry(portal.dst_volume_id);
+    
+                        match pvs_entry {
+                            std::collections::btree_map::Entry::Occupied(mut occupied) => {
+                                let existing_rect: &mut geom::ClipOct = occupied.get_mut();
+                                *existing_rect = existing_rect.union(&clip_rect);
+                            }
+                            std::collections::btree_map::Entry::Vacant(vacant) => {
+                                vacant.insert(clip_rect);
+                            }
                         }
                     }
                 }
+                // Ignore it
+                bsp::Bsp::Void => {}
             }
-            bsp::Bsp::Void => {}
         }
+
+        inv_render_set
     }
 
     /// Render scene starting from certain volume
     pub fn render(&mut self, start_volume_id: bsp::VolumeId) {
-        let inv_render_set = {
-            let mut pvs = BTreeMap::new();
-            let mut inv_render_set = Vec::new();
-
-            pvs.insert(start_volume_id, geom::ClipOct::from_clip_rect(self.get_screen_clip_rect()));
-
-            self.build_render_set(self.map.get_world_model().get_bsp(), &mut pvs, &mut inv_render_set);
-
-            inv_render_set
-        };
+        let inv_render_set = self.build_render_set(
+            self.map.get_world_model().get_bsp(),
+            start_volume_id,
+            &geom::ClipOct::from_clip_rect(self.get_screen_clip_rect())
+        );
 
         for (volume_id, volume_clip_oct) in inv_render_set
             .iter()
             .rev()
             .copied()
         {
-            // let Some(clip_rect) = volume_clip_oct.intersection(&screen_clip_rect) else {
-            //     continue;
-            // };
-            // if self.slow_render_context.is_some() {
-            //     self.render_clip_rect(clip_rect, 0x0000FF);
-            //     let ctx = self.slow_render_context.as_ref().unwrap();
-            //     (ctx.present_func)(self.frame_pixels, self.frame_width, self.frame_height, self.frame_stride);
-            //     std::thread::sleep(ctx.delta_time);
-            // }
-
             self.render_volume(volume_id, &volume_clip_oct);
         }
     }
@@ -1230,6 +1243,28 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
         for id in render_set {
             self.render_volume(id, &screen_clip_oct);
         }
+    }
+}
+
+/// Input render message
+pub enum RenderInputMessage {
+    NewFrame {
+        frame_buffer: Vec<u32>,
+        width: u32,
+        height: u32,
+        camera: Camera,
+        view_projection_matrix: Mat4f,
+        rasterization_mode: RasterizationMode,
+    }
+}
+
+/// Render output message
+pub enum RenderOutputMessage {
+    /// Rendered frame
+    RenderedFrame {
+        frame_buffer: Vec<u32>,
+        width: u32,
+        height: u32,
     }
 }
 
@@ -1377,11 +1412,11 @@ fn main() {
     // camera.location = Vec3f::new(-174.0, 2114.6, -64.5); // -200, 2000, -50
     // camera.direction = Vec3f::new(-0.4, 0.9, 0.1);
 
-    // camera.location = Vec3f::new(1402.4, 1913.7, -86.3);
-    // camera.direction = Vec3f::new(-0.74, 0.63, -0.24);
+    camera.location = Vec3f::new(1402.4, 1913.7, -86.3);
+    camera.direction = Vec3f::new(-0.74, 0.63, -0.24);
 
-    camera.location = Vec3f::new(-72.9, 698.3, -118.8);
-    camera.direction = Vec3f::new(0.37, 0.68, 0.63);
+    // camera.location = Vec3f::new(-72.9, 698.3, -118.8);
+    // camera.direction = Vec3f::new(0.37, 0.68, 0.63);
 
     // camera.location = Vec3f::new(30.0, 40.0, 50.0);
 
@@ -1390,28 +1425,6 @@ fn main() {
 
     // Buffer that contains software-rendered pixels
     let mut frame_buffer = Vec::<u32>::new();
-
-    /// Input render message
-    enum RenderInputMessage {
-        NewFrame {
-            frame_buffer: Vec<u32>,
-            width: u32,
-            height: u32,
-            camera: Camera,
-            view_projection_matrix: Mat4f,
-            rasterization_mode: RasterizationMode,
-        }
-    }
-
-    /// Render output message
-    enum RenderOutputMessage {
-        /// Rendered frame
-        RenderedFrame {
-            frame_buffer: Vec<u32>,
-            width: u32,
-            height: u32,
-        }
-    }
 
     let (render_in_sender, render_out_reciever) = {
 
@@ -1434,7 +1447,6 @@ fn main() {
             // Map reference
             let map_arc = map.clone();
             let material_table_arc = material_table;
-
 
             let map = map_arc.as_ref();
             let material_table = material_table_arc.as_ref();
@@ -1479,22 +1491,25 @@ fn main() {
 
                         let mut render_context = RenderContext {
                             camera_location: camera.location,
+
                             frame_width: width as usize,
                             frame_height: height as usize,
                             frame_stride: width as usize,
                             frame_pixels: frame_buffer.as_mut_ptr(),
+
                             map: &map,
                             material_table: &material_reference_table,
                             rasterization_mode,
+
                             sky_background_uv_offset: Vec2f::new(
                                 time * -12.0,
                                 time * -12.0,
                             ),
-                
                             sky_uv_offset: Vec2f::new(
                                 time * 16.0,
                                 time * 16.0,
                             ),
+
                             view_projection_matrix,
                         };
 
@@ -1599,8 +1614,8 @@ fn main() {
         };
 
         let (frame_width, frame_height) = (
-            window_width / 4,
-            window_height / 4,
+            window_width / 2,
+            window_height / 2,
         );
 
         // Compute view matrix

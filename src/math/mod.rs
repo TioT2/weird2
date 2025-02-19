@@ -7,7 +7,21 @@ use std::ops::{Add, AddAssign, BitXor, Div, DivAssign, Mul, MulAssign, Neg, Rang
 pub mod fvec_x86;
 
 #[cfg(target_feature = "sse")]
+impl From<Vec4f> for fvec_x86::FVec4 {
+    fn from(value: Vec4f) -> Self {
+        Self::from_xyzw(value.x(), value.y(), value.z(), value.w())
+    }
+}
+
+#[cfg(target_feature = "sse")]
 pub mod fmat4_x86;
+
+#[cfg(target_feature = "sse")]
+pub type FVec4 = fvec_x86::FVec4;
+
+// Not tested yet
+#[cfg(not(target_feature = "sse"))]
+pub type FVec4 = Vec4<f32>;
 
 /// Generic 3-component vector implementation module
 pub mod vec3_generic;
@@ -281,6 +295,10 @@ impl Vec5UVf {
 
     pub fn uv(&self) -> Vec2f {
         Vec2f::new(self.u, self.v)
+    }
+
+    pub fn xzuv(&self) -> Vec4f {
+        Vec4f::new(self.x, self.z, self.u, self.v)
     }
 
 

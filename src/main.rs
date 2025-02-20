@@ -371,6 +371,18 @@ struct SurfaceTexture<'t> {
     data: &'t [u64],
 }
 
+impl<'t> SurfaceTexture<'t> {
+    // Generate empty surface texture
+    pub fn empty() -> SurfaceTexture<'static> {
+        SurfaceTexture {
+            width: 0,
+            height: 0,
+            stride: 0,
+            data: &[],
+        }
+    }
+}
+
 /// Render context
 struct RenderContext<'t, 'ref_table> {
     /// Camera location
@@ -1011,23 +1023,22 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                 .abs()
                 .min(0.99);
 
-            // Add ambient)
+            // Add ambiance)
             let light = light_diffuse * 0.9 + 0.09;
 
-            let surface_texture = if surface.is_sky {
-                build_surface_texture::<false>(
-                    surface_texture_data,
-                    image,
-                    light
-                )
-            } else {
-                build_surface_texture::<true>(
-                    surface_texture_data,
-                    image,
-                    light
-                )
+            let surface_texture = match self.rasterization_mode {
+                RasterizationMode::Depth | RasterizationMode::Overdraw | RasterizationMode::UV | RasterizationMode::Standard => {
+                    SurfaceTexture::empty()
+                }
+                RasterizationMode::Textured => {
+                    build_surface_texture(
+                        surface_texture_data,
+                        image,
+                        light,
+                        !surface.is_sky
+                    )
+                }
             };
-
 
             // Get surface color
             let color: [u8; 4] = self
@@ -1369,7 +1380,7 @@ pub enum RenderOutputMessage {
 }
 
 /// Build surface texture
-fn build_surface_texture<
+fn build_surface_texture_impl<
     't,
     const ENABLE_LIGHTING: bool
 >(
@@ -1406,6 +1417,80 @@ fn build_surface_texture<
         height: src.height,
         stride: src.width,
         data: data.as_slice(),
+    }
+}
+
+fn build_surface_texture<'t>(
+    data: &'t mut Vec<u64>,
+    src: res::ImageRef,
+    light: f32,
+    enable_lighting: bool
+) -> SurfaceTexture<'t> {
+    if enable_lighting {
+        build_surface_texture_impl::<true>(data, src, light)
+    } else {
+        build_surface_texture_impl::<false>(data, src, light)
+    }
+}
+
+/// Convert HDR buffer into LDR one
+pub fn hdr_to_ldr_impl<const ENABLE_TONEMAPPING: bool>(hdr: &[u64], ldr: &mut Vec<u32>) {
+    'proc: for elem in hdr {
+        let [r, g, b, a] = u64_into_u16(*elem);
+
+        if ENABLE_TONEMAPPING {
+            #[cfg(target_feature = "sse2")]
+            unsafe {
+                let rgba_int = std::arch::x86_64::_mm_set_epi32(
+                    std::mem::transmute(a as u32),
+                    std::mem::transmute(b as u32),
+                    std::mem::transmute(g as u32),
+                    std::mem::transmute(r as u32),
+                );
+    
+                // rgba
+                let rgba = std::arch::x86_64::_mm_cvtepi32_ps(rgba_int);
+    
+                // rgba / 256.0 + exposure
+                let rgba_norm_aexp = std::arch::x86_64::_mm_fmadd_ps(
+                    rgba,
+                    std::arch::x86_64::_mm_set1_ps(1.0 / 256.0),
+                    std::arch::x86_64::_mm_set1_ps(0.5) // exposure
+                );
+    
+                // rgba / (rgba / 256.0 + exposure)
+                let mapped = std::arch::x86_64::_mm_div_ps(rgba, rgba_norm_aexp);
+    
+                let mapped_int = std::arch::x86_64::_mm_cvtps_epi32(mapped);
+    
+                let [r, g, b, _]: [u32; 4] =
+                    std::mem::transmute(mapped_int);
+    
+                ldr.push(u32::from_le_bytes([
+                    (r & 0xFF) as u8,
+                    (g & 0xFF) as u8,
+                    (b & 0xFF) as u8,
+                    0,
+                ]));
+
+                continue 'proc;
+            }
+        }
+
+        ldr.push(u32::from_le_bytes([
+            r as u8,
+            g as u8,
+            b as u8,
+            0
+        ]));
+    }
+}
+
+pub fn hdr_to_ldr(hdr: &[u64], ldr: &mut Vec<u32>, enable_tonemapping: bool) {
+    if enable_tonemapping {
+        hdr_to_ldr_impl::<true>(hdr, ldr);
+    } else {
+        hdr_to_ldr_impl::<false>(hdr, ldr);
     }
 }
 
@@ -1550,14 +1635,14 @@ fn main() {
     let mut input = Input::new();
     let mut camera = Camera::new();
 
-    // camera.location = Vec3f::new(-174.0, 2114.6, -64.5); // -200, 2000, -50
-    // camera.direction = Vec3f::new(-0.4, 0.9, 0.1);
+    camera.location = Vec3f::new(-174.0, 2114.6, -64.5); // -200, 2000, -50
+    camera.direction = Vec3f::new(-0.4, 0.9, 0.1);
 
     // camera.location = Vec3f::new(1402.4, 1913.7, -86.3);
     // camera.direction = Vec3f::new(-0.74, 0.63, -0.24);
 
-    camera.location = Vec3f::new(1254.2, 1700.7, -494.5); // (1254.21606, 1700.70752, -494.493591)
-    camera.direction = Vec3f::new(0.055, -0.946, 0.320); // (-0.048328593, -0.946524262, 0.318992347)
+    // camera.location = Vec3f::new(1254.2, 1700.7, -494.5); // (1254.21606, 1700.70752, -494.493591)
+    // camera.direction = Vec3f::new(0.055, -0.946, 0.320); // (-0.048328593, -0.946524262, 0.318992347)
 
     // camera.location = Vec3f::new(-72.9, 698.3, -118.8);
     // camera.direction = Vec3f::new(0.37, 0.68, 0.63);
@@ -1857,58 +1942,16 @@ fn main() {
                     width,
                     height
                 } => {
-                    // Build 'tonemapped' buffer
+                    // Build low dynamic range buffer
                     ldr_frame_buffer.clear();
                     ldr_frame_buffer.reserve(width as usize * height as usize);
 
-                    for elem in &rendered_hdr_buffer {
-                        let [r, g, b, a] = u64_into_u16(*elem);
+                    let start = std::time::Instant::now();
+                    hdr_to_ldr(&rendered_hdr_buffer, &mut ldr_frame_buffer, true);
+                    let end = std::time::Instant::now();
 
-                        #[cfg(target_feature = "sse2")]
-                        unsafe {
-                            let rgba_integer = std::arch::x86_64::_mm_set_epi32(
-                                std::mem::transmute(a as u32),
-                                std::mem::transmute(b as u32),
-                                std::mem::transmute(g as u32),
-                                std::mem::transmute(r as u32),
-                            );
-                            let rgba_ns = std::arch::x86_64::_mm_cvtepi32_ps(rgba_integer);
-                            let rgba = std::arch::x86_64::_mm_div_ps(
-                                rgba_ns,
-                                std::arch::x86_64::_mm_set1_ps(256.0)
-                            );
-                            let rgba_p1 = std::arch::x86_64::_mm_add_ps(
-                                rgba,
-                                std::arch::x86_64::_mm_set1_ps(0.5) // exposure
-                            );
-                            let mapped = std::arch::x86_64::_mm_div_ps(rgba, rgba_p1);
-                            let multiplyed = std::arch::x86_64::_mm_mul_ps(
-                                mapped,
-                                std::arch::x86_64::_mm_set_ps1(256.0)
-                            );
-                            let integer = std::arch::x86_64::_mm_cvtps_epi32(multiplyed);
-
-                            let [r, g, b, a]: [u32; 4] =
-                                std::mem::transmute(integer);
-
-                            ldr_frame_buffer.push(u32::from_le_bytes([
-                                r.to_le_bytes()[0],
-                                g.to_le_bytes()[0],
-                                b.to_le_bytes()[0],
-                                a.to_le_bytes()[0],
-                            ]));
-                        }
-
-                        #[cfg(not(target_feature = "sse2"))]
-                        {
-                            ldr_frame_buffer.push(u32::from_le_bytes([
-                                r as u8,
-                                g as u8,
-                                b as u8,
-                                0
-                            ]));
-                        }
-                    }
+                    // tonemapping time
+                    let tm_time = end.duration_since(start).as_nanos() as f64 / 1_000_000f64;
 
                     system_font::frame(
                         width as usize,
@@ -1916,12 +1959,13 @@ fn main() {
                         width as usize,
                         ldr_frame_buffer.as_mut_ptr()
                     )
-                        .str(16, 8, &format!("FPS: {} ({} ms)", timer.get_fps(), 1000.0 / timer.get_fps()))
+                        .str(16, 8, &format!("FPS: {} ({}ms)", timer.get_fps(), 1000.0 / timer.get_fps()))
                         .str(16, 16, &format!("SR={}, SL={}, RM={}",
                             do_enable_slow_rendering as u32,
                             do_sync_logical_camera as u32,
                             rasterization_mode as u32
                         ))
+                        .str(16, 24, &format!("TM: {}ms", tm_time))
                     ;
 
                     // Present frame

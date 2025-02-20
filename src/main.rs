@@ -977,6 +977,38 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
             // Add ambient)
             let light = light_diffuse * 0.9 + 0.09;
 
+            let mut surface_texture;
+
+            let surface_image = if surface.is_sky {
+                image
+            } else {
+                surface_texture = image.data.to_vec();
+
+                for y in 0..image.height {
+                    let line = &mut surface_texture[y * image.width..y * image.width + image.width];
+                    for x in 0..image.width {
+                        let value = &mut line[x];
+
+                        let [r, g, b, _] = value.to_le_bytes();
+
+                        *value = u32::from_le_bytes([
+                            unsafe { (r as f32 * light).to_int_unchecked::<u8>() },
+                            unsafe { (g as f32 * light).to_int_unchecked::<u8>() },
+                            unsafe { (b as f32 * light).to_int_unchecked::<u8>() },
+                            0
+                        ]);
+                    }
+                }
+
+                res::ImageRef {
+                    width: image.width,
+                    height: image.height,
+                    stride: image.width,
+                    data: &surface_texture,
+                }
+            };
+
+
             // Get surface color
             let color: [u8; 4] = self
                 .material_table
@@ -1003,7 +1035,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                     distance: surface.v.distance / image_uv_scale,
                 },
                 color,
-                image,
+        surface_image,
                 surface.is_transparent,
                 surface.is_sky,
                 clip_oct,

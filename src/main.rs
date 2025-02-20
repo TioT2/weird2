@@ -324,6 +324,22 @@ pub enum RasterizationMode {
     Textured = 4,
 }
 
+pub fn u64_from_u16(value: [u16; 4]) -> u64 {
+    ((value[0] as u64) <<  0) |
+    ((value[1] as u64) << 16) |
+    ((value[2] as u64) << 32) |
+    ((value[3] as u64) << 48)
+}
+
+pub fn u64_into_u16(value: u64) -> [u16; 4] {
+    [
+        ((value >>  0) & 0xFFFF) as u16,
+        ((value >> 16) & 0xFFFF) as u16,
+        ((value >> 32) & 0xFFFF) as u16,
+        ((value >> 48) & 0xFFFF) as u16,
+    ]
+}
+
 impl RasterizationMode {
     // Rasterization mode count
     const COUNT: u32 = 5;
@@ -352,7 +368,7 @@ struct SurfaceTexture<'t> {
     width: usize,
     height: usize,
     stride: usize,
-    data: &'t [u32],
+    data: &'t [u64],
 }
 
 /// Render context
@@ -375,7 +391,7 @@ struct RenderContext<'t, 'ref_table> {
     material_table: &'t res::MaterialReferenceTable<'ref_table>,
 
     /// Frame pixel array pointer
-    frame_pixels: *mut u32,
+    frame_pixels: *mut u64,
 
     /// Frame width
     frame_width: usize,
@@ -562,7 +578,14 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
     }
 
     /// Render already clipped polygon
-    unsafe fn render_clipped_polygon(&mut self, is_transparent: bool, is_sky: bool, points: &[Vec5UVf], color: u32, texture: SurfaceTexture) {
+    unsafe fn render_clipped_polygon(
+        &mut self,
+        is_transparent: bool,
+        is_sky: bool,
+        points: &[Vec5UVf],
+        color: u64,
+        texture: SurfaceTexture
+    ) {
         // Potential rasterization function set
         let rasterize_fn = [
             Self::render_clipped_polygon_impl::<0, false, false>,
@@ -607,7 +630,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
     >(
         &mut self,
         points: &[Vec5UVf],
-        color: u32,
+        color: u64,
         texture: SurfaceTexture,
     ) {
         /// Index forward by point list
@@ -780,10 +803,10 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                 if MODE == RasterizationMode::Standard as u32 {
                     *pixel_ptr = color;
                 } else if MODE == RasterizationMode::Overdraw as u32 {
-                    *pixel_ptr = 0x101010u32.wrapping_add(*pixel_ptr);
+                    *pixel_ptr = 0x0010_0010_0010u64.wrapping_add(*pixel_ptr);
                 } else if MODE == RasterizationMode::Depth as u32 {
-                    let color = (xzuv.y() * 25500.0) as u8;
-                    *pixel_ptr = u32::from_le_bytes([color, color, color, color]);
+                    let color = (xzuv.y() * 25500.0) as u16;
+                    *pixel_ptr = u64_from_u16([color; 4]);
                 } else if MODE == RasterizationMode::UV as u32 {
                     let z = xzuv.y().recip();
                     let u = xzuv.z() * z;
@@ -792,7 +815,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                     let xi = (u as i64 & 0xFF) as u8;
                     let yi = (v as i64 & 0xFF) as u8;
 
-                    *pixel_ptr = color * (((xi >> 5) ^ (yi >> 5)) & 1) as u32;
+                    *pixel_ptr = color * (((xi >> 5) ^ (yi >> 5)) & 1) as u64;
                 } else if MODE == RasterizationMode::Textured as u32 {
                     if IS_SKY {
                         let z = xzuv.y().recip();
@@ -809,7 +832,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                             .rem_euclid(height)
                         );
 
-                        let fg_color = *texture.data.get_unchecked(fg_v * texture.width + fg_u);
+                        let fg_color = *texture.data.get_unchecked(fg_v * texture.stride + fg_u);
 
                         // Check foreground color and fetch backround if foreground is transparent
                         if fg_color == 0 {
@@ -828,7 +851,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
 
                             *pixel_ptr = *texture.data.get_unchecked(
                                 bg_v
-                                    .wrapping_mul(texture.width)
+                                    .wrapping_mul(texture.stride)
                                     .wrapping_add(bg_u)
                             );
                         } else {
@@ -849,7 +872,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                                 .rem_euclid(height)
                         );
 
-                        *pixel_ptr = *texture.data.get_unchecked(v * texture.width + u);
+                        *pixel_ptr = *texture.data.get_unchecked(v * texture.stride + u);
                     }
 
                 } else {
@@ -865,7 +888,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
         polygon: &geom::Polygon,
         material_u: geom::Plane,
         material_v: geom::Plane,
-        color: u32,
+        color: u64,
         texture: SurfaceTexture,
         is_transparent: bool,
         is_sky: bool,
@@ -942,7 +965,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
         clip_oct: &geom::ClipOct,
         points: &mut Vec<Vec5UVf>,
         point_dst: &mut Vec<Vec5UVf>,
-        surface_texture_data: &mut Vec<u32>,
+        surface_texture_data: &mut Vec<u64>,
     ) {
         let volume = self.map.get_volume(id).unwrap();
 
@@ -991,45 +1014,18 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
             // Add ambient)
             let light = light_diffuse * 0.9 + 0.09;
 
-            let surface_texture = SurfaceTexture {
-                width: image.width,
-                height: image.height,
-                stride: image.stride,
-                data: image.data,
-            };
-
-            #[cfg(not)]
-            let surface_image = if surface.is_sky {
-                image
+            let surface_texture = if surface.is_sky {
+                build_surface_texture::<false>(
+                    surface_texture_data,
+                    image,
+                    light
+                )
             } else {
-                surface_texture_data.clear();
-                surface_texture_data.extend_from_slice(image.data);
-
-                for y in 0..image.height {
-                    let line = &mut surface_texture_data[y * image.width..y * image.width + image.width];
-
-                    for x in 0..image.width {
-                        let value = &mut line[x];
-
-                        // *value = *value;
-
-                        let [r, g, b, _] = value.to_le_bytes();
-
-                        *value = u32::from_le_bytes([
-                            unsafe { (r as f32 * light).to_int_unchecked::<u8>() },
-                            unsafe { (g as f32 * light).to_int_unchecked::<u8>() },
-                            unsafe { (b as f32 * light).to_int_unchecked::<u8>() },
-                            0
-                        ]);
-                    }
-                }
-
-                res::ImageRef {
-                    width: image.width,
-                    height: image.height,
-                    stride: image.width,
-                    data: &surface_texture_data,
-                }
+                build_surface_texture::<true>(
+                    surface_texture_data,
+                    image,
+                    light
+                )
             };
 
 
@@ -1041,10 +1037,10 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                 .to_le_bytes();
 
             // Calculate color, based on material and light
-            let color = u32::from_le_bytes([
-                (color[0] as f32 * light) as u8,
-                (color[1] as f32 * light) as u8,
-                (color[2] as f32 * light) as u8,
+            let color = u64_from_u16([
+                (color[0] as f32 * light) as u16,
+                (color[1] as f32 * light) as u16,
+                (color[2] as f32 * light) as u16,
                 0
             ]);
 
@@ -1353,7 +1349,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
 /// Input render message
 pub enum RenderInputMessage {
     NewFrame {
-        frame_buffer: Vec<u32>,
+        frame_buffer: Vec<u64>,
         width: u32,
         height: u32,
         camera: Camera,
@@ -1366,9 +1362,50 @@ pub enum RenderInputMessage {
 pub enum RenderOutputMessage {
     /// Rendered frame
     RenderedFrame {
-        frame_buffer: Vec<u32>,
+        frame_buffer: Vec<u64>,
         width: u32,
         height: u32,
+    }
+}
+
+/// Build surface texture
+fn build_surface_texture<
+    't,
+    const ENABLE_LIGHTING: bool
+>(
+    data: &'t mut Vec<u64>,
+    src: res::ImageRef,
+    light: f32
+) -> SurfaceTexture<'t> {
+
+    data.clear();
+    data.resize(src.width * src.height, 0);
+
+    for y in 0..src.height {
+        let src_line = &src.data[y * src.width..(y + 1) * src.width];
+        let dst_line = &mut data[y * src.width..(y + 1) * src.width];
+
+        for x in 0..src.width {
+            let [r, g, b, _] = src_line[x].to_le_bytes();
+
+            if ENABLE_LIGHTING {
+                dst_line[x] = u64_from_u16([
+                    unsafe { (r as f32 * light).to_int_unchecked::<u16>() },
+                    unsafe { (g as f32 * light).to_int_unchecked::<u16>() },
+                    unsafe { (b as f32 * light).to_int_unchecked::<u16>() },
+                    0
+                ]);
+            } else {
+                dst_line[x] = u64_from_u16([r as u16, g as u16, b as u16, 0]);
+            }
+        }
+    }
+
+    SurfaceTexture {
+        width: src.width,
+        height: src.height,
+        stride: src.width,
+        data: data.as_slice(),
     }
 }
 
@@ -1531,7 +1568,10 @@ fn main() {
     let mut logical_camera = camera;
 
     // Buffer that contains software-rendered pixels
-    let mut frame_buffer = Vec::<u32>::new();
+    let mut hdr_frame_buffer = Vec::<u64>::new();
+
+    // Low dynamic range framebuffer
+    let mut ldr_frame_buffer = Vec::<u32>::new();
 
     let (render_in_sender, render_out_reciever) = {
 
@@ -1781,10 +1821,10 @@ fn main() {
         };
         
         // Resize frame buffer to fit window's size
-        frame_buffer.resize(frame_width * frame_height, 0);
+        hdr_frame_buffer.resize(frame_width * frame_height, 0);
 
         let send_res = render_in_sender.send(RenderInputMessage::NewFrame {
-            frame_buffer,
+            frame_buffer: hdr_frame_buffer,
             width: frame_width as u32,
             height: frame_height as u32,
             camera: logical_camera,
@@ -1797,7 +1837,7 @@ fn main() {
         }
 
         // Previous frame contents
-        let prev_frame;
+        let prev_hdr_frame_buffer;
 
         'res_await_loop: loop {
             let render_result = match render_out_reciever.try_recv() {
@@ -1813,17 +1853,68 @@ fn main() {
     
             match render_result {
                 RenderOutputMessage::RenderedFrame {
-                    frame_buffer: mut rendered_frame_buffer,
+                    frame_buffer: rendered_hdr_buffer,
                     width,
                     height
                 } => {
                     // Build 'tonemapped' buffer
+                    ldr_frame_buffer.clear();
+                    ldr_frame_buffer.reserve(width as usize * height as usize);
+
+                    for elem in &rendered_hdr_buffer {
+                        let [r, g, b, a] = u64_into_u16(*elem);
+
+                        #[cfg(target_feature = "sse2")]
+                        unsafe {
+                            let rgba_integer = std::arch::x86_64::_mm_set_epi32(
+                                std::mem::transmute(a as u32),
+                                std::mem::transmute(b as u32),
+                                std::mem::transmute(g as u32),
+                                std::mem::transmute(r as u32),
+                            );
+                            let rgba_ns = std::arch::x86_64::_mm_cvtepi32_ps(rgba_integer);
+                            let rgba = std::arch::x86_64::_mm_div_ps(
+                                rgba_ns,
+                                std::arch::x86_64::_mm_set1_ps(256.0)
+                            );
+                            let rgba_p1 = std::arch::x86_64::_mm_add_ps(
+                                rgba,
+                                std::arch::x86_64::_mm_set1_ps(0.5) // exposure
+                            );
+                            let mapped = std::arch::x86_64::_mm_div_ps(rgba, rgba_p1);
+                            let multiplyed = std::arch::x86_64::_mm_mul_ps(
+                                mapped,
+                                std::arch::x86_64::_mm_set_ps1(256.0)
+                            );
+                            let integer = std::arch::x86_64::_mm_cvtps_epi32(multiplyed);
+
+                            let [r, g, b, a]: [u32; 4] =
+                                std::mem::transmute(integer);
+
+                            ldr_frame_buffer.push(u32::from_le_bytes([
+                                r.to_le_bytes()[0],
+                                g.to_le_bytes()[0],
+                                b.to_le_bytes()[0],
+                                a.to_le_bytes()[0],
+                            ]));
+                        }
+
+                        #[cfg(not(target_feature = "sse2"))]
+                        {
+                            ldr_frame_buffer.push(u32::from_le_bytes([
+                                r as u8,
+                                g as u8,
+                                b as u8,
+                                0
+                            ]));
+                        }
+                    }
 
                     system_font::frame(
                         width as usize,
                         height as usize,
                         width as usize,
-                        rendered_frame_buffer.as_mut_ptr()
+                        ldr_frame_buffer.as_mut_ptr()
                     )
                         .str(16, 8, &format!("FPS: {} ({} ms)", timer.get_fps(), 1000.0 / timer.get_fps()))
                         .str(16, 16, &format!("SR={}, SL={}, RM={}",
@@ -1835,20 +1926,20 @@ fn main() {
 
                     // Present frame
                     present_frame(
-                        rendered_frame_buffer.as_mut_ptr(),
+                        ldr_frame_buffer.as_mut_ptr(),
                         width as usize,
                         height as usize,
                         width as usize,
                     );
 
-                    prev_frame = Some(rendered_frame_buffer);
+                    prev_hdr_frame_buffer = Some(rendered_hdr_buffer);
 
                     break 'res_await_loop;
                 }
             }
         }
 
-        frame_buffer = prev_frame.unwrap_or(Vec::new());
+        hdr_frame_buffer = prev_hdr_frame_buffer.unwrap_or(Vec::new());
     }
 }
 

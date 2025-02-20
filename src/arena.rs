@@ -25,15 +25,20 @@ impl Arena {
         }
     }
 
-    unsafe fn alloc_chunk(size: usize) -> *mut Chunk {
-        let layout = std::alloc::Layout::from_size_align_unchecked(
+    /// Build chunk allocation layout
+    const unsafe fn get_chunk_layout(size: usize) -> std::alloc::Layout {
+        std::alloc::Layout::from_size_align_unchecked(
             std::mem::size_of::<Chunk>() + size,
             std::mem::align_of::<Chunk>(),
-        );
-        let ptr = std::alloc::alloc(layout);
+        )
+    }
+
+    /// Allocate chunk
+    unsafe fn alloc_chunk(size: usize) -> *mut Chunk {
+        let ptr = std::alloc::alloc(Self::get_chunk_layout(size));
 
         if ptr.is_null() {
-            std::alloc::handle_alloc_error(layout);
+            std::alloc::handle_alloc_error(Self::get_chunk_layout(size));
         }
 
         let chunk = ptr as *mut MaybeUninit<Chunk>;
@@ -50,7 +55,25 @@ impl Arena {
         return chunk_ref.assume_init_mut();
     }
 
+    /// Deallocate chunk
     unsafe fn dealloc_chunk(chunk: *mut Chunk) {
-        // std::alloc::dealloc(chunk as *mut u8, layout);
+        let chunk_ptr = chunk.as_mut().unwrap_unchecked();
+        let size = chunk_ptr.size;
+
+        std::alloc::dealloc(chunk as *mut u8, Self::get_chunk_layout(size));
+    }
+
+    /// Allocate
+    pub unsafe fn alloc(&mut self, layout: std::alloc::Layout) {
+        let mut start_ptr = self.current_ptr.add(self.current_ptr.align_offset(layout.align()));
+        let mut end_ptr = self.current_ptr.add(layout.size());
+
+        // Allocate new chunk if current's finished.
+        if end_ptr > self.current_end {
+            // Select chunk size
+
+            // Allocate new chunk
+            let new_chunk = Self::alloc_chunk(65536);
+        }
     }
 }

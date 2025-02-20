@@ -15,6 +15,10 @@ use sdl2::keyboard::Scancode;
 /// Basic math utility
 pub mod math;
 
+/// Arena
+// pub mod arena;
+
+/// System font
 pub mod system_font;
 
 /// Random number generator
@@ -929,6 +933,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
         clip_oct: &geom::ClipOct,
         points: &mut Vec<Vec5UVf>,
         point_dst: &mut Vec<Vec5UVf>,
+        surface_texture: &mut Vec<u32>,
     ) {
         let volume = self.map.get_volume(id).unwrap();
 
@@ -977,17 +982,21 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
             // Add ambient)
             let light = light_diffuse * 0.9 + 0.09;
 
-            let mut surface_texture;
+            // let surface_image = image;
 
             let surface_image = if surface.is_sky {
                 image
             } else {
-                surface_texture = image.data.to_vec();
+                surface_texture.clear();
+                surface_texture.extend_from_slice(image.data);
 
                 for y in 0..image.height {
                     let line = &mut surface_texture[y * image.width..y * image.width + image.width];
+
                     for x in 0..image.width {
                         let value = &mut line[x];
+
+                        // *value = *value;
 
                         let [r, g, b, _] = value.to_le_bytes();
 
@@ -1238,13 +1247,20 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
         );
         let mut points = Vec::with_capacity(32);
         let mut point_dst = Vec::with_capacity(32);
+        let mut surface_texture = Vec::new();
 
         for (volume_id, volume_clip_oct) in inv_render_set
             .iter()
             .rev()
             .copied()
         {
-            self.render_volume(volume_id, &volume_clip_oct, &mut points, &mut point_dst);
+            self.render_volume(
+                volume_id,
+                &volume_clip_oct,
+                &mut points,
+                &mut point_dst,
+                &mut surface_texture
+            );
         }
     }
 
@@ -1297,6 +1313,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
         let mut render_set = Vec::new();
         let mut points = Vec::with_capacity(32);
         let mut point_dst = Vec::with_capacity(32);
+        let mut surface_texture = Vec::new();
 
         let bsp = self.map.get_world_model().get_bsp();
 
@@ -1307,7 +1324,13 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
         );
 
         for id in render_set {
-            self.render_volume(id, &screen_clip_oct, &mut points, &mut point_dst);
+            self.render_volume(
+                id,
+                &screen_clip_oct,
+                &mut points,
+                &mut point_dst,
+                &mut surface_texture
+            );
         }
     }
 }

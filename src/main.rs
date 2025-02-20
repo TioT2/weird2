@@ -15,7 +15,7 @@ use sdl2::keyboard::Scancode;
 /// Basic math utility
 pub mod math;
 
-// pub mod arena;
+pub mod system_font;
 
 /// Random number generator
 pub mod rand;
@@ -1446,8 +1446,11 @@ fn main() {
     // camera.location = Vec3f::new(-174.0, 2114.6, -64.5); // -200, 2000, -50
     // camera.direction = Vec3f::new(-0.4, 0.9, 0.1);
 
-    camera.location = Vec3f::new(1402.4, 1913.7, -86.3);
-    camera.direction = Vec3f::new(-0.74, 0.63, -0.24);
+    // camera.location = Vec3f::new(1402.4, 1913.7, -86.3);
+    // camera.direction = Vec3f::new(-0.74, 0.63, -0.24);
+
+    camera.location = Vec3f::new(1254.2, 1700.7, -494.5); // (1254.21606, 1700.70752, -494.493591)
+    camera.direction = Vec3f::new(0.055, -0.946, 0.320); // (-0.048328593, -0.946524262, 0.318992347)
 
     // camera.location = Vec3f::new(-72.9, 698.3, -118.8);
     // camera.direction = Vec3f::new(0.37, 0.68, 0.63);
@@ -1627,19 +1630,6 @@ fn main() {
             logical_camera = camera;
         }
 
-        // Display some statistics
-        if timer.get_frame_count() % 100 == 0 {
-            println!("FPS: {} ({}ms on average per frame), SR={}, SL={}, OV={}",
-                timer.get_fps(),
-                1000.0 / timer.get_fps(),
-                do_enable_slow_rendering as u32,
-                do_sync_logical_camera as u32,
-                rasterization_mode as u32,
-            );
-            // println!("Location: {:?}", logical_camera.location);
-            // println!("Direction: {:?}", logical_camera.direction);
-        }
-
         // Acquire window extent
         let (window_width, window_height) = {
             let (w, h) = window.size();
@@ -1757,6 +1747,20 @@ fn main() {
                     width,
                     height
                 } => {
+                    system_font::frame(
+                        width as usize,
+                        height as usize,
+                        width as usize,
+                        rendered_frame_buffer.as_mut_ptr()
+                    )
+                        .str(16, 8, &format!("FPS: {} ({} ms)", timer.get_fps(), 1000.0 / timer.get_fps()))
+                        .str(16, 16, &format!("SR={}, SL={}, RM={}",
+                            do_enable_slow_rendering as u32,
+                            do_sync_logical_camera as u32,
+                            rasterization_mode as u32
+                        ))
+                    ;
+
                     // Present frame
                     present_frame(
                         rendered_frame_buffer.as_mut_ptr(),

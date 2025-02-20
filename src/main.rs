@@ -346,6 +346,15 @@ impl RasterizationMode {
     }
 }
 
+/// Final surface texture
+#[derive(Copy, Clone)]
+struct SurfaceTexture<'t> {
+    width: usize,
+    height: usize,
+    stride: usize,
+    data: &'t [u32],
+}
+
 /// Render context
 struct RenderContext<'t, 'ref_table> {
     /// Camera location
@@ -553,7 +562,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
     }
 
     /// Render already clipped polygon
-    unsafe fn render_clipped_polygon(&mut self, is_transparent: bool, is_sky: bool, points: &[Vec5UVf], color: u32, texture: res::ImageRef) {
+    unsafe fn render_clipped_polygon(&mut self, is_transparent: bool, is_sky: bool, points: &[Vec5UVf], color: u32, texture: SurfaceTexture) {
         // Potential rasterization function set
         let rasterize_fn = [
             Self::render_clipped_polygon_impl::<0, false, false>,
@@ -599,7 +608,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
         &mut self,
         points: &[Vec5UVf],
         color: u32,
-        texture: res::ImageRef,
+        texture: SurfaceTexture,
     ) {
         /// Index forward by point list
         macro_rules! ind_prev {
@@ -857,7 +866,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
         material_u: geom::Plane,
         material_v: geom::Plane,
         color: u32,
-        texture: res::ImageRef,
+        texture: SurfaceTexture,
         is_transparent: bool,
         is_sky: bool,
         clip_oct: &geom::ClipOct,
@@ -933,7 +942,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
         clip_oct: &geom::ClipOct,
         points: &mut Vec<Vec5UVf>,
         point_dst: &mut Vec<Vec5UVf>,
-        surface_texture: &mut Vec<u32>,
+        surface_texture_data: &mut Vec<u32>,
     ) {
         let volume = self.map.get_volume(id).unwrap();
 
@@ -982,16 +991,22 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
             // Add ambient)
             let light = light_diffuse * 0.9 + 0.09;
 
-            // let surface_image = image;
+            let surface_texture = SurfaceTexture {
+                width: image.width,
+                height: image.height,
+                stride: image.stride,
+                data: image.data,
+            };
 
+            #[cfg(not)]
             let surface_image = if surface.is_sky {
                 image
             } else {
-                surface_texture.clear();
-                surface_texture.extend_from_slice(image.data);
+                surface_texture_data.clear();
+                surface_texture_data.extend_from_slice(image.data);
 
                 for y in 0..image.height {
-                    let line = &mut surface_texture[y * image.width..y * image.width + image.width];
+                    let line = &mut surface_texture_data[y * image.width..y * image.width + image.width];
 
                     for x in 0..image.width {
                         let value = &mut line[x];
@@ -1013,7 +1028,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                     width: image.width,
                     height: image.height,
                     stride: image.width,
-                    data: &surface_texture,
+                    data: &surface_texture_data,
                 }
             };
 
@@ -1044,7 +1059,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                     distance: surface.v.distance / image_uv_scale,
                 },
                 color,
-        surface_image,
+        surface_texture,
                 surface.is_transparent,
                 surface.is_sky,
                 clip_oct,
@@ -1802,6 +1817,8 @@ fn main() {
                     width,
                     height
                 } => {
+                    // Build 'tonemapped' buffer
+
                     system_font::frame(
                         width as usize,
                         height as usize,

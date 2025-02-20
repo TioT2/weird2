@@ -112,7 +112,7 @@ impl FVec4 {
         }
     }
 
-    /// Multiply and add vectors (in case of FMA unavailability, fallbacks to separate mul and add)
+    /// Multiply and add vectors (self * second + third) (in case of FMA unavailability, fallbacks to separate mul and add)
     #[allow(dead_code)]
     pub fn mul_add(self, second: FVec4, third: FVec4) -> Self {
         unsafe {

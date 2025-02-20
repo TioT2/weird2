@@ -8,13 +8,14 @@
 // WRES - Resource format, contains textures/sounds/models/etc.
 // WDAT - Data format, contains 'final' project with location BSP's.
 
-use std::{collections::{BTreeMap, HashMap}, ops::Add, sync::Arc};
+use std::{collections::HashMap, sync::Arc};
 use math::{Mat4f, Vec2f, Vec3f, Vec5UVf};
 use sdl2::keyboard::Scancode;
 
 /// Basic math utility
-#[macro_use]
 pub mod math;
+
+// pub mod arena;
 
 /// Random number generator
 pub mod rand;
@@ -596,7 +597,6 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
         color: u32,
         texture: res::ImageRef,
     ) {
-
         /// Index forward by point list
         macro_rules! ind_prev {
             ($index: expr) => {
@@ -644,32 +644,22 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
         let last_line = usize::min(max_y_value.ceil() as usize, self.frame_height);
 
         let mut left_index = ind_next!(min_y_index);
-        let mut left_prev = points[min_y_index];
-        let mut left_curr = points[left_index];
-        let mut left_slope = (left_curr - left_prev) / (left_curr.y - left_prev.y);
 
-        // let mut left_prev_xzuv: math::FVec4 = points[min_y_index].xzuv().into();
-        // let mut left_curr_xzuv: math::FVec4 = points[left_index].xzuv().into();
-        // let mut left_slope_xzuv: math::FVec4 = (left_curr_xzuv - left_prev_xzuv) / (left_curr.y - left_prev.y);
-        // let mut left_prev_y = points[min_y_index].y;
-        // let mut left_curr_y = points[left_index].y;
+        let mut left_prev_xzuv: math::FVec4 = points[min_y_index].xzuv().into();
+        let mut left_curr_xzuv: math::FVec4 = points[left_index].xzuv().into();
+        let mut left_prev_y = points[min_y_index].y;
+        let mut left_curr_y = points[left_index].y;
+        let mut left_slope_xzuv: math::FVec4 = (left_curr_xzuv - left_prev_xzuv) / (left_curr_y - left_prev_y);
 
         let mut right_index = ind_prev!(min_y_index);
-        let mut right_prev = points[min_y_index];
-        let mut right_curr = points[right_index];
-        let mut right_slope = (right_curr - right_prev) / (right_curr.y - right_prev.y);
 
-        // let mut right_prev_xzuv: math::FVec4 = points[min_y_index].xzuv().into();
-        // let mut right_curr_xzuv: math::FVec4 = points[right_index].xzuv().into();
-        // let mut right_slope_xzuv: math::FVec4 = (right_curr_xzuv - right_prev_xzuv) / (right_curr.y - right_prev.y);
-        // let mut right_prev_y = points[min_y_index].y;
-        // let mut right_curr_y = points[right_index].y;
+        let mut right_prev_xzuv: math::FVec4 = points[min_y_index].xzuv().into();
+        let mut right_curr_xzuv: math::FVec4 = points[right_index].xzuv().into();
+        let mut right_prev_y = points[min_y_index].y;
+        let mut right_curr_y = points[right_index].y;
+        let mut right_slope_xzuv: math::FVec4 = (right_curr_xzuv - right_prev_xzuv) / (right_curr_y - right_prev_y);
 
-        let width = if IS_SKY {
-            texture.width as isize >> 1
-        } else {
-            texture.width as isize
-        };
+        let width = texture.width as isize >> (IS_SKY as isize);
         let height = texture.height as isize;
 
         // Scan for lines
@@ -677,83 +667,99 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
             // Get current pixel y
             let y = pixel_y as f32 + 0.5;
 
-            while y > left_curr.y {
+            while y > left_curr_y {
                 if left_index == max_y_index {
                     break 'line_loop;
                 }
 
                 left_index = ind_next!(left_index);
 
-                left_prev = left_curr;
+                left_prev_y = left_curr_y;
+                left_prev_xzuv = left_curr_xzuv;
 
-                left_curr = points[left_index];
+                left_curr_y = points[left_index].y;
+                left_curr_xzuv = points[left_index].xzuv().into();
 
-                let left_dy = left_curr.y - left_prev.y;
+                let left_dy = left_curr_y - left_prev_y;
 
                 // Check if edge is flat
                 if left_dy <= DY_EPSILON {
-                    left_slope = Vec5UVf::zero();
+                    left_slope_xzuv = math::FVec4::zero();
                 } else {
-                    left_slope = (left_curr - left_prev) / left_dy;
+                    left_slope_xzuv = (left_curr_xzuv - left_prev_xzuv) / left_dy;
                 }
             }
 
-            while y > right_curr.y {
+            while y > right_curr_y {
                 if right_index == max_y_index {
                     break 'line_loop;
                 }
 
                 right_index = ind_prev!(right_index);
 
-                right_prev = right_curr;
+                right_prev_y = right_curr_y;
+                right_prev_xzuv = right_curr_xzuv;
 
-                right_curr = points[right_index];
+                right_curr_y = points[right_index].y;
+                right_curr_xzuv = points[right_index].xzuv().into();
 
-                let right_dy = right_curr.y - right_prev.y;
+                let right_dy = right_curr_y - right_prev_y;
 
                 // Check if edge is flat
                 if right_dy <= DY_EPSILON {
-                    right_slope = Vec5UVf::zero();
+                    right_slope_xzuv = math::FVec4::zero();
                 } else {
-                    right_slope = (right_curr - right_prev) / right_dy;
+                    right_slope_xzuv = (right_curr_xzuv - right_prev_xzuv) / right_dy;
                 }
             }
 
-            // Calculate intersection with left edge
-            let left_x = left_prev.x + (y - left_prev.y) * left_slope.x;
+            let left_xzuv = math::FVec4::mul_add(
+                left_slope_xzuv,
+                math::FVec4::from_single(y - left_prev_y),
+                left_prev_xzuv,
+            );
+            let right_xzuv = math::FVec4::mul_add(
+                right_slope_xzuv,
+                math::FVec4::from_single(y - right_prev_y),
+                right_prev_xzuv,
+            );
 
-            // Calculate intersection with right edge
-            let right_x = right_prev.x + (y - right_prev.y) * right_slope.x;
+            // Get left x
+            let left_x = left_xzuv.x();
 
-            let left_zuv = left_prev.zuv() + left_slope.zuv() * (y - left_prev.y);
-
-            let right_zuv = right_prev.zuv() + right_slope.zuv() * (y - right_prev.y);
+            // Get right x
+            let right_x = right_xzuv.x();
 
             // Calculate hline start/end, clip it
-            let start = usize::min(left_x.floor() as usize, self.frame_width);
+            let start = left_x.floor() as usize;
             let end = usize::min(right_x.floor() as usize, self.frame_width);
 
             let pixel_row = self.frame_pixels.add(self.frame_stride * pixel_y);
 
             let dx = right_x - left_x;
 
-            let slope_zuv = if dx <= DY_EPSILON {
-                Vec3f::zero()
+            let slope_xzuv = if dx <= DY_EPSILON {
+                math::FVec4::zero()
             } else {
-                (right_zuv - left_zuv) / (right_x - left_x)
+                (right_xzuv - left_xzuv) / (right_x - left_x)
             };
 
             // Calculate pixel position 'remainder'
             let pixel_off = left_x.fract() - 0.5;
 
-            'render: for pixel_x in start..end {
-                let zuv = left_zuv + slope_zuv * ((pixel_x - start) as f32 - pixel_off);
-                let pixel_ptr = pixel_row.add(pixel_x);
+            'render_line: for pixel_x in start..end {
+                let xzuv = math::FVec4::mul_add(
+                    slope_xzuv,
+                    math::FVec4::from_single(pixel_x.wrapping_sub(start) as f32 - pixel_off),
+                    left_xzuv
+                );
+                let pixel_ptr = pixel_row.wrapping_add(pixel_x);
 
                 // Handle transparency
                 if IS_TRANSPARENT {
+                    // Do smth with transparency?
                     if (pixel_y ^ pixel_x) & 1 == 1 {
-                        continue 'render;
+                        continue 'render_line;
                     }
                 }
 
@@ -763,57 +769,73 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                 } else if MODE == RasterizationMode::Overdraw as u32 {
                     *pixel_ptr = 0x101010u32.wrapping_add(*pixel_ptr);
                 } else if MODE == RasterizationMode::Depth as u32 {
-                    let color = (zuv.x * 25500.0) as u8;
+                    let color = (xzuv.y() * 25500.0) as u8;
                     *pixel_ptr = u32::from_le_bytes([color, color, color, color]);
                 } else if MODE == RasterizationMode::UV as u32 {
-                    let uv = Vec2f::new(
-                        zuv.y / zuv.x,
-                        zuv.z / zuv.x,
-                    );
+                    let z = xzuv.y().recip();
+                    let u = xzuv.z() * z;
+                    let v = xzuv.w() * z;
 
-                    let xi = (uv.x as i64 & 0xFF) as u8;
-                    let yi = (uv.y as i64 & 0xFF) as u8;
+                    let xi = (u as i64 & 0xFF) as u8;
+                    let yi = (v as i64 & 0xFF) as u8;
 
                     *pixel_ptr = color * (((xi >> 5) ^ (yi >> 5)) & 1) as u32;
                 } else if MODE == RasterizationMode::Textured as u32 {
                     if IS_SKY {
-                        let u = zuv.y / zuv.x;
-                        let v = zuv.z / zuv.x;
+                        let z = xzuv.y().recip();
+                        let u = xzuv.z() * z;
+                        let v = xzuv.w() * z;
 
-                        let fg_u = (u as isize)
+                        let fg_u: usize = std::mem::transmute(u
+                            .to_int_unchecked::<isize>()
                             .rem_euclid(width)
-                            .unsigned_abs();
+                        );
 
-                        let fg_v = (v as isize)
+                        let fg_v: usize = std::mem::transmute(v
+                            .to_int_unchecked::<isize>()
                             .rem_euclid(height)
-                            .unsigned_abs();
+                        );
 
                         let fg_color = *texture.data.get_unchecked(fg_v * texture.width + fg_u);
 
                         // Check foreground color and fetch backround if foreground is transparent
                         if fg_color == 0 {
-                            let bg_u = ((u + self.sky_background_uv_offset.x) as isize)
-                                .rem_euclid(width)
-                                .add(width)
-                                .unsigned_abs();
+                            let bg_u = std::mem::transmute::<_, usize>(
+                                (u + self.sky_background_uv_offset.x)
+                                    .to_int_unchecked::<isize>()
+                                    .rem_euclid(width)
+                                    .wrapping_add(width)
+                            );
 
-                            let bg_v = ((v + self.sky_background_uv_offset.y) as isize)
-                                .rem_euclid(height)
-                                .unsigned_abs();
+                            let bg_v = std::mem::transmute::<_, usize>(
+                                (v + self.sky_background_uv_offset.y)
+                                    .to_int_unchecked::<isize>()
+                                    .rem_euclid(height)
+                            );
 
-                            *pixel_ptr = *texture.data.get_unchecked(bg_v * texture.width + bg_u);
+                            *pixel_ptr = *texture.data.get_unchecked(
+                                bg_v
+                                    .wrapping_mul(texture.width)
+                                    .wrapping_add(bg_u)
+                            );
                         } else {
                             *pixel_ptr = fg_color;
                         }
                     } else {
-                        let u = ((zuv.y / zuv.x) as isize)
-                            .rem_euclid(width)
-                            .unsigned_abs();
+                        let z = xzuv.y().recip();
 
-                        let v = ((zuv.z / zuv.x) as isize)
-                            .rem_euclid(height)
-                            .unsigned_abs();
-    
+                        let u: usize = std::mem::transmute(
+                            (xzuv.z() * z)
+                                .to_int_unchecked::<isize>()
+                                .rem_euclid(width)
+                        );
+
+                        let v: usize = std::mem::transmute(
+                            (xzuv.w() * z)
+                                .to_int_unchecked::<isize>()
+                                .rem_euclid(height)
+                        );
+
                         *pixel_ptr = *texture.data.get_unchecked(v * texture.width + u);
                     }
 
@@ -834,25 +856,23 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
         texture: res::ImageRef,
         is_transparent: bool,
         is_sky: bool,
-        clip_oct: &geom::ClipOct
+        clip_oct: &geom::ClipOct,
+        points: &mut Vec<Vec5UVf>,
+        point_dst: &mut Vec<Vec5UVf>,
     ) {
-        // Calculate polygon point set
-        let mut points = Vec::with_capacity(polygon.points.len());
-        let mut point_dst = Vec::with_capacity(polygon.points.len());
-
-        // Get projected polygons
+        points.clear();
 
         // Apply projection (and calculate UVs)
         if is_sky {
-            self.get_projected_sky_polygon(polygon, &mut points);
+            self.get_projected_sky_polygon(polygon, points);
         } else {
-            self.get_projected_polygon(polygon, material_u, material_v, &mut points);
+            self.get_projected_polygon(polygon, material_u, material_v, points);
         }
 
         // Clip polygon invisible part
         point_dst.clear();
-        self.clip_viewspace_back(&mut points, &mut point_dst);
-        std::mem::swap(&mut points, &mut point_dst);
+        self.clip_viewspace_back(points, point_dst);
+        std::mem::swap(points, point_dst);
 
         // Calculate screen-space points
         let width = self.frame_width as f32 * 0.5;
@@ -871,15 +891,15 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
             ));
         }
 
-        std::mem::swap(&mut points, &mut point_dst);
+        std::mem::swap(points, point_dst);
 
         // Clip polygon by volume clipping octagon
         point_dst.clear();
-        self.clip_polygon_oct(&mut points, &mut point_dst, clip_oct);
-        std::mem::swap(&mut points, &mut point_dst);
+        self.clip_polygon_oct(points, point_dst, clip_oct);
+        std::mem::swap(points, point_dst);
 
         // Just for safety
-        for pt in &points {
+        for pt in points.iter() {
             if !pt.x.is_finite() || !pt.y.is_finite() {
                 return;
             }
@@ -903,7 +923,13 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
     }
 
     /// Render single volume
-    fn render_volume(&mut self, id: bsp::VolumeId, clip_oct: &geom::ClipOct) {
+    fn render_volume(
+        &mut self,
+        id: bsp::VolumeId,
+        clip_oct: &geom::ClipOct,
+        points: &mut Vec<Vec5UVf>,
+        point_dst: &mut Vec<Vec5UVf>,
+    ) {
         let volume = self.map.get_volume(id).unwrap();
 
         'polygon_rendering: for surface in volume.get_surfaces() {
@@ -932,9 +958,11 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                         min_dist_2 = dist_2;
                     }
                 }
+
+                let res = (self.frame_width * self.frame_height) as f32;
     
                 // Strange, but...
-                ((min_dist_2 / 32768.0).log2() / 2.0) as usize
+                ((min_dist_2 / res).log2() / 2.0 + 1.3) as usize
             };
 
             let (image, image_uv_scale) = texture.get_mipmap(mip_index);
@@ -978,7 +1006,9 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                 image,
                 surface.is_transparent,
                 surface.is_sky,
-                clip_oct
+                clip_oct,
+                points,
+                point_dst,
             );
         }
     }
@@ -1023,7 +1053,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
         start_clip_oct: &geom::ClipOct
     ) -> Vec<(bsp::VolumeId, geom::ClipOct)> {
         // Potentially visible set
-        let mut pvs = BTreeMap::<bsp::VolumeId, geom::ClipOct>::new();
+        let mut pvs = HashMap::<bsp::VolumeId, geom::ClipOct>::new();
 
         // Render set itself
         let mut inv_render_set = Vec::new();
@@ -1149,11 +1179,11 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                             .entry(portal.dst_volume_id);
     
                         match pvs_entry {
-                            std::collections::btree_map::Entry::Occupied(mut occupied) => {
+                            std::collections::hash_map::Entry::Occupied(mut occupied) => {
                                 let existing_rect: &mut geom::ClipOct = occupied.get_mut();
                                 *existing_rect = existing_rect.union(&clip_rect);
                             }
-                            std::collections::btree_map::Entry::Vacant(vacant) => {
+                            std::collections::hash_map::Entry::Vacant(vacant) => {
                                 vacant.insert(clip_rect);
                             }
                         }
@@ -1174,13 +1204,15 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
             start_volume_id,
             &geom::ClipOct::from_clip_rect(self.get_screen_clip_rect())
         );
+        let mut points = Vec::with_capacity(32);
+        let mut point_dst = Vec::with_capacity(32);
 
         for (volume_id, volume_clip_oct) in inv_render_set
             .iter()
             .rev()
             .copied()
         {
-            self.render_volume(volume_id, &volume_clip_oct);
+            self.render_volume(volume_id, &volume_clip_oct, &mut points, &mut point_dst);
         }
     }
 
@@ -1231,6 +1263,8 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
         let screen_clip_oct = geom::ClipOct::from_clip_rect(self.get_screen_clip_rect());
 
         let mut render_set = Vec::new();
+        let mut points = Vec::with_capacity(32);
+        let mut point_dst = Vec::with_capacity(32);
 
         let bsp = self.map.get_world_model().get_bsp();
 
@@ -1241,7 +1275,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
         );
 
         for id in render_set {
-            self.render_volume(id, &screen_clip_oct);
+            self.render_volume(id, &screen_clip_oct, &mut points, &mut point_dst);
         }
     }
 }

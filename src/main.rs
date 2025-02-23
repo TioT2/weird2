@@ -324,14 +324,14 @@ pub enum RasterizationMode {
     Textured = 4,
 }
 
-pub fn u64_from_u16(value: [u16; 4]) -> u64 {
+pub const fn u64_from_u16(value: [u16; 4]) -> u64 {
     ((value[0] as u64) <<  0) |
     ((value[1] as u64) << 16) |
     ((value[2] as u64) << 32) |
     ((value[3] as u64) << 48)
 }
 
-pub fn u64_into_u16(value: u64) -> [u16; 4] {
+pub const fn u64_into_u16(value: u64) -> [u16; 4] {
     [
         ((value >>  0) & 0xFFFF) as u16,
         ((value >> 16) & 0xFFFF) as u16,
@@ -535,10 +535,12 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
 
         point_dst.clear();
         for pt in points.iter() {
+            let inv_z = pt.z.recip();
+
             point_dst.push(Vec3f::new(
-                (1.0 + pt.x / pt.z) * width,
-                (1.0 - pt.y / pt.z) * height,
-                0.0,
+                (1.0 + pt.x * inv_z) * width,
+                (1.0 - pt.y * inv_z) * height,
+                inv_z,
             ));
         }
     }
@@ -795,7 +797,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
             // Calculate pixel position 'remainder'
             let pixel_off = left_x.fract() - 0.5;
 
-            'render_line: for pixel_x in start..end {
+            for pixel_x in start..end {
                 let xzuv = math::FVec4::mul_add(
                     slope_xzuv,
                     math::FVec4::from_single(pixel_x.wrapping_sub(start) as f32 - pixel_off),
@@ -803,22 +805,16 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                 );
                 let pixel_ptr = pixel_row.wrapping_add(pixel_x);
 
-                // Handle transparency
-                if IS_TRANSPARENT {
-                    // Do smth with transparency?
-                    if (pixel_y ^ pixel_x) & 1 == 1 {
-                        continue 'render_line;
-                    }
-                }
+                let src_color;
 
                 // Handle different rasterization modes
                 if MODE == RasterizationMode::Standard as u32 {
-                    *pixel_ptr = color;
+                    src_color = color;
                 } else if MODE == RasterizationMode::Overdraw as u32 {
-                    *pixel_ptr = 0x0010_0010_0010u64.wrapping_add(*pixel_ptr);
+                    src_color = 0x0010_0010_0010u64.wrapping_add(*pixel_ptr);
                 } else if MODE == RasterizationMode::Depth as u32 {
                     let color = (xzuv.y() * 25500.0) as u16;
-                    *pixel_ptr = u64_from_u16([color; 4]);
+                    src_color = u64_from_u16([color; 4]);
                 } else if MODE == RasterizationMode::UV as u32 {
                     let z = xzuv.y().recip();
                     let u = xzuv.z() * z;
@@ -827,7 +823,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                     let xi = (u as i64 & 0xFF) as u8;
                     let yi = (v as i64 & 0xFF) as u8;
 
-                    *pixel_ptr = color * (((xi >> 5) ^ (yi >> 5)) & 1) as u64;
+                    src_color = color * (((xi >> 5) ^ (yi >> 5)) & 1) as u64;
                 } else if MODE == RasterizationMode::Textured as u32 {
                     if IS_SKY {
                         let z = xzuv.y().recip();
@@ -861,13 +857,13 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                                     .rem_euclid(height)
                             );
 
-                            *pixel_ptr = *texture.data.get_unchecked(
+                            src_color = *texture.data.get_unchecked(
                                 bg_v
                                     .wrapping_mul(texture.stride)
                                     .wrapping_add(bg_u)
                             );
                         } else {
-                            *pixel_ptr = fg_color;
+                            src_color = fg_color;
                         }
                     } else {
                         let z = xzuv.y().recip();
@@ -884,11 +880,65 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                                 .rem_euclid(height)
                         );
 
-                        *pixel_ptr = *texture.data.get_unchecked(v * texture.stride + u);
+                        src_color = *texture.data.get_unchecked(v * texture.stride + u);
                     }
 
                 } else {
                     panic!("Unknown rasterization mode: {}", MODE);
+                }
+
+                if IS_TRANSPARENT {
+                    let dst_color = *pixel_ptr;
+                    let [dr, dg, db, _] = u64_into_u16(dst_color);
+                    let [sr, sg, sb, _] = u64_into_u16(src_color);
+                
+                    // SSE-based transparency calculation
+                    #[cfg(target_feature = "sse")]
+                    unsafe {
+                        let dst = std::arch::x86_64::_mm_set_epi32(
+                            0,
+                            db as i32,
+                            dg as i32,
+                            dr as i32,
+                        );
+                        let src = std::arch::x86_64::_mm_set_epi32(
+                            0,
+                            sb as i32,
+                           sg as i32,
+                           sr as i32,
+                        );
+                        let dst_m = std::arch::x86_64::_mm_mul_ps(
+                            std::arch::x86_64::_mm_cvtepi32_ps(dst),
+                            std::arch::x86_64::_mm_set1_ps(0.4)
+                        );
+                        let src_m = std::arch::x86_64::_mm_mul_ps(
+                            std::arch::x86_64::_mm_cvtepi32_ps(src),
+                            std::arch::x86_64::_mm_set1_ps(0.6)
+                        );
+                        let sum = std::arch::x86_64::_mm_add_ps(src_m, dst_m);
+                        let res = std::arch::x86_64::_mm_cvtps_epi32(sum);
+                        let [rr, rg, rb, _]: [u32; 4] = std::mem::transmute(res);
+
+                        *pixel_ptr = u64_from_u16([
+                            rr as u16,
+                            rg as u16,
+                            rb as u16,
+                            0
+                        ]);
+                    }
+                    
+                    #[cfg(not(target_feature = "sse"))]
+                    {
+                        *pixel_ptr = u64_from_u16([
+                            (sr as f32 * 0.6 + dr as f32 * 0.4) as u16,
+                            (sg as f32 * 0.6 + dg as f32 * 0.4) as u16,
+                            (sb as f32 * 0.6 + db as f32 * 0.4) as u16,
+                            0
+                        ]);
+                    }
+
+                } else {
+                    *pixel_ptr = src_color;
                 }
             }
         }
@@ -1530,7 +1580,7 @@ fn main() {
 
         // yay, this code will not compile on non-local builds)))
         // --
-        let map_name = "q1/e1m1";
+        let map_name = "q1/e1m5";
         let data_path = "temp/";
 
         let wbsp_path = format!("{}wbsp/{}.wbsp", data_path, map_name);
@@ -1571,7 +1621,7 @@ fn main() {
     let map = Arc::new(map);
 
     let material_table = {
-        let mut wad_file = std::fs::File::open("temp/q1/gfx/base.wad").unwrap();
+        let mut wad_file = std::fs::File::open("temp/q1/gfx/medieval.wad").unwrap();
 
         res::MaterialTable::load_wad2(&mut wad_file).unwrap()
     };
@@ -1635,14 +1685,14 @@ fn main() {
     let mut input = Input::new();
     let mut camera = Camera::new();
 
-    camera.location = Vec3f::new(-174.0, 2114.6, -64.5); // -200, 2000, -50
-    camera.direction = Vec3f::new(-0.4, 0.9, 0.1);
+    // camera.location = Vec3f::new(-174.0, 2114.6, -64.5); // -200, 2000, -50
+    // camera.direction = Vec3f::new(-0.4, 0.9, 0.1);
 
     // camera.location = Vec3f::new(1402.4, 1913.7, -86.3);
     // camera.direction = Vec3f::new(-0.74, 0.63, -0.24);
 
-    // camera.location = Vec3f::new(1254.2, 1700.7, -494.5); // (1254.21606, 1700.70752, -494.493591)
-    // camera.direction = Vec3f::new(0.055, -0.946, 0.320); // (-0.048328593, -0.946524262, 0.318992347)
+    camera.location = Vec3f::new(1254.2, 1700.7, -494.5); // (1254.21606, 1700.70752, -494.493591)
+    camera.direction = Vec3f::new(0.055, -0.946, 0.320); // (-0.048328593, -0.946524262, 0.318992347)
 
     // camera.location = Vec3f::new(-72.9, 698.3, -118.8);
     // camera.direction = Vec3f::new(0.37, 0.68, 0.63);

@@ -1580,7 +1580,7 @@ fn main() {
 
         // yay, this code will not compile on non-local builds)))
         // --
-        let map_name = "q1/e1m1";
+        let map_name = "q1/e1m5";
         let data_path = "temp/";
 
         let wbsp_path = format!("{}wbsp/{}.wbsp", data_path, map_name);
@@ -1621,7 +1621,7 @@ fn main() {
     let map = Arc::new(map);
 
     let material_table = {
-        let mut wad_file = std::fs::File::open("temp/q1/gfx/base.wad").unwrap();
+        let mut wad_file = std::fs::File::open("temp/q1/gfx/medieval.wad").unwrap();
 
         res::MaterialTable::load_wad2(&mut wad_file).unwrap()
     };

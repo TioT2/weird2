@@ -11,7 +11,7 @@
 */
 
 use std::{collections::{BTreeMap, BTreeSet, HashMap}, num::NonZeroU32};
-use crate::{geom, map, math::{Mat3f, Vec3f}};
+use crate::{bsp::util, geom, map, math::{Mat3f, Vec3f}};
 
 use super::Id;
 
@@ -1332,6 +1332,13 @@ impl CompileContext {
                         .physical_polygons
                         .into_iter()
                         .map(|physical_polygon| {
+
+                            let (u_min, u_max, v_min, v_max) = util::calculate_uv_ranges(
+                                &physical_polygon.polygon.points,
+                                physical_polygon.material_u,
+                                physical_polygon.material_v
+                            );
+
                             let polygon_index = self.polygon_set.len();
 
                             self.polygon_set.push(physical_polygon.polygon);
@@ -1343,6 +1350,10 @@ impl CompileContext {
                                 v: physical_polygon.material_v,
                                 is_transparent: physical_polygon.is_transparent,
                                 is_sky: physical_polygon.is_sky,
+                                u_min,
+                                u_max,
+                                v_min,
+                                v_max,
                             }
                         })
                     );

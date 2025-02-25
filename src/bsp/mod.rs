@@ -10,6 +10,9 @@ pub mod compiler;
 /// WBSP description module
 pub mod wbsp;
 
+/// BSP internal utilities
+mod util;
+
 /// Id type
 pub trait Id: Copy + Clone + Eq + PartialEq + std::hash::Hash + std::fmt::Debug + Ord + PartialOrd {
     /// Construct Id from index
@@ -67,11 +70,17 @@ pub struct Surface {
     /// V texture mapping axis
     pub v: geom::Plane,
 
-    // Surface texture width
-    // pub surface_texture_width: usize,
+    /// Surface U axis minimal value
+    pub u_min: i32,
 
-    // Surface texture height
-    // pub surface_texture_height: usize,
+    /// Surface U axis maximal value
+    pub u_max: i32,
+
+    /// Surface V axis minimal value
+    pub v_min: i32,
+
+    /// Surface v axis maximal value
+    pub v_max: i32,
 }
 
 /// Directional lightmap
@@ -544,80 +553,89 @@ impl Map {
         load_head_span!(bsp_models,      wbsp::BspModel     );
         load_head_span!(dynamic_models,  wbsp::DynamicModel );
 
-        let map = Map {
-            polygon_set: {
-                let polygons = polygons
-                    .iter()
-                    .map(|span| {
-                        let point_span = get_slice(*span, points, "point")?;
+        let map_polygon_set = polygons
+            .iter()
+            .map(|span| {
+                let point_span = get_slice(*span, points, "point")?;
 
-                        Ok(geom::Polygon::from_ccw(point_span
-                            .into_iter()
-                            .map(|v| Into::<Vec3f>::into(*v))
-                            .collect()
-                        ))
-                    })
-                    .collect::<Result<Vec<_>, MapLoadingError>>()?;
+                Ok(geom::Polygon::from_ccw(point_span
+                    .into_iter()
+                    .map(|v| Into::<Vec3f>::into(*v))
+                    .collect()
+                ))
+            })
+            .collect::<Result<Vec<_>, MapLoadingError>>()?;
 
-                polygons
-            },
+        let map_material_name_set = material_names
+            .iter()
+            .map(|span| {
+                let chars = get_slice(*span, chars, "material name")?;
+                let str = std::str::from_utf8(chars)?;
 
-            material_name_set: {
-                let names = material_names
-                    .iter()
-                    .map(|span| {
-                        let chars = get_slice(*span, chars, "material name")?;
-                        let str = std::str::from_utf8(chars)?;
+                Ok(str.to_string())
+            })
+            .collect::<Result<Vec<_>, MapLoadingError>>()?;
 
-                        Ok(str.to_string())
-                    })
-                    .collect::<Result<Vec<_>, MapLoadingError>>()?;
+        let map_volume_set = volumes
+            .iter()
+            .map(|volume| {
+                let portal_span = get_slice(volume.portals, volume_portals, "volume portal")?;
+                let surface_span = get_slice(volume.surfaces, volume_surfaces, "volume surface")?;
 
-                names
-            },
-            volume_set: {
-                let volumes = volumes
-                    .iter()
-                    .map(|volume| {
-                        let portal_span = get_slice(volume.portals, volume_portals, "volume portal")?;
-                        let surface_span = get_slice(volume.surfaces, volume_surfaces, "volume surface")?;
-
-                        Ok(Volume {
-                            portals: portal_span
-                                .iter()
-                                .map(|portal| {
-                                    // validate volume index
-                                    Ok(Portal {
-                                        dst_volume_id: get_id(portal.dst_volume_index, volumes, "volume")?,
-                                        is_facing_front: portal.is_facing_front != 0,
-                                        polygon_id: get_id(portal.polygon_index, polygons, "polygon")?,
-                                    })
-                                })
-                                .collect::<Result<Vec<_>, MapLoadingError>>()?,
-                            surfaces: surface_span
-                                .iter()
-                                .map(|surface| {
-                                    Ok(Surface {
-                                        material_id: get_id(surface.material_index, material_names, "material")?,
-                                        polygon_id: get_id(surface.polygon_index, polygons, "polygon")?,
-                                        is_sky: surface.is_sky != 0,
-                                        is_transparent: surface.is_transparent != 0,
-                                        u: surface.u.into(),
-                                        v: surface.v.into(),
-                                    })
-                                })
-                                .collect::<Result<Vec<_>, MapLoadingError>>()?,
-                            bound_box: geom::BoundBox::new(
-                                volume.bound_box_min.into(),
-                                volume.bound_box_max.into(),
-                            ),
+                Ok(Volume {
+                    portals: portal_span
+                        .iter()
+                        .map(|portal| {
+                            // validate volume index
+                            Ok(Portal {
+                                dst_volume_id: get_id(portal.dst_volume_index, volumes, "volume")?,
+                                is_facing_front: portal.is_facing_front != 0,
+                                polygon_id: get_id(portal.polygon_index, polygons, "polygon")?,
+                            })
                         })
-                    })
-                    .collect::<Result<Vec<_>, MapLoadingError>>()?
-                    ;
+                        .collect::<Result<Vec<_>, MapLoadingError>>()?,
+                    surfaces: surface_span
+                        .iter()
+                        .map(|surface| {
+                            // Calculate volume set
+                            let u = surface.u.into();
+                            let v = surface.v.into();
+                            let polygon_id: PolygonId = get_id(surface.polygon_index, polygons, "polygon")?;
 
-                volumes
-            },
+                            // Calculate UV bounds
+                            let (u_min, u_max, v_min, v_max) = util::calculate_uv_ranges(
+                                &map_polygon_set[polygon_id.into_index()].points,
+                                u,
+                                v
+                            );
+
+                            Ok(Surface {
+                                material_id: get_id(surface.material_index, material_names, "material")?,
+                                polygon_id,
+                                is_sky: surface.is_sky != 0,
+                                is_transparent: surface.is_transparent != 0,
+                                u,
+                                v,
+                                u_min,
+                                u_max,
+                                v_min,
+                                v_max,
+                            })
+                        })
+                        .collect::<Result<Vec<_>, MapLoadingError>>()?,
+                    bound_box: geom::BoundBox::new(
+                        volume.bound_box_min.into(),
+                        volume.bound_box_max.into(),
+                    ),
+                })
+            })
+            .collect::<Result<Vec<_>, MapLoadingError>>()?;
+
+        let map = Map {
+            polygon_set: map_polygon_set,
+            material_name_set: map_material_name_set,
+            volume_set: map_volume_set,
+
             bsp_models: {
                 let bsp_models = bsp_models
                     .iter()

@@ -2,8 +2,23 @@
 
 use crate::math::{Vec2f, Vec3f};
 
-/// Geometric epsilon (1 mm)
-pub const GEOM_EPSILON: f32 = 0.001;
+/// Geometric epsilon (1 cm)
+pub const GEOM_EPSILON: f32 = 0.01;
+
+/// (Slow) Geometric equality function
+pub fn f32_geom_equal(lhs: f32, rhs: f32) -> bool {
+    let abs_diff = (lhs - rhs).abs();
+
+    abs_diff <= GEOM_EPSILON
+}
+
+/// Vector equality
+pub fn f32_vec_equal(lhs: &Vec3f, rhs: &Vec3f) -> bool {
+    true
+        && f32_geom_equal(lhs.x, rhs.x)
+        && f32_geom_equal(lhs.y, rhs.y)
+        && f32_geom_equal(lhs.z, rhs.z)
+}
 
 /// Float-point comparison
 pub fn f32_relative_equal(lhs: f32, rhs: f32) -> bool {
@@ -264,8 +279,8 @@ impl PartialEq for Plane {
         // };
 
         true
-            && (self.normal % other.normal).length() <= GEOM_EPSILON
-            && (self.normal * self.distance - other.normal * other.distance).length() <= GEOM_EPSILON
+            && f32_geom_equal((self.normal % other.normal).length(), 0.0)
+            && f32_vec_equal(&(self.normal * self.distance), &(other.normal * other.distance))
     }
 }
 
@@ -348,25 +363,17 @@ impl Plane {
 
     /// Get relation of point and plane
     pub fn get_point_relation(&self, point: Vec3f) -> PointRelation {
-        let metric = self.get_signed_distance(point);
+        let signed_distance = self.get_signed_distance(point);
 
-        if metric.abs() <= GEOM_EPSILON {
+        if f32_geom_equal(signed_distance, 0.0) {
             PointRelation::OnPlane
         } else {
-            if metric > 0.0 {
+            if signed_distance > 0.0 {
                 PointRelation::Front
             } else {
                 PointRelation::Back
             }
         }
-
-        // if metric > GEOM_EPSILON {
-        //     PointRelation::Front
-        // } else if metric < -GEOM_EPSILON {
-        //     PointRelation::Back
-        // } else {
-        //     PointRelation::OnPlane
-        // }
     }
 
     // Get relation of plane and polygon
@@ -483,7 +490,7 @@ pub fn deduplicate_points(points: Vec<Vec3f>) -> Vec<Vec3f> {
         .into_iter()
         .fold(Vec::new(), |mut prev, candidate| {
             for point in prev.iter().copied() {
-                if (candidate - point).length2() < GEOM_EPSILON {
+                if f32_vec_equal(&candidate, &point) {
                     return prev;
                 }
             }
@@ -751,6 +758,20 @@ impl ClipRect {
         }
 
         Self { min, max }
+    }
+
+    /// Extend boundbox to contain 'pt' point
+    pub fn extend_to_contain(self, pt: Vec2f) -> Self {
+        Self {
+            min: Vec2f::new(
+                f32::min(self.min.x, pt.x),
+                f32::min(self.min.y, pt.y),
+            ),
+            max: Vec2f::new(
+                f32::max(self.max.x, pt.x),
+                f32::max(self.max.y, pt.y),
+            ),
+        }
     }
 
     /// Construct intersection clip rectangle

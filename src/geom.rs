@@ -175,6 +175,14 @@ impl BoundBox {
             && self.max.y >= another.min.y && self.min.y <= another.max.y
             && self.max.z >= another.min.z && self.min.z <= another.max.z
     } // is_intersecting
+
+    /// Check if boundbox contains point
+    pub fn contains_point(&self, point: &Vec3f) -> bool {
+        true
+            && point.x >= self.min.x && point.x <= self.max.x
+            && point.y >= self.min.y && point.y <= self.max.y
+            && point.z >= self.min.z && point.z <= self.max.z
+    }
 }
 
 /// Line in space
@@ -249,6 +257,12 @@ pub enum PolygonSplitResult {
 
 impl PartialEq for Plane {
     fn eq(&self, other: &Self) -> bool {
+        // let other = if self.distance.signum() == other.distance.signum() {
+        //     *other
+        // } else {
+        //     other.negate_direction()
+        // };
+
         true
             && (self.normal % other.normal).length() <= GEOM_EPSILON
             && (self.normal * self.distance - other.normal * other.distance).length() <= GEOM_EPSILON
@@ -336,13 +350,23 @@ impl Plane {
     pub fn get_point_relation(&self, point: Vec3f) -> PointRelation {
         let metric = self.get_signed_distance(point);
 
-        if metric > GEOM_EPSILON {
-            PointRelation::Front
-        } else if metric < -GEOM_EPSILON {
-            PointRelation::Back
-        } else {
+        if metric.abs() <= GEOM_EPSILON {
             PointRelation::OnPlane
+        } else {
+            if metric > 0.0 {
+                PointRelation::Front
+            } else {
+                PointRelation::Back
+            }
         }
+
+        // if metric > GEOM_EPSILON {
+        //     PointRelation::Front
+        // } else if metric < -GEOM_EPSILON {
+        //     PointRelation::Back
+        // } else {
+        //     PointRelation::OnPlane
+        // }
     }
 
     // Get relation of plane and polygon

@@ -16,6 +16,7 @@ use crate::{geom, map, math::{Mat3f, Vec3f}};
 use super::Id;
 
 /// Polygon that should be drawn
+#[derive(Debug)]
 pub struct PhysicalPolygon {
     /// Actual polygon
     pub polygon: geom::Polygon,
@@ -37,6 +38,7 @@ pub struct PhysicalPolygon {
 }
 
 /// Reference to another volume
+#[derive(Debug)]
 pub struct PortalPolygon {
     /// Index of actual polygon
     pub polygon_set_index: usize,
@@ -49,6 +51,7 @@ pub struct PortalPolygon {
 }
 
 /// Hull polygon
+#[derive(Debug)]
 pub struct HullFace {
     /// Polygon itself
     pub polygon: geom::Polygon,
@@ -73,7 +76,7 @@ pub struct HullFace {
 pub struct SplitId(NonZeroU32);
 
 /// Reference to certain split pass during split pass
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 pub struct SplitReference {
     /// split operation index
     pub split_id: SplitId,
@@ -83,6 +86,7 @@ pub struct SplitReference {
 }
 
 /// Hull volume
+#[derive(Debug)]
 pub struct HullVolume {
     /// Set of external polygons
     pub faces: Vec<HullFace>,
@@ -280,11 +284,14 @@ impl HullVolume {
         incident_front_polygons: Vec<PhysicalPolygon>,
         incident_back_polygons: Vec<PhysicalPolygon>,
         split_id: SplitId,
-    ) -> Option<(HullVolume, HullVolume, geom::Polygon)> {
-
+    ) -> Result<(Self, Self, geom::Polygon), Self> {
+  
         // intersection polygon MUST exist
 
-        let mut intersection_polygon = self.get_intersection_polygon(plane)?;
+        let mut intersection_polygon = match self.get_intersection_polygon(plane) {
+            Some(polygon) => polygon,
+            None => return Err(self),
+        };
 
         let mut front_hull_polygons = Vec::new();
         let mut back_hull_polygons = Vec::new();
@@ -386,7 +393,7 @@ impl HullVolume {
         let front_hull_volume = HullVolume { faces: front_hull_polygons };
         let back_hull_volume = HullVolume { faces: back_hull_polygons };
 
-        Some((front_hull_volume, back_hull_volume, split_polygon))
+        Ok((front_hull_volume, back_hull_volume, split_polygon))
     }
 }
 
@@ -469,6 +476,13 @@ impl BspModelCompileContext {
             return VolumeBsp::Leaf(self.volumes.len() - 1);
         }
 
+        for physical_polygon in &physical_polygons {
+            for point in &physical_polygon.polygon.points {
+                if !self.bound_box.contains_point(point) {
+                    eprintln!("Boundbox somehow does not contain point");
+                }
+            }
+        }
 
         // try to find optimal splitter
         let mut best_splitter_rate: f32 = std::f32::MAX;
@@ -593,25 +607,33 @@ impl BspModelCompileContext {
 
         // Split MUST be possible, because splitter plane face belongs to hull volume (by definition)
         // If it's not the case, something went totally wrong.
-        let (front_volume, back_volume, split_polygon) = volume
-            .split(
-                splitter_plane,
-                front_incident_polygons,
-                back_incident_polygons,
-                split_id
-            )
-            .unwrap();
+        let volume_split_result = volume.split(
+            splitter_plane,
+            front_incident_polygons,
+            back_incident_polygons,
+            split_id
+        );
 
-        // add split info
-        self.add_split(SplitInfo { split_polygon, id: split_id });
+        match volume_split_result {
+            Ok((front_volume, back_volume, split_polygon)) => {
+                // add split info
+                self.add_split(SplitInfo { split_polygon, id: split_id });
+        
+                let front_bsp = self.build_volume(front_volume, front_polygons);
+                let back_bsp = self.build_volume(back_volume, back_polygons);
+        
+                VolumeBsp::Node {
+                    front: Some(Box::new(front_bsp)),
+                    back: Some(Box::new(back_bsp)),
+                    plane: splitter_plane,
+                }
+            }
+            // Split failed
+            Err(old_volume) => {
+                self.volumes.push(old_volume);
 
-        let front_bsp = self.build_volume(front_volume, front_polygons);
-        let back_bsp = self.build_volume(back_volume, back_polygons);
-
-        VolumeBsp::Node {
-            front: Some(Box::new(front_bsp)),
-            back: Some(Box::new(back_bsp)),
-            plane: splitter_plane,
+                VolumeBsp::Leaf(self.volumes.len() - 1)
+            }
         }
     }
 
@@ -628,6 +650,9 @@ impl BspModelCompileContext {
                 .copied()
             )
         );
+
+        // Slightly extend model boundbox
+        self.bound_box = self.bound_box.extend(Vec3f::new(1.0, 1.0, 1.0));
 
         // calculate hull volume
         let hull_volume = HullVolume::from_bound_box(

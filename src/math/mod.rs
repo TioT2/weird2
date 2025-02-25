@@ -165,11 +165,11 @@ macro_rules! impl_vecn_unary_operator {
 }
 
 macro_rules! operator_on_variadic {
-    ($operator: tt, $first: expr) => {
+    ($operator: tt, $first: expr_2021) => {
         $first
     };
 
-    ($operator: tt, $first: expr, $($rest: expr),*) => {
+    ($operator: tt, $first: expr_2021, $($rest: expr_2021),*) => {
         $first $operator operator_on_variadic!($operator, $($rest),*)
     };
 }
@@ -321,14 +321,14 @@ impl Vec3f {
 
 #[macro_export]
 macro_rules! vec3f {
-    ($x: expr, $y: expr, $z: expr $(,)?) => {
+    ($x: expr_2021, $y: expr_2021, $z: expr_2021 $(,)?) => {
         math::Vec3f::new($x, $y, $z)
     };
 }
 
 #[macro_export]
 macro_rules! vec2f {
-    ($x: expr, $y: expr $(,)?) => {
+    ($x: expr_2021, $y: expr_2021 $(,)?) => {
         math::Vec2f::new($x, $y)
     };
 }

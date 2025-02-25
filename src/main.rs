@@ -443,7 +443,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
     /// Clip polygon by octagon
     fn clip_polygon_oct(&self, points: &mut Vec<Vec5UVf>, result: &mut Vec<Vec5UVf>, clip_oct: &geom::ClipOct) {
         macro_rules! clip_edge {
-            ($metric: ident, $clip_val: expr, $cmp: tt) => {
+            ($metric: ident, $clip_val: expr_2021, $cmp: tt) => {
                 for index in 0..points.len() {
                     let curr = points[index];
                     let next = points[(index + 1) % points.len()];
@@ -464,7 +464,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
         }
 
         macro_rules! clip_metric_minmax {
-            ($metric: ident, $min: expr, $max: expr) => {
+            ($metric: ident, $min: expr_2021, $max: expr_2021) => {
                 result.clear();
                 clip_edge!($metric, $min, >=);
                 std::mem::swap(points, result);
@@ -599,7 +599,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
         points: &[Vec5UVf],
         color: u64,
         texture: SurfaceTexture
-    ) {
+    ) { unsafe {
         // Potential rasterization function set
         let rasterize_fn = [
             Self::render_clipped_polygon_impl::<0, false, false>,
@@ -634,7 +634,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
             + self.rasterization_mode as usize;
 
         rasterize_fn[id](self, points, color, texture);
-    }
+    }}
 
     /// render_clipped_polygon function optimized implementation
     unsafe fn render_clipped_polygon_impl<
@@ -646,17 +646,17 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
         points: &[Vec5UVf],
         color: u64,
         texture: SurfaceTexture,
-    ) {
+    ) { unsafe {
         /// Index forward by point list
         macro_rules! ind_prev {
-            ($index: expr) => {
+            ($index: expr_2021) => {
                 ((($index) + points.len() - 1) % points.len())
             };
         }
 
         /// Index backward by point list
         macro_rules! ind_next {
-            ($index: expr) => {
+            ($index: expr_2021) => {
                 (($index + 1) % points.len())
             };
         }
@@ -894,7 +894,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                 
                     // SSE-based transparency calculation
                     #[cfg(target_feature = "sse")]
-                    unsafe {
+                    {
                         let dst = std::arch::x86_64::_mm_set_epi32(
                             0,
                             db as i32,
@@ -942,7 +942,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                 }
             }
         }
-    }
+    }}
 
     /// Render polygon
     fn render_polygon(
@@ -1580,7 +1580,7 @@ fn main() {
 
         // yay, this code will not compile on non-local builds)))
         // --
-        let map_name = "q1/e1m5";
+        let map_name = "q1/e1m1";
         let data_path = "temp/";
 
         let wbsp_path = format!("{}wbsp/{}.wbsp", data_path, map_name);
@@ -1621,7 +1621,7 @@ fn main() {
     let map = Arc::new(map);
 
     let material_table = {
-        let mut wad_file = std::fs::File::open("temp/q1/gfx/medieval.wad").unwrap();
+        let mut wad_file = std::fs::File::open("temp/q1/gfx/base.wad").unwrap();
 
         res::MaterialTable::load_wad2(&mut wad_file).unwrap()
     };

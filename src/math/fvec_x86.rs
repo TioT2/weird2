@@ -113,14 +113,16 @@ impl FVec4 {
     }
 
     /// Multiply and add vectors (self * second + third) (in case of FMA unavailability, fallbacks to separate mul and add)
-    #[allow(dead_code)]
     pub fn mul_add(self, second: FVec4, third: FVec4) -> Self {
         unsafe {
+            // FMA version
             #[cfg(target_feature = "fma")]
             return Self(
                 arch::_mm_fmadd_ps(self.0, second.0, third.0)
             );
-    
+
+            // non-FMA version
+            #[cfg(not(target_feature = "fma"))]
             return Self(
                 arch::_mm_add_ps(arch::_mm_mul_ps(self.0, second.0), third.0)
             )

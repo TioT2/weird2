@@ -45,15 +45,14 @@ impl_id!(PolygonId);
 impl_id!(MaterialId);
 impl_id!(BspModelId);
 impl_id!(DynamicModelId);
-
-// TODO: Rename surface into smth more logical.
+impl_id!(SurfaceId);
 
 /// Visible volume face piece
 pub struct Surface {
     /// Polygon material identifier
     pub material_id: MaterialId,
 
-    /// Polygon itself identifier
+    /// Surface polygon identifier
     pub polygon_id: PolygonId,
 
     /// Surface transparency flag
@@ -62,11 +61,29 @@ pub struct Surface {
     /// True if sky, false if not
     pub is_sky: bool,
 
-    /// U texture-mapping axis
+    /// U texture mapping axis
     pub u: geom::Plane,
 
-    /// V texture-mapping axis
+    /// V texture mapping axis
     pub v: geom::Plane,
+
+    // Surface texture width
+    // pub surface_texture_width: usize,
+
+    // Surface texture height
+    // pub surface_texture_height: usize,
+}
+
+/// Directional lightmap
+pub struct Lightmap {
+    /// Image pixels
+    pub data: Vec<u64>,
+
+    /// Image width
+    pub width: usize,
+
+    /// Image height
+    pub height: usize,
 }
 
 /// Portal (volume-volume connection)
@@ -247,12 +264,12 @@ impl Map {
     }
 
     /// Get iterator on ids of all volumes
-    pub fn all_volume_ids(&self) -> impl Iterator<Item = VolumeId> {
+    pub fn all_volume_ids(&self) -> impl Iterator<Item = VolumeId> + use<> {
         (0..self.volume_set.len()).map(VolumeId::from_index)
     }
 
     /// Iterate though dynamic model IDs
-    pub fn all_dynamic_model_ids(&self) -> impl Iterator<Item = DynamicModelId> {
+    pub fn all_dynamic_model_ids(&self) -> impl Iterator<Item = DynamicModelId> + use<> {
         (0..self.dynamic_models.len()).map(DynamicModelId::from_index)
     }
 

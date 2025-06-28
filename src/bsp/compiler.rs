@@ -18,6 +18,7 @@ use super::Id;
 /// Polygon that should be drawn
 #[derive(Debug)]
 pub struct PhysicalPolygon {
+
     /// Actual polygon
     pub polygon: geom::Polygon,
 
@@ -145,12 +146,12 @@ impl HullVolume {
             Vec3f::new(1.0, 1.0, 1.0),
             Vec3f::new(0.0, 1.0, 1.0),
         ];
-        
+
         // t (x/y/z): [0, 1] -> [bb.min.t, bb.max.t]
         for vertex in &mut vertices {
             *vertex = *vertex * (boundbox.max() - boundbox.min()) + boundbox.min();
         }
-        
+
         // Box indices
         let indices = [
             [0, 1, 2, 3],
@@ -251,7 +252,10 @@ impl HullVolume {
         intersection_points = geom::deduplicate_points(intersection_points);
 
         if intersection_points.len() < 3 {
-            eprintln!("Something strange happened...");
+            eprintln!(
+                "Intersection of hull volume and polygon somehow have {} points after deduplication. It's < 3...",
+                intersection_points.len()
+            );
             None
         } else {
             Some(geom::Polygon {

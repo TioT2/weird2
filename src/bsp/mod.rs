@@ -99,45 +99,28 @@ pub struct Lightmap {
 pub struct Portal {
     /// Portal polygon identifier
     pub polygon_id: PolygonId,
-    
-    /// Is portal polygon facing 'into' volume it belongs to.
-    /// This flag is used to share same portal polygons between different volumes
-    pub is_facing_front: bool,
 
     /// Destination volume's identifier
     pub dst_volume_id: VolumeId,
+
+    /// Is portal polygon facing 'into' volume it belongs to.
+    /// This flag is used to share same portal polygons between different volumes
+    pub is_facing_front: bool,
 }
 
 /// Convex collection of polygons and portals
 pub struct Volume {
     /// Set of visible volume elements
-    surfaces: Vec<Surface>,
+    pub surfaces: Vec<Surface>,
 
-    /// Set of connections to another volumes
-    portals: Vec<Portal>,
+    /// Set of connections with another volumes
+    pub portals: Vec<Portal>,
 
     /// Volume bounding box
-    bound_box: geom::BoundBox,
+    pub bound_box: geom::BoundBox,
 }
 
-impl Volume {
-    /// Get physical polygon set
-    pub fn get_surfaces(&self) -> &[Surface] {
-        &self.surfaces
-    }
-
-    /// Get portal set
-    pub fn get_portals(&self) -> &[Portal] {
-        &self.portals
-    }
-
-    /// Get bounding box
-    pub fn get_bound_box(&self) -> &geom::BoundBox {
-        &self.bound_box
-    }
-}
-
-/// Binary Space Partition, used during
+/// Binary Space Partition
 pub enum Bsp {
     /// Space partition
     Partition {
@@ -222,27 +205,13 @@ impl BspModel {
 /// Dynamic BSP element
 pub struct DynamicModel {
     /// Model translation
-    origin: Vec3f,
+    pub origin: Vec3f,
 
     /// Model rotation (along Y axis)
-    rotation: f32,
+    pub rotation: f32,
 
     /// Corresponding BSP model Id
-    model_id: BspModelId,
-}
-
-impl DynamicModel {
-    pub fn get_origin(&self) -> Vec3f {
-        self.origin
-    }
-
-    pub fn get_rotation(&self) -> f32 {
-        self.rotation
-    }
-
-    pub fn get_model_id(&self) -> BspModelId {
-        self.model_id
-    }
+    pub model_id: BspModelId,
 }
 
 /// Map

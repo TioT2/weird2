@@ -1,26 +1,10 @@
 ///! WBSP file format description module.
 
 use bytemuck::{AnyBitPattern, NoUninit, Zeroable};
-
 use crate::geom;
 
 /// .WBSP file Magic number
 pub const MAGIC: u32 = u32::from_le_bytes(*b"WBSP");
-
-// Binary format
-macro_rules! bin_format {
-    ($name: ident) => {
-        unsafe impl Zeroable for $name {}
-        unsafe impl AnyBitPattern for $name {}
-        unsafe impl NoUninit for $name {}
-    };
-
-    ($head: ident, $($tail: ident),* $(,)?) => {
-        bin_format!($head);
-
-        bin_format!($($tail),*);
-    };
-}
 
 /// Span in any kind of set
 #[repr(C, packed)]
@@ -297,6 +281,21 @@ pub struct DynamicModel {
 
     /// Rotation
     pub rotation: f32,
+}
+
+// Export-targeted structure macro
+macro_rules! bin_format {
+    ($name: ident) => {
+        unsafe impl Zeroable for $name {}
+        unsafe impl AnyBitPattern for $name {}
+        unsafe impl NoUninit for $name {}
+    };
+
+    ($head: ident, $($tail: ident),* $(,)?) => {
+        bin_format!($head);
+
+        bin_format!($($tail),*);
+    };
 }
 
 // Binary format

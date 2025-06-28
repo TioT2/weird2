@@ -1,6 +1,4 @@
-///! System Font rendering implementation module
-
-/// Font data, actually
+/// System font data
 const FONT: [u64; 256] = [
     0x0000000000000000, 0x7E81A581BD99817E, 0x7EFFDBFFC3E7FF7E, 0x6CFEFEFE7C381000,
     0x10387CFE7C381000, 0x387C38FEFED61038, 0x10387CFEFE7C1038, 0x0000183C3C180000,

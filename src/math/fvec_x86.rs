@@ -9,6 +9,12 @@ use std::arch::x86_64 as arch;
 #[derive(Copy, Clone)]
 pub struct FVec4(arch::__m128);
 
+impl Default for FVec4 {
+    fn default() -> Self {
+        FVec4::zero()
+    }
+}
+
 impl FVec4 {
     /// Construct vector from X, Y and Z. W is zeroed
     pub fn from_xyz(x: f32, y: f32, z: f32) -> Self {

@@ -19,12 +19,9 @@ pub mod fmat4_x86;
 #[cfg(target_feature = "sse")]
 pub type FVec4 = fvec_x86::FVec4;
 
-// Not tested yet
+// Never tested, actually
 #[cfg(not(target_feature = "sse"))]
 pub type FVec4 = Vec4<f32>;
-
-/// Generic 3-component vector implementation module
-pub mod vec3_generic;
 
 pub mod numeric_traits {
     pub trait Sqrt {
@@ -321,15 +318,15 @@ impl Vec3f {
 
 #[macro_export]
 macro_rules! vec3f {
-    ($x: expr_2021, $y: expr_2021, $z: expr_2021 $(,)?) => {
-        math::Vec3f::new($x, $y, $z)
+    ($x: expr, $y: expr, $z: expr $(,)?) => {
+        crate::math::Vec3f::new($x, $y, $z)
     };
 }
 
 #[macro_export]
 macro_rules! vec2f {
-    ($x: expr_2021, $y: expr_2021 $(,)?) => {
-        math::Vec2f::new($x, $y)
+    ($x: expr, $y: expr $(,)?) => {
+        crate::math::Vec2f::new($x, $y)
     };
 }
 

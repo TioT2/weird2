@@ -36,274 +36,12 @@ pub mod map;
 /// Resource pack
 pub mod res;
 
-/// Time measure utility
-pub struct Timer {
-    /// Timer initialization time point
-    start: std::time::Instant,
+/// Camera
+pub mod camera;
 
-    /// Current time
-    now: std::time::Instant,
+pub mod timer;
 
-    /// Duration between two last timer updates
-    dt: std::time::Duration,
-
-    // Total frame count
-    total_frame_count: u64,
-
-    /// Current FPS updating duration
-    fps_duration: std::time::Duration,
-
-
-    /// Last time FPS was measured
-    fps_last_measure: std::time::Instant,
-
-    /// Count of timer updates after last FPS recalculation
-    fps_frame_counter: usize,
-
-    /// FPS, actually
-    fps: Option<f32>,
-}
-
-/// Physical BSP type
-#[derive(Copy, Clone)]
-pub enum PhysicalBspType {
-    Partition,
-
-    /// Empty leaf
-    Empty,
-
-    /// Solid leaf
-    Solid,
-}
-
-pub struct PhysicalBspElement {
-    pub plane: geom::Plane,
-    pub front_index: u32,
-    pub back_index: u32,
-    pub front_ty: PhysicalBspType,
-    pub back_ty: PhysicalBspType,
-}
-
-pub struct Polyhedron {
-    pub points: Vec<Vec3f>,
-    pub index_set: Vec<Option<std::num::NonZeroU32>>,
-}
-
-pub struct PhysicalBsp {
-    elements: Vec<PhysicalBspElement>,
-}
-
-impl PhysicalBsp {
-    fn point_is_solid_impl(&self, point: Vec3f, element: &PhysicalBspElement) -> bool {
-        let point_relation = element.plane.get_point_relation(point);
-
-        let (ty, index) = match point_relation {
-            geom::PointRelation::Front | geom::PointRelation::OnPlane => {
-                (element.front_ty, element.front_index)
-            }
-            geom::PointRelation::Back => {
-                (element.back_ty, element.back_index)
-            }
-        };
-
-        match ty {
-            PhysicalBspType::Solid => true,
-            PhysicalBspType::Empty => false,
-            PhysicalBspType::Partition => {
-                let next_element = self.elements.get(index as usize).unwrap();
-
-                self.point_is_solid_impl(point, next_element)
-            }
-        }
-    }
-
-    /// Check if SolidBsp point is solid, actually
-    pub fn point_is_solid(&self, point: Vec3f) -> bool {
-        let Some(start) = self.elements.get(0) else {
-            return true;
-        };
-
-        self.point_is_solid_impl(point, start)
-    }
-}
-
-impl Timer {
-    /// Create new timer
-    pub fn new() -> Self {
-        let now = std::time::Instant::now();
-        Self {
-            start: now,
-            now,
-            dt: std::time::Duration::from_millis(60),
-            total_frame_count: 0,
-            
-            fps_duration: std::time::Duration::from_millis(1000),
-            fps_last_measure: now,
-            fps_frame_counter: 0,
-            fps: None,
-        }
-    }
-
-    /// Update timer
-    pub fn response(&mut self) {
-        let new_now = std::time::Instant::now();
-        self.dt = new_now.duration_since(self.now);
-        self.now = new_now;
-        
-        self.total_frame_count += 1;
-        self.fps_frame_counter += 1;
-
-        let fps_delta = self.now - self.fps_last_measure;
-        if fps_delta > self.fps_duration {
-            self.fps = Some(self.fps_frame_counter as f32 / fps_delta.as_secs_f32());
-
-            self.fps_last_measure = self.now;
-            self.fps_frame_counter = 0;
-        }
-    }
-
-    /// Get current duration between frames
-    pub fn get_delta_time(&self) -> f32 {
-        self.dt.as_secs_f32()
-    }
-
-    /// Get current time
-    pub fn get_time(&self) -> f32 {
-        self.now
-            .duration_since(self.start)
-            .as_secs_f32()
-    }
-
-    /// Get current framaes-per-second
-    pub fn get_fps(&self) -> f32 {
-        self.fps.unwrap_or(std::f32::NAN)
-    }
-
-    /// FPS measure duration
-    pub fn set_fps_duration(&mut self, new_fps_duration: std::time::Duration) {
-        self.fps_duration = new_fps_duration;
-        self.fps_frame_counter = 0;
-        self.fps = None;
-        self.fps_last_measure = std::time::Instant::now();
-    }
-
-    /// Get count of frames elapsed from start
-    pub fn get_frame_count(&self) -> u64 {
-        self.total_frame_count
-    }
-}
-
-#[derive(Copy, Clone)]
-pub struct KeyState {
-    pub pressed: bool,
-    pub changed: bool,
-}
-
-pub struct Input {
-    states: HashMap<Scancode, KeyState>,
-}
-
-impl Input {
-    pub fn new() -> Self {
-        Self {
-            states: HashMap::new(),
-        }
-    }
-
-    pub fn get_key_state(&self, key: Scancode) -> KeyState {
-        self.states
-            .get(&key)
-            .copied()
-            .unwrap_or(KeyState {
-                pressed: false,
-                changed: false,
-            })
-    }
-
-    pub fn is_key_pressed(&self, key: Scancode) -> bool {
-        self.get_key_state(key).pressed
-    }
-
-    pub fn is_key_clicked(&self, key: Scancode) -> bool {
-        let key = self.get_key_state(key);
-
-        key.pressed && key.changed
-    }
-
-    pub fn on_state_changed(&mut self, key: Scancode, pressed: bool) {
-        if let Some(state) = self.states.get_mut(&key) {
-            state.changed = state.pressed != pressed;
-            state.pressed = pressed;
-        } else {
-            self.states.insert(key, KeyState {
-                pressed,
-                changed: true,
-            });
-        }
-    }
-
-    pub fn release_changed(&mut self) {
-        for state in self.states.values_mut() {
-            state.changed = false;
-        }
-    }
-
-}
-
-#[derive(Copy, Clone)]
-pub struct Camera {
-    pub location: Vec3f,
-    pub direction: Vec3f,
-}
-
-impl Camera {
-    pub fn new() -> Self {
-        Self {
-            location: vec3f!(10.0, 10.0, 10.0),
-            direction: vec3f!(-0.544, -0.544, -0.544).normalized(),
-        }
-    }
-
-    pub fn response(&mut self, timer: &Timer, input: &Input) {
-        let mut movement = vec3f!(
-            (input.is_key_pressed(Scancode::W) as i32 - input.is_key_pressed(Scancode::S) as i32) as f32,
-            (input.is_key_pressed(Scancode::D) as i32 - input.is_key_pressed(Scancode::A) as i32) as f32,
-            (input.is_key_pressed(Scancode::R) as i32 - input.is_key_pressed(Scancode::F) as i32) as f32,
-        );
-        let mut rotation = vec2f!(
-            (input.is_key_pressed(Scancode::Right) as i32 - input.is_key_pressed(Scancode::Left) as i32) as f32,
-            (input.is_key_pressed(Scancode::Down ) as i32 - input.is_key_pressed(Scancode::Up  ) as i32) as f32,
-        );
-
-        movement *= timer.get_delta_time() * 256.0;
-        rotation *= timer.get_delta_time() * 1.5;
-
-        let dir = self.direction;
-        let right = (dir % vec3f!(0.0, 0.0, 1.0)).normalized();
-        let up = (right % dir).normalized();
-
-        self.location += dir * movement.x + right * movement.y + up * movement.z;
-
-        let mut azimuth = dir.z.acos();
-        let mut elevator = dir.y.signum() * (
-            dir.x / (
-                dir.x * dir.x +
-                dir.y * dir.y
-            ).sqrt()
-        ).acos();
-
-        elevator -= rotation.x;
-        azimuth  += rotation.y;
-
-        azimuth = azimuth.clamp(0.01, std::f32::consts::PI - 0.01);
-
-        self.direction = vec3f!(
-            azimuth.sin() * elevator.cos(),
-            azimuth.sin() * elevator.sin(),
-            azimuth.cos(),
-        );
-    }
-}
+pub mod input;
 
 /// Different rasterization modes
 #[derive(Copy, Clone, PartialEq, Eq)]
@@ -649,14 +387,14 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
     ) { unsafe {
         /// Index forward by point list
         macro_rules! ind_prev {
-            ($index: expr_2021) => {
+            ($index: expr) => {
                 ((($index) + points.len() - 1) % points.len())
             };
         }
 
         /// Index backward by point list
         macro_rules! ind_next {
-            ($index: expr_2021) => {
+            ($index: expr) => {
                 (($index + 1) % points.len())
             };
         }
@@ -693,21 +431,47 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
         let first_line = usize::min(min_y_value.floor() as usize, self.frame_height);
         let last_line = usize::min(max_y_value.ceil() as usize, self.frame_height);
 
-        let mut left_index = ind_next!(min_y_index);
+        #[derive(Copy, Clone, Default)]
+        struct LineContext {
+            index: usize,
+            prev_xzuv: math::FVec4,
+            curr_xzuv: math::FVec4,
+            prev_y: f32,
+            curr_y: f32,
+            slope_xzuv: math::FVec4,
+        }
 
-        let mut left_prev_xzuv: math::FVec4 = points[min_y_index].xzuv().into();
-        let mut left_curr_xzuv: math::FVec4 = points[left_index].xzuv().into();
-        let mut left_prev_y = points[min_y_index].y;
-        let mut left_curr_y = points[left_index].y;
-        let mut left_slope_xzuv: math::FVec4 = (left_curr_xzuv - left_prev_xzuv) / (left_curr_y - left_prev_y);
+        let mut left = LineContext {
+            index: min_y_index,
+            curr_xzuv: points[min_y_index].xzuv().into(),
+            curr_y: points[min_y_index].y,
+            ..Default::default()
+        };
+        let mut right = left;
 
-        let mut right_index = ind_prev!(min_y_index);
+        macro_rules! side_line_step {
+            ($side: ident, $ind: ident) => {
+                $side.index = $ind!($side.index);
 
-        let mut right_prev_xzuv: math::FVec4 = points[min_y_index].xzuv().into();
-        let mut right_curr_xzuv: math::FVec4 = points[right_index].xzuv().into();
-        let mut right_prev_y = points[min_y_index].y;
-        let mut right_curr_y = points[right_index].y;
-        let mut right_slope_xzuv: math::FVec4 = (right_curr_xzuv - right_prev_xzuv) / (right_curr_y - right_prev_y);
+                $side.prev_y = $side.curr_y;
+                $side.prev_xzuv = $side.curr_xzuv;
+
+                $side.curr_y = points[$side.index].y;
+                $side.curr_xzuv = points[$side.index].xzuv().into();
+
+                let dy = $side.curr_y - $side.prev_y;
+
+                // Check if edge is flat
+                $side.slope_xzuv = if dy <= DY_EPSILON {
+                    math::FVec4::zero()
+                } else {
+                    ($side.curr_xzuv - $side.prev_xzuv) / dy
+                };
+            }
+        }
+
+        side_line_step!(left, ind_next);
+        side_line_step!(right, ind_prev);
 
         let width = texture.width as isize >> (IS_SKY as isize);
         let height = texture.height as isize;
@@ -717,61 +481,29 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
             // Get current pixel y
             let y = pixel_y as f32 + 0.5;
 
-            while y > left_curr_y {
-                if left_index == max_y_index {
+            while y > left.curr_y {
+                if left.index == max_y_index {
                     break 'line_loop;
                 }
-
-                left_index = ind_next!(left_index);
-
-                left_prev_y = left_curr_y;
-                left_prev_xzuv = left_curr_xzuv;
-
-                left_curr_y = points[left_index].y;
-                left_curr_xzuv = points[left_index].xzuv().into();
-
-                let left_dy = left_curr_y - left_prev_y;
-
-                // Check if edge is flat
-                if left_dy <= DY_EPSILON {
-                    left_slope_xzuv = math::FVec4::zero();
-                } else {
-                    left_slope_xzuv = (left_curr_xzuv - left_prev_xzuv) / left_dy;
-                }
+                side_line_step!(left, ind_next);
             }
 
-            while y > right_curr_y {
-                if right_index == max_y_index {
+            while y > right.curr_y {
+                if right.index == max_y_index {
                     break 'line_loop;
                 }
-
-                right_index = ind_prev!(right_index);
-
-                right_prev_y = right_curr_y;
-                right_prev_xzuv = right_curr_xzuv;
-
-                right_curr_y = points[right_index].y;
-                right_curr_xzuv = points[right_index].xzuv().into();
-
-                let right_dy = right_curr_y - right_prev_y;
-
-                // Check if edge is flat
-                if right_dy <= DY_EPSILON {
-                    right_slope_xzuv = math::FVec4::zero();
-                } else {
-                    right_slope_xzuv = (right_curr_xzuv - right_prev_xzuv) / right_dy;
-                }
+                side_line_step!(right, ind_prev);
             }
 
             let left_xzuv = math::FVec4::mul_add(
-                left_slope_xzuv,
-                math::FVec4::from_single(y - left_prev_y),
-                left_prev_xzuv,
+                left.slope_xzuv,
+                math::FVec4::from_single(y - left.prev_y),
+                left.prev_xzuv,
             );
             let right_xzuv = math::FVec4::mul_add(
-                right_slope_xzuv,
-                math::FVec4::from_single(y - right_prev_y),
-                right_prev_xzuv,
+                right.slope_xzuv,
+                math::FVec4::from_single(y - right.prev_y),
+                right.prev_xzuv,
             );
 
             // Get left x
@@ -888,47 +620,48 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                 }
 
                 if IS_TRANSPARENT {
-                    let dst_color = *pixel_ptr;
-                    let [dr, dg, db, _] = u64_into_u16(dst_color);
-                    let [sr, sg, sb, _] = u64_into_u16(src_color);
-                
                     // SSE-based transparency calculation
                     #[cfg(target_feature = "sse")]
                     {
-                        let dst = std::arch::x86_64::_mm_set_epi32(
-                            0,
-                            db as i32,
-                            dg as i32,
-                            dr as i32,
-                        );
-                        let src = std::arch::x86_64::_mm_set_epi32(
-                            0,
-                            sb as i32,
-                           sg as i32,
-                           sr as i32,
-                        );
-                        let dst_m = std::arch::x86_64::_mm_mul_ps(
-                            std::arch::x86_64::_mm_cvtepi32_ps(dst),
-                            std::arch::x86_64::_mm_set1_ps(0.4)
-                        );
-                        let src_m = std::arch::x86_64::_mm_mul_ps(
-                            std::arch::x86_64::_mm_cvtepi32_ps(src),
-                            std::arch::x86_64::_mm_set1_ps(0.6)
-                        );
-                        let sum = std::arch::x86_64::_mm_add_ps(src_m, dst_m);
-                        let res = std::arch::x86_64::_mm_cvtps_epi32(sum);
-                        let [rr, rg, rb, _]: [u32; 4] = std::mem::transmute(res);
+                        use std::arch::x86_64 as arch;
 
-                        *pixel_ptr = u64_from_u16([
-                            rr as u16,
-                            rg as u16,
-                            rb as u16,
-                            0
-                        ]);
+                        let src = std::mem::transmute(
+                            arch::_mm_set_sd(
+                                std::mem::transmute::<u64, f64>(src_color)
+                            )
+                        );
+                        let src32 = arch::_mm_cvtepi16_epi32(src);
+                        let src_m = arch::_mm_mul_ps(
+                            arch::_mm_cvtepi32_ps(src32),
+                            arch::_mm_set1_ps(0.6)
+                        );
+
+                        let dst = std::mem::transmute(
+                            arch::_mm_load_sd(
+                                std::mem::transmute(pixel_ptr)
+                            )
+                        );
+                        let dst32 = arch::_mm_cvtepi16_epi32(dst);
+                        let dst_m = arch::_mm_mul_ps(
+                            arch::_mm_cvtepi32_ps(dst32),
+                            arch::_mm_set1_ps(0.4)
+                        );
+
+                        let sum = arch::_mm_add_ps(src_m, dst_m);
+                        let res = arch::_mm_cvtps_epi32(sum);
+                        let cvt = arch::_mm_packus_epi32(res, res);
+                        arch::_mm_store_sd(
+                            std::mem::transmute(pixel_ptr),
+                            std::mem::transmute(cvt)
+                        );
                     }
                     
                     #[cfg(not(target_feature = "sse"))]
                     {
+                        let dst_color = *pixel_ptr;
+                        let [dr, dg, db, _] = u64_into_u16(dst_color);
+                        let [sr, sg, sb, _] = u64_into_u16(src_color);
+
                         *pixel_ptr = u64_from_u16([
                             (sr as f32 * 0.6 + dr as f32 * 0.4) as u16,
                             (sg as f32 * 0.6 + dg as f32 * 0.4) as u16,
@@ -1031,7 +764,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
     ) {
         let volume = self.map.get_volume(id).unwrap();
 
-        'polygon_rendering: for surface in volume.get_surfaces() {
+        'polygon_rendering: for surface in &volume.surfaces {
 
             let polygon = self.map.get_polygon(surface.polygon_id).unwrap();
 
@@ -1215,7 +948,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                     //     *sky_clip_oct = sky_clip_oct.union(&volume_clip_oct);
                     // }
     
-                    'portal_rendering: for portal in volume.get_portals() {
+                    'portal_rendering: for portal in &volume.portals {
                         let portal_polygon = self.map
                             .get_polygon(portal.polygon_id)
                             .unwrap();
@@ -1413,7 +1146,7 @@ pub enum RenderInputMessage {
         frame_buffer: Vec<u64>,
         width: u32,
         height: u32,
-        camera: Camera,
+        camera: camera::Camera,
         view_projection_matrix: Mat4f,
         rasterization_mode: RasterizationMode,
     }
@@ -1434,39 +1167,30 @@ fn build_surface_texture_impl<
     't,
     const ENABLE_LIGHTING: bool
 >(
-    data: &'t mut Vec<u64>,
+    data: &'t mut [u64],
     src: res::ImageRef,
     light: f32
 ) -> SurfaceTexture<'t> {
+    for (src, dst) in Iterator::zip(src.data.iter(), data.iter_mut()) {
+        let [r, g, b, _] = src.to_le_bytes();
 
-    data.clear();
-    data.resize(src.width * src.height, 0);
-
-    for y in 0..src.height {
-        let src_line = &src.data[y * src.width..(y + 1) * src.width];
-        let dst_line = &mut data[y * src.width..(y + 1) * src.width];
-
-        for x in 0..src.width {
-            let [r, g, b, _] = src_line[x].to_le_bytes();
-
-            if ENABLE_LIGHTING {
-                dst_line[x] = u64_from_u16([
-                    unsafe { (r as f32 * light).to_int_unchecked::<u16>() },
-                    unsafe { (g as f32 * light).to_int_unchecked::<u16>() },
-                    unsafe { (b as f32 * light).to_int_unchecked::<u16>() },
-                    0
-                ]);
-            } else {
-                dst_line[x] = u64_from_u16([r as u16, g as u16, b as u16, 0]);
-            }
-        }
+        *dst = u64_from_u16(if ENABLE_LIGHTING {
+            [
+                unsafe { (r as f32 * light).to_int_unchecked::<u16>() },
+                unsafe { (g as f32 * light).to_int_unchecked::<u16>() },
+                unsafe { (b as f32 * light).to_int_unchecked::<u16>() },
+                0
+            ]
+        } else {
+            [r as u16, g as u16, b as u16, 0]
+        });
     }
 
     SurfaceTexture {
         width: src.width,
         height: src.height,
         stride: src.width,
-        data: data.as_slice(),
+        data: data,
     }
 }
 
@@ -1476,6 +1200,8 @@ fn build_surface_texture<'t>(
     light: f32,
     enable_lighting: bool
 ) -> SurfaceTexture<'t> {
+    data.resize(src.width * src.height, 0);
+
     if enable_lighting {
         build_surface_texture_impl::<true>(data, src, light)
     } else {
@@ -1483,64 +1209,64 @@ fn build_surface_texture<'t>(
     }
 }
 
-/// Convert HDR buffer into LDR one
-pub fn hdr_to_ldr_impl<const ENABLE_TONEMAPPING: bool>(hdr: &[u64], ldr: &mut Vec<u32>) {
-    'proc: for elem in hdr {
-        let [r, g, b, a] = u64_into_u16(*elem);
-
-        if ENABLE_TONEMAPPING {
-            #[cfg(target_feature = "sse2")]
-            unsafe {
-                let rgba_int = std::arch::x86_64::_mm_set_epi32(
-                    std::mem::transmute(a as u32),
-                    std::mem::transmute(b as u32),
-                    std::mem::transmute(g as u32),
-                    std::mem::transmute(r as u32),
-                );
-    
-                // rgba
-                let rgba = std::arch::x86_64::_mm_cvtepi32_ps(rgba_int);
-    
-                // rgba / 256.0 + exposure
-                let rgba_norm_aexp = std::arch::x86_64::_mm_fmadd_ps(
-                    rgba,
-                    std::arch::x86_64::_mm_set1_ps(1.0 / 256.0),
-                    std::arch::x86_64::_mm_set1_ps(0.5) // exposure
-                );
-    
-                // rgba / (rgba / 256.0 + exposure)
-                let mapped = std::arch::x86_64::_mm_div_ps(rgba, rgba_norm_aexp);
-    
-                let mapped_int = std::arch::x86_64::_mm_cvtps_epi32(mapped);
-    
-                let [r, g, b, _]: [u32; 4] =
-                    std::mem::transmute(mapped_int);
-    
-                ldr.push(u32::from_le_bytes([
-                    (r & 0xFF) as u8,
-                    (g & 0xFF) as u8,
-                    (b & 0xFF) as u8,
-                    0,
-                ]));
-
-                continue 'proc;
-            }
-        }
-
-        ldr.push(u32::from_le_bytes([
+fn hdr_to_ldr_clamp(hdr: &[u64], ldr: &mut [u32]) {
+    for (src, dst) in Iterator::zip(hdr.iter(), ldr.iter_mut()) {
+        let [r, g, b, _] = u64_into_u16(*src);
+        *dst = u32::from_le_bytes([
             r as u8,
             g as u8,
             b as u8,
             0
-        ]));
+        ]);
     }
 }
 
-pub fn hdr_to_ldr(hdr: &[u64], ldr: &mut Vec<u32>, enable_tonemapping: bool) {
+fn hdr_to_ldr_tonemap(hdr: &[u64], ldr: &mut [u32]) {
+    #[cfg(not(target_feature = "sse2"))]
+    {
+        hdr_to_ldr_clamp(hdr, ldr);
+        return;
+    }
+
+    for (src_ptr, dst_ptr) in Iterator::zip(hdr.iter(), ldr.iter_mut()) {
+        use std::arch::x86_64 as arch;
+
+        unsafe {
+            let src16 = std::mem::transmute(
+                arch::_mm_load_sd(
+                    std::mem::transmute(src_ptr)
+                )
+            );
+            let src32 = arch::_mm_cvtepi16_epi32(src16);
+            let src = arch::_mm_cvtepi32_ps(src32);
+
+            // rgba / 256.0 + exposure
+            let rgba_norm_aexp = arch::_mm_fmadd_ps(
+                src,
+                arch::_mm_set1_ps(1.0 / 256.0),
+                arch::_mm_set1_ps(0.5) // exposure
+            );
+
+            // rgba / (rgba / 256.0 + exposure)
+            let mapped = arch::_mm_div_ps(src, rgba_norm_aexp);
+
+            let mapped32 = arch::_mm_cvtps_epi32(mapped);
+            let mapped16 = arch::_mm_packus_epi32(mapped32, mapped32);
+            let mapped8 = arch::_mm_packus_epi16(mapped16, mapped16);
+
+            arch::_mm_store_ss(
+                std::mem::transmute(dst_ptr),
+                std::mem::transmute(mapped8)
+            );
+        }
+    }
+}
+
+pub fn hdr_to_ldr(hdr: &[u64], ldr: &mut[u32], enable_tonemapping: bool) {
     if enable_tonemapping {
-        hdr_to_ldr_impl::<true>(hdr, ldr);
+        hdr_to_ldr_tonemap(hdr, ldr);
     } else {
-        hdr_to_ldr_impl::<false>(hdr, ldr);
+        hdr_to_ldr_clamp(hdr, ldr);
     }
 }
 
@@ -1580,7 +1306,7 @@ fn main() {
 
         // yay, this code will not compile on non-local builds)))
         // --
-        let map_name = "q1/e1m5";
+        let map_name = "q1/e1m1";
         let data_path = "temp/";
 
         let wbsp_path = format!("{}wbsp/{}.wbsp", data_path, map_name);
@@ -1621,7 +1347,7 @@ fn main() {
     let map = Arc::new(map);
 
     let material_table = {
-        let mut wad_file = std::fs::File::open("temp/q1/gfx/medieval.wad").unwrap();
+        let mut wad_file = std::fs::File::open("temp/q1/gfx/base.wad").unwrap();
 
         res::MaterialTable::load_wad2(&mut wad_file).unwrap()
     };
@@ -1681,18 +1407,17 @@ fn main() {
         .unwrap()
     ;
 
-    let mut timer = Timer::new();
-    let mut input = Input::new();
-    let mut camera = Camera::new();
+    let mut timer = timer::Timer::new();
+    let mut input = input::Input::new();
+    let mut camera = camera::Camera::new();
 
     // camera.location = Vec3f::new(-174.0, 2114.6, -64.5); // -200, 2000, -50
     // camera.direction = Vec3f::new(-0.4, 0.9, 0.1);
 
-    // camera.location = Vec3f::new(1402.4, 1913.7, -86.3);
-    // camera.direction = Vec3f::new(-0.74, 0.63, -0.24);
+    camera.location = Vec3f::new(1402.4, 1913.7, -86.3);
+    camera.direction = Vec3f::new(-0.74, 0.63, -0.24);
 
-    camera.location = Vec3f::new(1254.2, 1700.7, -494.5); // (1254.21606, 1700.70752, -494.493591)
-    camera.direction = Vec3f::new(0.055, -0.946, 0.320); // (-0.048328593, -0.946524262, 0.318992347)
+    // camera.direction = Vec3f::new(0.055, -0.946, 0.320); // (-0.048328593, -0.946524262, 0.318992347)
 
     // camera.location = Vec3f::new(-72.9, 698.3, -118.8);
     // camera.direction = Vec3f::new(0.37, 0.68, 0.63);
@@ -1721,7 +1446,7 @@ fn main() {
         // Spawn render thread
         _ = std::thread::spawn(move || {
             // Create new local timer
-            let mut timer = Timer::new();
+            let mut timer = timer::Timer::new();
 
             let render_in_reciever = render_in_reciever;
             let render_out_sender = render_out_sender;
@@ -1993,8 +1718,7 @@ fn main() {
                     height
                 } => {
                     // Build low dynamic range buffer
-                    ldr_frame_buffer.clear();
-                    ldr_frame_buffer.reserve(width as usize * height as usize);
+                    ldr_frame_buffer.resize(width as usize * height as usize, 0);
 
                     let start = std::time::Instant::now();
                     hdr_to_ldr(&rendered_hdr_buffer, &mut ldr_frame_buffer, true);

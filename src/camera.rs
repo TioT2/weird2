@@ -1,4 +1,4 @@
-use crate::{input, math::Vec3f, timer, vec2f, vec3f};
+use crate::{input, math::{Mat4f, Vec3f}, timer, vec2f, vec3f};
 
 #[derive(Copy, Clone)]
 pub struct Camera {
@@ -52,5 +52,13 @@ impl Camera {
             azimuth.sin() * elevator.sin(),
             azimuth.cos(),
         );
+    }
+
+    pub fn compute_view_matrix(&self) -> Mat4f {
+        Mat4f::view(
+            self.location,
+            self.location + self.direction,
+            Vec3f::new(0.0, 0.0, 1.0),
+        )
     }
 }

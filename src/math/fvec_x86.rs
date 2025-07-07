@@ -47,11 +47,9 @@ impl FVec4 {
     pub fn get<const I: i32>(self) -> f32 {
         #[cfg(target_feature = "sse4.1")]
         {
-            return unsafe {
-                std::mem::transmute::<i32, f32>(
-                    arch::_mm_extract_ps::<I>(self.0)
-                )
-            };
+            return f32::from_bits(
+                unsafe { arch::_mm_extract_ps::<I>(self.0) }.cast_unsigned()
+            );
         }
 
         // SSE1/2-based solution

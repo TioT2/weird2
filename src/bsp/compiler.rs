@@ -1358,6 +1358,7 @@ impl CompileContext {
                                 u_max,
                                 v_min,
                                 v_max,
+                                lightmap: None,
                             }
                         })
                     );

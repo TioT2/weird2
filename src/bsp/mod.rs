@@ -10,6 +10,9 @@ pub mod compiler;
 /// WBSP description module
 pub mod wbsp;
 
+/// Lightmap structure
+pub mod lightmap_baker;
+
 /// BSP internal utilities
 mod util;
 
@@ -58,12 +61,6 @@ pub struct Surface {
     /// Surface polygon identifier
     pub polygon_id: PolygonId,
 
-    /// Surface transparency flag
-    pub is_transparent: bool,
-
-    /// True if sky, false if not
-    pub is_sky: bool,
-
     /// U texture mapping axis
     pub u: geom::Plane,
 
@@ -81,6 +78,15 @@ pub struct Surface {
 
     /// Surface v axis maximal value
     pub v_max: i32,
+
+    /// Surface transparency flag
+    pub is_transparent: bool,
+
+    /// True if sky, false if not
+    pub is_sky: bool,
+
+    /// True if is lightmapped, false if not
+    pub lightmap: Option<Lightmap>,
 }
 
 /// Directional lightmap
@@ -143,7 +149,7 @@ pub enum Bsp {
 
 impl Bsp {
     /// Find BSP cell that contains the point
-    pub fn traverse(&self, point: Vec3f) -> Option<VolumeId> {
+    pub fn find_volume(&self, point: Vec3f) -> Option<VolumeId> {
         let mut curr = self;
 
         loop {
@@ -379,6 +385,11 @@ impl Map {
     pub fn compile(map: &map::Map) -> Result<Self, MapCompilationError> {
         compiler::compile(map)
     }
+
+    /// Bake map lightmaps
+    pub fn bake_lightmaps(&mut self) {
+        lightmap_baker::bake(self);
+    }
 }
 
 impl Map {
@@ -583,6 +594,7 @@ impl Map {
                                 polygon_id,
                                 is_sky: surface.is_sky != 0,
                                 is_transparent: surface.is_transparent != 0,
+                                lightmap: None,
                                 u,
                                 v,
                                 u_min,

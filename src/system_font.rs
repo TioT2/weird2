@@ -1,4 +1,4 @@
-/// System font data
+/// System font data (256 8x8 1bit images)
 const FONT: [u64; 256] = [
     0x0000000000000000, 0x7E81A581BD99817E, 0x7EFFDBFFC3E7FF7E, 0x6CFEFEFE7C381000,
     0x10387CFE7C381000, 0x387C38FEFED61038, 0x10387CFEFE7C1038, 0x0000183C3C180000,
@@ -87,7 +87,7 @@ impl Frame {
 
         for y in y_start..y_end {
             for x in x_start..x_end {
-                if (img >> ((7 + y_start - y) * 8 + (7 + x_start - x))) & 1 == 1 {
+                if (img >> ((7 + y_start - y) * FONT_WIDTH + (7 + x_start - x))) & 1 == 1 {
                     unsafe {
                         let ptr = self.ptr.add(y * self.stride + x);
                         *ptr = !*ptr;

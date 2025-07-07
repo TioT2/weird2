@@ -8,7 +8,7 @@
 // WRES - Resource format, contains textures/sounds/models/etc.
 // WDAT - Data format, contains 'final' project with location BSP's.
 
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::{HashMap, HashSet}, sync::Arc};
 use math::{Mat4f, Vec2f, Vec3f, Vec5UVf};
 use sdl2::keyboard::Scancode;
 
@@ -330,10 +330,18 @@ impl RenderCamera {
 }
 
 /// Renderer frame
+#[derive(Copy, Clone)]
 pub struct RenderFrame {
+    /// Frame pixel data
     pixels: *mut u64,
+
+    /// Count of pixels in line that are allowed to write
     width: usize,
+
+    /// Count of lines
     height: usize,
+
+    /// Count of pixels in line
     stride: usize,
 }
 
@@ -341,6 +349,8 @@ pub struct RenderFrame {
 struct RenderContext<'t, 'ref_table> {
     /// Projection info holder
     camera: RenderCamera,
+
+    shadow_camera: Option<RenderCamera>,
 
     /// Offset of background from foreground
     sky_background_uv_offset: Vec2f,
@@ -778,10 +788,18 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
 
             let polygon = self.map.get_polygon(surface.polygon_id).unwrap();
 
-            // Perform backface culling
+            // Backface cull with shadow camera
+            if let Some(shadow_camera) = self.shadow_camera.as_ref() {
+                if polygon.plane.get_signed_distance(shadow_camera.location) <= 0.0 {
+                    continue 'polygon_rendering;
+                }
+            }
+
+            // Backface cull with standard camera
             if polygon.plane.get_signed_distance(self.camera.location) <= 0.0 {
                 continue 'polygon_rendering;
             }
+
 
             let texture = self.material_table
                 .get_texture(surface.material_id)
@@ -905,7 +923,8 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
         &self,
         bsp_root: &bsp::Bsp,
         start_volume_id: bsp::VolumeId,
-        start_clip_oct: &geom::ClipOct
+        start_clip_oct: &geom::ClipOct,
+        camera: &RenderCamera,
     ) -> Vec<(bsp::VolumeId, geom::ClipOct)> {
         // Render set itself
         let mut inv_render_set_value = Vec::new();
@@ -936,7 +955,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
 
                 // Perform modified backface culling
                 let backface_cull_result =
-                    portal_polygon.plane.get_signed_distance(self.camera.location) >= 0.0;
+                    portal_polygon.plane.get_signed_distance(camera.location) >= 0.0;
                 if backface_cull_result != portal.is_facing_front {
                     continue 'portal_rendering;
                 }
@@ -961,7 +980,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
 
                     let portal_plane_distance = portal_polygon
                         .plane
-                        .get_signed_distance(self.camera.location)
+                        .get_signed_distance(camera.location)
                         .abs();
 
                     // Do not calculate projection for near portals
@@ -976,7 +995,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                         polygon_points.reverse();
                     }
 
-                    self.camera.get_screenspace_projected_portal_polygon(
+                    camera.get_screenspace_projected_portal_polygon(
                         &mut polygon_points,
                         &mut proj_polygon_points
                     );
@@ -1018,7 +1037,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
 
         self.traverse_bsp(
             bsp_root,
-            self.camera.location,
+            camera.location,
             traverse_fn,
         );
 
@@ -1054,57 +1073,70 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
         }
     }
 
-    /// Reorder render set in respect to some camera
-    pub fn reorder_render_set(
-        &mut self,
-        render_set: &mut Vec<(bsp::VolumeId, geom::ClipOct)>,
-        bsp_root: &bsp::Bsp,
-        camera: camera::Camera,
-    ) {
-        // Build unordered render set
-        let mut volume_set = HashMap::<bsp::VolumeId, geom::ClipOct>::with_capacity(render_set.len());
-
-        for (volume_id, clip_oct) in render_set.drain(..) {
-            volume_set.insert(volume_id, clip_oct).unwrap();
-        }
-
-        self.traverse_bsp(
-            bsp_root,
-            camera.location,
-            |volume_id| {
-                if let Some(oct) = volume_set.remove(&volume_id) {
-                    render_set.push((volume_id, oct));
-                }
-            },
-        );
-    }
-
     pub fn render(&mut self) {
         let world_bsp = self.map
             .get_world_model()
             .get_bsp();
+        let screen_clip_oct = geom::ClipOct::from_clip_rect(self.get_screen_clip_rect());
 
-        let inv_render_set = if let Some(start_volume_id) = world_bsp.find_volume(self.camera.location) {
-            self.build_render_set(
-                world_bsp,
-                start_volume_id,
-                &geom::ClipOct::from_clip_rect(self.get_screen_clip_rect())
-            )
+        let partial_render_set_opt = if let Some(shadow_camera) = self.shadow_camera.as_ref() {
+            world_bsp
+                .find_volume(shadow_camera.location)
+                .map(|start_volume_id| {
+                    let mut render_set = self.build_render_set(
+                        world_bsp,
+                        start_volume_id,
+                        &geom::ClipOct::from_clip_rect(self.get_screen_clip_rect()),
+                        &shadow_camera
+                    );
+
+                    // Make render set unordered
+                    let mut unordered_render_set = render_set
+                        .drain(..)
+                        .map(|(id, _)| id)
+                        .collect::<HashSet<bsp::VolumeId>>();
+
+                    // Order it
+                    self.traverse_bsp(
+                        world_bsp,
+                        self.camera.location,
+                        |volume_id| {
+                            if unordered_render_set.remove(&volume_id) {
+                                render_set.push((volume_id, screen_clip_oct));
+                            }
+                        },
+                    );
+
+                    render_set
+                })
         } else {
-            let screen_clip_oct = geom::ClipOct::from_clip_rect(self.get_screen_clip_rect());
-            let mut render_set = Vec::new();
-            let render_set_ref = &mut render_set;
-
-            self.traverse_bsp(
-                world_bsp,
-                self.camera.location,
-                move |volume_id| {
-                    render_set_ref.push((volume_id, screen_clip_oct));
-                },
-            );
-
-            render_set
+            world_bsp
+                .find_volume(self.camera.location)
+                .map(|start_volume_id| {
+                    self.build_render_set(
+                        world_bsp,
+                        start_volume_id,
+                        &screen_clip_oct,
+                        &self.camera
+                    )
+                })
         };
+
+        let inv_render_set = partial_render_set_opt
+            .unwrap_or_else(|| {
+                let mut render_set = Vec::new();
+                let render_set_ref = &mut render_set;
+
+                self.traverse_bsp(
+                    world_bsp,
+                    self.camera.location,
+                    move |volume_id| {
+                        render_set_ref.push((volume_id, screen_clip_oct));
+                    },
+                );
+
+                render_set
+            });
 
         let mut points = Vec::new();
         let mut point_dst = Vec::new();
@@ -1132,7 +1164,7 @@ pub enum RenderInputMessage {
         frame_buffer: Vec<u64>,
         width: u32,
         height: u32,
-        logical_camera: camera::Camera,
+        shadow_camera: Option<camera::Camera>,
         camera: camera::Camera,
         projection_matrix: Mat4f,
         rasterization_mode: RasterizationMode,
@@ -1264,7 +1296,7 @@ fn main() {
     let do_enable_map_caching = true;
 
     // Synchronize visible-set-building and projection cameras
-    let mut do_sync_logical_camera = true;
+    let mut shadow_camera: Option<camera::Camera> = None;
 
     // Enable rendering with synchronization after some portion of frame pixels renderend
     let mut rasterization_mode = RasterizationMode::Standard;
@@ -1411,7 +1443,6 @@ fn main() {
     // camera.location = Vec3f::new(30.0, 40.0, 50.0);
 
     // Camera used for visible set building
-    let mut logical_camera = camera;
 
     // Buffer that contains software-rendered pixels
     let mut hdr_frame_buffer = Vec::<u64>::new();
@@ -1474,7 +1505,7 @@ fn main() {
                         mut frame_buffer,
                         width,
                         height,
-                        logical_camera,
+                        shadow_camera,
                         camera,
                         projection_matrix,
                         rasterization_mode
@@ -1500,6 +1531,13 @@ fn main() {
                                 half_fw: width as f32 * 0.5,
                                 half_fh: height as f32 * 0.5,
                             },
+
+                            shadow_camera: shadow_camera.map(|shadow_camera| RenderCamera {
+                                view_projection: shadow_camera.compute_view_matrix() * projection_matrix,
+                                location: shadow_camera.location,
+                                half_fw: width as f32 * 0.5,
+                                half_fh: height as f32 * 0.5,
+                            }),
 
                             frame: RenderFrame {
                                 pixels: frame_buffer.as_mut_ptr(),
@@ -1567,17 +1605,17 @@ fn main() {
         timer.response();
         camera.response(&timer, &input);
 
-        // Synchronize logical camera with physical one
+        // Toggle shadow camera
         if input.is_key_clicked(Scancode::Num9) {
-            do_sync_logical_camera = !do_sync_logical_camera;
+            shadow_camera = if shadow_camera.is_none() {
+                Some(camera)
+            } else {
+                None
+            };
         }
 
         if input.is_key_clicked(Scancode::Num0) {
             rasterization_mode = rasterization_mode.next();
-        }
-
-        if do_sync_logical_camera {
-            logical_camera = camera;
         }
 
         // Acquire window extent
@@ -1661,7 +1699,7 @@ fn main() {
             frame_buffer: hdr_frame_buffer,
             width: frame_width as u32,
             height: frame_height as u32,
-            logical_camera,
+            shadow_camera,
             camera,
             projection_matrix,
             rasterization_mode,
@@ -1709,8 +1747,8 @@ fn main() {
                         ldr_frame_buffer.as_mut_ptr()
                     )
                         .str(16, 8, &format!("FPS: {} ({}ms)", timer.get_fps(), 1000.0 / timer.get_fps()))
-                        .str(16, 16, &format!("SL={}, RM={}",
-                            do_sync_logical_camera as u32,
+                        .str(16, 16, &format!("SC={}, RM={}",
+                            shadow_camera.is_some() as u32,
                             rasterization_mode as u32
                         ))
                         .str(16, 24, &format!("TM: {}ms", tm_time))

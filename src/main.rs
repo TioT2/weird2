@@ -8,7 +8,7 @@
 // WRES - Resource format, contains textures/sounds/models/etc.
 // WDAT - Data format, contains 'final' project with location BSP's.
 
-use std::{collections::{HashMap, HashSet}, sync::Arc};
+use std::{collections::HashMap, sync::Arc};
 use math::{Mat4f, Vec2f, Vec3f, Vec5UVf};
 use sdl2::keyboard::Scancode;
 
@@ -121,8 +121,90 @@ impl<'t> SurfaceTexture<'t> {
     }
 }
 
-/// Renderer projection info
-pub struct ProjectionInfo {
+/// Clip polygon by z=1 plane
+fn clip_polygon_z1(points: &mut Vec<Vec5UVf>, result: &mut Vec<Vec5UVf>) -> bool {
+    for index in 0..points.len() {
+        let curr = points[index];
+        let next = points[(index + 1) % points.len()];
+
+        if curr.z > 1.0 {
+            result.push(curr);
+
+            if next.z < 1.0 {
+                let t = (1.0 - curr.z) / (next.z - curr.z);
+
+                result.push((next - curr) * t + curr);
+            }
+        } else if next.z > 1.0 {
+            let t = (1.0 - curr.z) / (next.z - curr.z);
+
+            result.push((next - curr) * t + curr);
+        }
+    }
+
+    result.len() >= 3
+}
+
+/// Clip polygon by octagon
+/// # Return
+/// True if there are some points
+fn clip_polygon_oct(
+    points: &mut Vec<Vec5UVf>,
+    result: &mut Vec<Vec5UVf>,
+    clip_oct: &geom::ClipOct
+) -> bool {
+    macro_rules! clip_edge {
+        ($metric: ident, $clip_val: expr, $cmp: tt) => {
+            {
+                result.clear();
+                for index in 0..points.len() {
+                    let curr = points[index];
+                    let next = points[(index + 1) % points.len()];
+
+                    if $metric!(curr) $cmp $clip_val {
+                        result.push(curr);
+
+                        if !($metric!(next) $cmp $clip_val) {
+                            let t = ($clip_val - $metric!(curr)) / ($metric!(next) - $metric!(curr));
+                            result.push((next - curr) * t + curr);
+                        }
+                    } else if $metric!(next) $cmp $clip_val {
+                        let t = ($clip_val - $metric!(curr)) / ($metric!(next) - $metric!(curr));
+                        result.push((next - curr) * t + curr);
+                    }
+                }
+                std::mem::swap(points, result);
+
+                points.len() >= 3
+            }
+        }
+    }
+
+    macro_rules! metric_x { ($e: ident) => { ($e.x) } }
+    macro_rules! metric_y { ($e: ident) => { ($e.y) } }
+    macro_rules! metric_y_a_x { ($e: ident) => { ($e.y + $e.x) } }
+    macro_rules! metric_y_s_x { ($e: ident) => { ($e.y - $e.x) } }
+
+    // Utilize '&&' hands calculation rules to stop clipping if there's <= 3 points
+    let value = true
+        && clip_edge!(metric_x,     clip_oct.min_x,     >=) // min X
+        && clip_edge!(metric_x,     clip_oct.max_x,     <=) // max X
+        && clip_edge!(metric_y,     clip_oct.min_y,     >=) // min Y
+        && clip_edge!(metric_y,     clip_oct.max_y,     <=) // max Y
+        && clip_edge!(metric_y_a_x, clip_oct.min_y_a_x, >=) // min Y+X
+        && clip_edge!(metric_y_a_x, clip_oct.max_y_a_x, <=) // max Y+X
+        && clip_edge!(metric_y_s_x, clip_oct.min_y_s_x, >=) // min Y-X
+        && clip_edge!(metric_y_s_x, clip_oct.max_y_s_x, <=) // max Y-X
+    ;
+
+    // Swap results (again)
+    std::mem::swap(points, result);
+
+    value
+}
+
+/// Camera that (additionally) holds info about projection and frame size
+pub struct RenderCamera {
     /// View-projection matrix
     pub view_projection: Mat4f,
 
@@ -136,15 +218,19 @@ pub struct ProjectionInfo {
     pub half_fh: f32,
 }
 
-impl ProjectionInfo {
-    pub fn project_portal_polygon(&self, points: &mut Vec<Vec3f>, point_dst: &mut Vec<Vec3f>) {
+impl RenderCamera {
+    pub fn get_screenspace_projected_portal_polygon(
+        &self,
+        points: &mut Vec<Vec3f>,
+        point_dst: &mut Vec<Vec3f>
+    ) {
         point_dst.clear();
         for point in points.iter() {
             point_dst.push(self.view_projection.transform_point(*point));
         }
         std::mem::swap(points, point_dst);
 
-        // Clip polygon invisible part
+        // Clip polygon by z=1
         point_dst.clear();
         for index in 0..points.len() {
             let curr = points[index];
@@ -224,15 +310,37 @@ impl ProjectionInfo {
             ));
         }
     }
+
+    pub fn get_screenspace_polygon(
+        &self,
+        polygon: &mut [Vec5UVf],
+    ) {
+        for pt in polygon {
+            let inv_z = pt.z.recip();
+
+            *pt = Vec5UVf::new(
+                (1.0 + pt.x * inv_z) * self.half_fw,
+                (1.0 - pt.y * inv_z) * self.half_fh,
+                inv_z,
+                pt.u * inv_z,
+                pt.v * inv_z,
+            );
+        }
+    }
+}
+
+/// Renderer frame
+pub struct RenderFrame {
+    pixels: *mut u64,
+    width: usize,
+    height: usize,
+    stride: usize,
 }
 
 /// Render context
 struct RenderContext<'t, 'ref_table> {
-    /// Camera used for rendering
-    camera: camera::Camera,
-
-    /// VP matrix
-    view_projection_matrix: Mat4f,
+    /// Projection info holder
+    camera: RenderCamera,
 
     /// Offset of background from foreground
     sky_background_uv_offset: Vec2f,
@@ -243,201 +351,17 @@ struct RenderContext<'t, 'ref_table> {
     /// Map reference
     map: &'t bsp::Map,
 
+    /// Table of materials
     material_table: &'t res::MaterialReferenceTable<'ref_table>,
 
-    /// Frame pixel array pointer
-    frame_pixels: *mut u64,
-
-    /// Frame width
-    frame_width: usize,
-
-    /// Frame height
-    frame_height: usize,
-
-    /// Frame stride
-    frame_stride: usize,
+    /// Frame structure
+    frame: RenderFrame,
 
     /// Rasterization mode
     rasterization_mode: RasterizationMode,
 }
 
 impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
-    /// Clip polygon by z=1 plane
-    fn clip_polygon_z1(points: &mut Vec<Vec5UVf>, result: &mut Vec<Vec5UVf>) {
-        for index in 0..points.len() {
-            let curr = points[index];
-            let next = points[(index + 1) % points.len()];
-
-            if curr.z > 1.0 {
-                result.push(curr);
-
-                if next.z < 1.0 {
-                    let t = (1.0 - curr.z) / (next.z - curr.z);
-
-                    result.push((next - curr) * t + curr);
-                }
-            } else if next.z > 1.0 {
-                let t = (1.0 - curr.z) / (next.z - curr.z);
-
-                result.push((next - curr) * t + curr);
-            }
-        }
-    }
-
-    /// Clip polygon by octagon
-    fn clip_polygon_oct(
-        points: &mut Vec<Vec5UVf>,
-        result: &mut Vec<Vec5UVf>,
-        clip_oct: &geom::ClipOct
-    ) {
-        macro_rules! clip_edge {
-            ($metric: ident, $clip_val: expr, $cmp: tt) => {
-                for index in 0..points.len() {
-                    let curr = points[index];
-                    let next = points[(index + 1) % points.len()];
-
-                    if $metric!(curr) $cmp $clip_val {
-                        result.push(curr);
-
-                        if !($metric!(next) $cmp $clip_val) {
-                            let t = ($clip_val - $metric!(curr)) / ($metric!(next) - $metric!(curr));
-                            result.push((next - curr) * t + curr);
-                        }
-                    } else if $metric!(next) $cmp $clip_val {
-                        let t = ($clip_val - $metric!(curr)) / ($metric!(next) - $metric!(curr));
-                        result.push((next - curr) * t + curr);
-                    }
-                }
-            }
-        }
-
-        macro_rules! clip_metric_minmax {
-            ($metric: ident, $min: expr, $max: expr) => {
-                result.clear();
-                clip_edge!($metric, $min, >=);
-                std::mem::swap(points, result);
-        
-                result.clear();
-                clip_edge!($metric, $max, <=);
-                std::mem::swap(points, result);
-            };
-        }
-
-        macro_rules! metric_x { ($e: ident) => { ($e.x) } }
-        macro_rules! metric_y { ($e: ident) => { ($e.y) } }
-        macro_rules! metric_y_a_x { ($e: ident) => { ($e.y + $e.x) } }
-        macro_rules! metric_y_s_x { ($e: ident) => { ($e.y - $e.x) } }
-
-        // Clip by X
-        clip_metric_minmax!(metric_x, clip_oct.min_x, clip_oct.max_x);
-
-        // Clip by Y
-        clip_metric_minmax!(metric_y, clip_oct.min_y, clip_oct.max_y);
-
-        // Clip by Y+X
-        clip_metric_minmax!(metric_y_a_x, clip_oct.min_y_a_x, clip_oct.max_y_a_x);
-
-        // Clip by Y-X
-        clip_metric_minmax!(metric_y_s_x, clip_oct.min_y_s_x, clip_oct.max_y_s_x);
-
-        // Swap results (again)
-        std::mem::swap(points, result);
-    }
-
-    /// Calculate screen-space portal polygon
-    fn get_screenspace_portal_polygon(
-        points: &mut Vec<Vec3f>,
-        point_dst: &mut Vec<Vec3f>,
-        view_projection: &Mat4f,
-        frame_w: f32,
-        frame_h: f32,
-    ) {
-        point_dst.clear();
-        for point in points.iter() {
-            point_dst.push(view_projection.transform_point(*point));
-        }
-        std::mem::swap(points, point_dst);
-
-        // Clip polygon invisible part
-        point_dst.clear();
-        for index in 0..points.len() {
-            let curr = points[index];
-            let next = points[(index + 1) % points.len()];
-
-            if curr.z > 1.0 {
-                point_dst.push(curr);
-
-                if next.z < 1.0 {
-                    let t = (1.0 - curr.z) / (next.z - curr.z);
-
-                    point_dst.push((next - curr) * t + curr);
-                }
-            } else if next.z > 1.0 {
-                let t = (1.0 - curr.z) / (next.z - curr.z);
-
-                point_dst.push((next - curr) * t + curr);
-            }
-        }
-        std::mem::swap(points, point_dst);
-
-        point_dst.clear();
-        for pt in points.iter() {
-            let inv_z = pt.z.recip();
-
-            point_dst.push(Vec3f::new(
-                (1.0 + pt.x * inv_z) * frame_w,
-                (1.0 - pt.y * inv_z) * frame_h,
-                inv_z,
-            ));
-        }
-    }
-
-    /// Apply projection to sky polygon
-    pub fn get_projected_sky_polygon(
-        &self,
-        polygon: &geom::Polygon,
-        point_dst: &mut Vec<Vec5UVf>
-    ) {
-        // Apply reprojection for sky polygon
-        for point in polygon.points.iter() {
-            // Skyplane distance
-            const DIST: f32 = 128.0;
-
-            let rp = *point - self.camera.location;
-
-            // Copy z sign to correct back-z case (s_dist - signed distance)
-            let s_dist = DIST.copysign(rp.z);
-
-            let u = rp.x / rp.z * s_dist;
-            let v = rp.y / rp.z * s_dist;
-
-            point_dst.push(Vec5UVf::from_32(
-                // Vector-only transform is used here to don't add camera location back.
-                self.view_projection_matrix.transform_vector(Vec3f::new(u, v, s_dist)),
-                Vec2f::new(u + self.sky_uv_offset.x, v + self.sky_uv_offset.y)
-            ));
-        }
-    }
-
-    /// Apply projection to default polygon
-    pub fn get_projected_polygon(
-        &self,
-        polygon: &geom::Polygon,
-        material_u: geom::Plane,
-        material_v: geom::Plane,
-        point_dst: &mut Vec<Vec5UVf>,
-    ) {
-        point_dst.clear();
-        for point in polygon.points.iter() {
-            point_dst.push(Vec5UVf::from_32(
-                self.view_projection_matrix.transform_point(*point),
-                Vec2f::new(
-                    point.dot(material_u.normal) + material_u.distance,
-                    point.dot(material_v.normal) + material_v.distance,
-                )
-            ));
-        }
-    }
 
     /// Render already clipped polygon
     unsafe fn render_clipped_polygon(
@@ -538,8 +462,8 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
         const DY_EPSILON: f32 = 0.01;
 
         // Calculate polygon bounds
-        let first_line = usize::min(min_y_value.floor() as usize, self.frame_height);
-        let last_line = usize::min(max_y_value.ceil() as usize, self.frame_height);
+        let first_line = usize::min(min_y_value.floor() as usize, self.frame.height);
+        let last_line = usize::min(max_y_value.ceil() as usize, self.frame.height);
 
         #[derive(Copy, Clone, Default)]
         struct LineContext {
@@ -624,9 +548,9 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
 
             // Calculate hline start/end, clip it
             let start = left_x.floor() as usize;
-            let end = usize::min(right_x.floor() as usize, self.frame_width);
+            let end = usize::min(right_x.floor() as usize, self.frame.width);
 
-            let pixel_row = self.frame_pixels.add(self.frame_stride * pixel_y);
+            let pixel_row = self.frame.pixels.add(self.frame.stride * pixel_y);
 
             let dx = right_x - left_x;
 
@@ -722,7 +646,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                     }
 
                 } else {
-                    panic!("Unknown rasterization mode: {}", MODE);
+                    panic!("Invalid rasterization mode: {}", MODE);
                 }
 
                 if IS_TRANSPARENT {
@@ -799,38 +723,25 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
 
         // Apply projection (and calculate UVs)
         if is_sky {
-            self.get_projected_sky_polygon(polygon, points);
+            self.camera.project_sky_polygon(polygon, points, self.sky_uv_offset);
         } else {
-            self.get_projected_polygon(polygon, material_u, material_v, points);
+            self.camera.project_polygon(polygon, material_u, material_v, points);
         }
 
         // Clip polygon invisible part
         point_dst.clear();
-        Self::clip_polygon_z1(points, point_dst);
-        std::mem::swap(points, point_dst);
-
-        // Calculate screen-space points
-        let width = self.frame_width as f32 * 0.5;
-        let height = self.frame_height as f32 * 0.5;
-
-        point_dst.clear();
-        for pt in points.iter() {
-            let inv_z = pt.z.recip();
-
-            point_dst.push(Vec5UVf::new(
-                (1.0 + pt.x * inv_z) * width,
-                (1.0 - pt.y * inv_z) * height,
-                inv_z,
-                pt.u * inv_z,
-                pt.v * inv_z,
-            ));
+        if !clip_polygon_z1(points, point_dst) {
+            return;
         }
-
         std::mem::swap(points, point_dst);
+
+        self.camera.get_screenspace_polygon(points);
 
         // Clip polygon by volume clipping octagon
         point_dst.clear();
-        Self::clip_polygon_oct(points, point_dst, clip_oct);
+        if !clip_polygon_oct(points, point_dst, clip_oct) {
+            return;
+        }
         std::mem::swap(points, point_dst);
 
         // Just for safety
@@ -838,11 +749,6 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
             if !pt.x.is_finite() || !pt.y.is_finite() {
                 return;
             }
-        }
-
-        // Check if it is a polygon
-        if points.len() < 3 {
-            return;
         }
 
         // Rasterize polygon
@@ -873,7 +779,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
             let polygon = self.map.get_polygon(surface.polygon_id).unwrap();
 
             // Perform backface culling
-            if (polygon.plane.normal ^ self.camera.location) - polygon.plane.distance <= 0.0 {
+            if polygon.plane.get_signed_distance(self.camera.location) <= 0.0 {
                 continue 'polygon_rendering;
             }
 
@@ -895,7 +801,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                     }
                 }
 
-                let res = (self.frame_width * self.frame_height) as f32;
+                let res = (self.frame.width * self.frame.height) as f32;
     
                 // Strange, but...
                 ((min_dist_2 / res).log2() / 2.0 + 1.3) as usize
@@ -975,8 +881,8 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                 CLIP_OFFSET,
             ),
             max: Vec2f::new(
-                self.frame_width as f32 + CLIP_OFFSET,
-                self.frame_height as f32 + CLIP_OFFSET,
+                self.frame.width as f32 + CLIP_OFFSET,
+                self.frame.height as f32 + CLIP_OFFSET,
             ),
         }
     }
@@ -1070,12 +976,9 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                         polygon_points.reverse();
                     }
 
-                    Self::get_screenspace_portal_polygon(
+                    self.camera.get_screenspace_projected_portal_polygon(
                         &mut polygon_points,
-                        &mut proj_polygon_points,
-                        &self.view_projection_matrix,
-                        self.frame_width as f32 * 0.5,
-                        self.frame_height as f32 * 0.5,
+                        &mut proj_polygon_points
                     );
 
                     // Check if it's even a polygon
@@ -1591,14 +1494,19 @@ fn main() {
 
                         // Very long function call, actually
                         let mut render_context = RenderContext {
-                            camera,
-                            view_projection_matrix:
-                                camera.compute_view_matrix() * projection_matrix,
+                            camera: RenderCamera {
+                                view_projection: camera.compute_view_matrix() * projection_matrix,
+                                location: camera.location,
+                                half_fw: width as f32 * 0.5,
+                                half_fh: height as f32 * 0.5,
+                            },
 
-                            frame_width: width as usize,
-                            frame_height: height as usize,
-                            frame_stride: width as usize,
-                            frame_pixels: frame_buffer.as_mut_ptr(),
+                            frame: RenderFrame {
+                                pixels: frame_buffer.as_mut_ptr(),
+                                width: width as usize,
+                                height: height as usize,
+                                stride: width as usize
+                            },
 
                             map: &map,
                             material_table: &material_reference_table,

@@ -9,7 +9,7 @@
 // WDAT - Data format, contains 'final' project with BSP's.
 
 use std::{collections::{HashMap, HashSet}, sync::Arc};
-use math::{Mat4f, Vec2f, Vec3f, Vec5UVf};
+use math::{Mat4f, Vec2f, Vec3f};
 use sdl2::keyboard::Scancode;
 
 /// Basic math utility
@@ -36,8 +36,10 @@ pub mod res;
 /// Camera
 pub mod camera;
 
+/// Timer
 pub mod timer;
 
+/// Input controller
 pub mod input;
 
 /// Different rasterization modes
@@ -75,6 +77,60 @@ pub const fn u64_into_u16(value: u64) -> [u16; 4] {
         ((value >> 32) & 0xFFFF) as u16,
         ((value >> 48) & 0xFFFF) as u16,
     ]
+}
+
+#[derive(Copy, Clone)]
+pub struct Vertex {
+    /// Vertex position
+    pub position: Vec3f,
+
+    /// Vertex texture coordinate
+    pub tex_coord: Vec2f,
+}
+
+impl Vertex {
+    /// Get vertex XZUV
+    pub fn xzuv(self) -> math::FVec4 {
+        math::FVec4::from_xyzw(
+            self.position.x,
+            self.position.z,
+            self.tex_coord.x,
+            self.tex_coord.y
+        )
+    }
+}
+
+impl std::ops::Add<Self> for Vertex {
+    type Output = Self;
+
+    fn add(self, rhs: Self) -> Self::Output {
+        Self {
+            position: self.position + rhs.position,
+            tex_coord: self.tex_coord + rhs.tex_coord
+        }
+    }
+}
+
+impl std::ops::Sub<Self> for Vertex {
+    type Output = Self;
+
+    fn sub(self, rhs: Self) -> Self::Output {
+        Self {
+            position: self.position - rhs.position,
+            tex_coord: self.tex_coord - rhs.tex_coord
+        }
+    }
+}
+
+impl std::ops::Mul<f32> for Vertex {
+    type Output = Self;
+
+    fn mul(self, rhs: f32) -> Self::Output {
+        Self {
+            position: self.position * rhs,
+            tex_coord: self.tex_coord * rhs,
+        }
+    }
 }
 
 impl RasterizationMode {
@@ -127,66 +183,36 @@ impl<'t> SurfaceTexture<'t> {
     }
 }
 
-/// POint norm for the `clip_points` function
-struct ClipNorm;
-
-impl ClipNorm {
-    /// X compmonent
-    const X     : u32 = 0;
-
-    /// Y component
-    const Y     : u32 = 1;
-
-    /// Z component
-    const Z     : u32 = 2;
-
-    /// Y + X
-    const Y_A_X : u32 = 3;
-
-    /// Y - X
-    const Y_S_X : u32 = 4;
-}
-
-/// Clip edge by function
-/// # Panics
-/// `CLIP_NORM` is not a constant from `ClipNorm` structure.
-pub fn clip_points<const CLIP_NORM: u32>(
-    points: &mut Vec<Vec5UVf>,
-    temp: &mut Vec<Vec5UVf>,
+/// Clip type-generic polygon by some linear vertex norm function
+/// # Note
+/// `cmp` must be ordering function, `norm` must be linear in respect of `V` operators
+fn clip_polygon<V>(
+    points: &mut Vec<V>,
+    temp: &mut Vec<V>,
     value: f32,
-    ord_fn: impl Fn(std::cmp::Ordering) -> bool
-) -> bool {
-
-    /// Get vertex metric by id
-    fn norm<const ID: u32>(pt: Vec5UVf) -> f32 {
-        match ID {
-            ClipNorm::X => pt.x,
-            ClipNorm::Y => pt.y,
-            ClipNorm::Z => pt.z,
-            ClipNorm::Y_A_X => pt.y + pt.x,
-            ClipNorm::Y_S_X => pt.y - pt.x,
-            _ => panic!("Invalid metric ID")
-        }
-    }
-
+    cmp: impl Fn(f32, f32) -> bool,
+    norm: impl Fn(V) -> f32,
+) -> bool
+where
+    V: Copy
+        + std::ops::Add<V, Output = V>
+        + std::ops::Sub<V, Output = V>
+        + std::ops::Mul<f32, Output = V>
+{
     temp.clear();
     for index in 0..points.len() {
         let curr = points[index];
         let next = points[(index + 1) % points.len()];
 
-        if ord_fn(norm::<CLIP_NORM>(curr).total_cmp(&value)) {
+        if cmp(norm(curr), value) {
             temp.push(curr);
 
-            if ord_fn(value.total_cmp(&norm::<CLIP_NORM>(next))) {
-
-                let t = (value - norm::<CLIP_NORM>(curr))
-                    / (norm::<CLIP_NORM>(next) - norm::<CLIP_NORM>(curr));
+            if cmp(value, norm(next)) {
+                let t = (value - norm(curr)) / (norm(next) - norm(curr));
                 temp.push((next - curr) * t + curr);
-            }
-        } else if ord_fn(norm::<CLIP_NORM>(next).total_cmp(&value)) {
-
-            let t = (value - norm::<CLIP_NORM>(curr))
-                / (norm::<CLIP_NORM>(next) - norm::<CLIP_NORM>(curr));
+           }
+        } else if cmp(norm(next), value) {
+            let t = (value - norm(curr)) / (norm(next) - norm(curr));
             temp.push((next - curr) * t + curr);
         }
     }
@@ -197,24 +223,32 @@ pub fn clip_points<const CLIP_NORM: u32>(
 
 /// Clip polygon by octagon
 /// # Return
-/// True if there are some points
+/// True if there are points rest
 fn clip_polygon_oct(
-    points: &mut Vec<Vec5UVf>,
-    temp: &mut Vec<Vec5UVf>,
+    vertices: &mut Vec<Vertex>,
+    temp: &mut Vec<Vertex>,
     clip_oct: &geom::ClipOct
 ) -> bool {
-    type Ord = std::cmp::Ordering;
+    // Norm functions
+    fn norm_x     (vt: Vertex) -> f32 { vt.position.x }
+    fn norm_y     (vt: Vertex) -> f32 { vt.position.y }
+    fn norm_y_a_x (vt: Vertex) -> f32 { vt.position.y + vt.position.x }
+    fn norm_y_s_x (vt: Vertex) -> f32 { vt.position.y - vt.position.x }
+
+    // Comparison functions
+    fn ge(l: f32, r: f32) -> bool { l >= r }
+    fn le(l: f32, r: f32) -> bool { l <= r }
 
     // Utilize '&&' hands calculation rules to stop clipping if there's <= 3 points
     true
-        && clip_points::<{ ClipNorm::X     }>(points, temp, clip_oct.min_x, Ord::is_ge)
-        && clip_points::<{ ClipNorm::X     }>(points, temp, clip_oct.max_x, Ord::is_le)
-        && clip_points::<{ ClipNorm::Y     }>(points, temp, clip_oct.min_y, Ord::is_ge)
-        && clip_points::<{ ClipNorm::Y     }>(points, temp, clip_oct.max_y, Ord::is_le)
-        && clip_points::<{ ClipNorm::Y_A_X }>(points, temp, clip_oct.min_y_a_x, Ord::is_ge)
-        && clip_points::<{ ClipNorm::Y_A_X }>(points, temp, clip_oct.max_y_a_x, Ord::is_le)
-        && clip_points::<{ ClipNorm::Y_S_X }>(points, temp, clip_oct.min_y_s_x, Ord::is_ge)
-        && clip_points::<{ ClipNorm::Y_S_X }>(points, temp, clip_oct.max_y_s_x, Ord::is_le)
+        && clip_polygon(vertices, temp, clip_oct.min_x, ge, norm_x)
+        && clip_polygon(vertices, temp, clip_oct.max_x, le, norm_x)
+        && clip_polygon(vertices, temp, clip_oct.min_y, ge, norm_y)
+        && clip_polygon(vertices, temp, clip_oct.max_y, le, norm_y)
+        && clip_polygon(vertices, temp, clip_oct.min_y_a_x, ge, norm_y_a_x)
+        && clip_polygon(vertices, temp, clip_oct.max_y_a_x, le, norm_y_a_x)
+        && clip_polygon(vertices, temp, clip_oct.min_y_s_x, ge, norm_y_s_x)
+        && clip_polygon(vertices, temp, clip_oct.max_y_s_x, le, norm_y_s_x)
 }
 
 /// Camera that (additionally) holds info about projection and frame size
@@ -233,6 +267,7 @@ pub struct RenderCamera {
 }
 
 impl RenderCamera {
+    /// Simplified function for vertex without portals
     pub fn get_screenspace_projected_portal_polygon(
         &self,
         points: &mut Vec<Vec3f>,
@@ -245,26 +280,7 @@ impl RenderCamera {
         std::mem::swap(points, point_dst);
 
         // Clip polygon by z=1
-        point_dst.clear();
-        for index in 0..points.len() {
-            let curr = points[index];
-            let next = points[(index + 1) % points.len()];
-
-            if curr.z > 1.0 {
-                point_dst.push(curr);
-
-                if next.z < 1.0 {
-                    let t = (1.0 - curr.z) / (next.z - curr.z);
-
-                    point_dst.push((next - curr) * t + curr);
-                }
-            } else if next.z > 1.0 {
-                let t = (1.0 - curr.z) / (next.z - curr.z);
-
-                point_dst.push((next - curr) * t + curr);
-            }
-        }
-        std::mem::swap(points, point_dst);
+        clip_polygon(points, point_dst, 1.0, |l, r| l > r, |p| p.z);
 
         point_dst.clear();
         for pt in points.iter() {
@@ -282,7 +298,7 @@ impl RenderCamera {
     pub fn project_sky_polygon(
         &self,
         polygon: &geom::Polygon,
-        point_dst: &mut Vec<Vec5UVf>,
+        point_dst: &mut Vec<Vertex>,
         uv_offset: Vec2f,
     ) {
         // Apply reprojection for sky polygon
@@ -298,11 +314,11 @@ impl RenderCamera {
             let u = rp.x / rp.z * s_dist;
             let v = rp.y / rp.z * s_dist;
 
-            point_dst.push(Vec5UVf::from_32(
+            point_dst.push(Vertex {
                 // Vector-only transform is used here to don't add camera location back.
-                self.view_projection.transform_vector(Vec3f::new(u, v, s_dist)),
-                Vec2f::new(u + uv_offset.x, v + uv_offset.y)
-            ));
+                position: self.view_projection.transform_vector(Vec3f::new(u, v, s_dist)),
+                tex_coord: Vec2f::new(u, v) + uv_offset,
+            });
         }
     }
 
@@ -312,35 +328,36 @@ impl RenderCamera {
         polygon: &geom::Polygon,
         material_u: geom::Plane,
         material_v: geom::Plane,
-        point_dst: &mut Vec<Vec5UVf>,
+        point_dst: &mut Vec<Vertex>,
     ) {
         point_dst.clear();
         for point in polygon.points.iter() {
-            point_dst.push(Vec5UVf::from_32(
-                self.view_projection.transform_point(*point),
-                Vec2f::new(
+            point_dst.push(Vertex {
+                position: self.view_projection.transform_point(*point),
+                tex_coord: Vec2f::new(
                     point.dot(material_u.normal) + material_u.distance,
                     point.dot(material_v.normal) + material_v.distance,
                 )
-            ));
+            });
         }
     }
 
     /// Reproject from camera to screen space
     pub fn get_screenspace_polygon(
         &self,
-        polygon: &mut [Vec5UVf],
+        polygon: &mut [Vertex],
     ) {
         for pt in polygon {
-            let inv_z = pt.z.recip();
+            let inv_z = pt.position.z.recip();
 
-            *pt = Vec5UVf::new(
-                (1.0 + pt.x * inv_z) * self.half_fw,
-                (1.0 - pt.y * inv_z) * self.half_fh,
-                inv_z,
-                pt.u * inv_z,
-                pt.v * inv_z,
-            );
+            *pt = Vertex {
+                position: Vec3f::new(
+                    (1.0 + pt.position.x * inv_z) * self.half_fw,
+                    (1.0 - pt.position.y * inv_z) * self.half_fh,
+                    inv_z,
+                ),
+                tex_coord: pt.tex_coord * inv_z
+            };
         }
     }
 }
@@ -394,7 +411,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
         &mut self,
         is_transparent: bool,
         is_sky: bool,
-        points: &[Vec5UVf],
+        points: &[Vertex],
         color: u64,
         texture: SurfaceTexture
     ) { unsafe {
@@ -441,7 +458,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
         const IS_SKY: bool,
     >(
         &mut self,
-        points: &[Vec5UVf],
+        vertices: &[Vertex],
         color: u64,
         texture: SurfaceTexture,
     ) { unsafe {
@@ -451,11 +468,11 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
             let mut min_y_index = 0;
             let mut max_y_index = 0;
 
-            let mut min_y = points[0].y;
-            let mut max_y = points[0].y;
+            let mut min_y = vertices[0].position.y;
+            let mut max_y = min_y;
 
-            for index in 1..points.len() {
-                let y = points[index].y;
+            for index in 1..vertices.len() {
+                let y = vertices[index].position.y;
 
                 if y < min_y {
                     min_y_index = index;
@@ -478,6 +495,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
         let first_line = usize::min(min_y_value.floor() as usize, self.frame.height);
         let last_line = usize::min(max_y_value.ceil() as usize, self.frame.height);
 
+        /// Context of line traversal
         #[derive(Copy, Clone, Default)]
         struct LineContext {
             index: usize,
@@ -489,8 +507,8 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
         }
 
         impl LineContext {
-            /// Perform next border line step
-            fn step<const IND_NEXT: bool>(&mut self, points: &[Vec5UVf]) {
+            /// Step to the next point
+            fn next_point<const IND_NEXT: bool>(&mut self, points: &[Vertex]) {
 
                 self.index += if IND_NEXT { 1 } else { points.len() - 1 };
                 self.index %= points.len();
@@ -498,7 +516,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                 self.prev_y = self.curr_y;
                 self.prev_xzuv = self.curr_xzuv;
 
-                self.curr_y = points[self.index].y;
+                self.curr_y = points[self.index].position.y;
                 self.curr_xzuv = points[self.index].xzuv().into();
 
                 let dy = self.curr_y - self.prev_y;
@@ -515,14 +533,14 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
 
         let mut left = LineContext {
             index: min_y_index,
-            curr_xzuv: points[min_y_index].xzuv().into(),
-            curr_y: points[min_y_index].y,
+            curr_xzuv: vertices[min_y_index].xzuv().into(),
+            curr_y: vertices[min_y_index].position.y,
             ..Default::default()
         };
         let mut right = left;
 
-        left.step::<true>(points);
-        right.step::<false>(points);
+        left.next_point::<true>(vertices);
+        right.next_point::<false>(vertices);
 
         let width = texture.width as isize >> (IS_SKY as isize);
         let height = texture.height as isize;
@@ -536,16 +554,14 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                 if left.index == max_y_index {
                     break 'line_loop;
                 }
-                left.step::<true>(points);
-                // side_line_step!(left, ind_next);
+                left.next_point::<true>(vertices);
             }
 
             while y > right.curr_y {
                 if right.index == max_y_index {
                     break 'line_loop;
                 }
-                right.step::<false>(points);
-                // side_line_step!(right, ind_prev);
+                right.next_point::<false>(vertices);
             }
 
             let left_xzuv = math::FVec4::mul_add(
@@ -595,25 +611,29 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                 // Handle different rasterization modes
                 if MODE == RasterizationMode::Monochrome as u32 {
                     src_color = color;
+
                 } else if MODE == RasterizationMode::Overdraw as u32 {
                     src_color = 0x0010_0010_0010u64.wrapping_add(*pixel_ptr);
+
                 } else if MODE == RasterizationMode::Depth as u32 {
                     let color = (xzuv.y() * 25500.0) as u16;
                     src_color = u64_from_u16([color; 4]);
+
                 } else if MODE == RasterizationMode::UV as u32 {
-                    let z = xzuv.y().recip();
-                    let u = xzuv.z() * z;
-                    let v = xzuv.w() * z;
+                    let inv_z = xzuv.y().recip();
+                    let u = xzuv.z() * inv_z;
+                    let v = xzuv.w() * inv_z;
 
                     let xi = (u as i64 & 0xFF) as u8;
                     let yi = (v as i64 & 0xFF) as u8;
 
-                    src_color = color * (((xi >> 5) ^ (yi >> 5)) & 1) as u64;
+                    src_color = color.wrapping_mul((((xi >> 5) ^ (yi >> 5)) & 1) as u64);
+
                 } else if MODE == RasterizationMode::Textured as u32 {
                     if IS_SKY {
-                        let z = xzuv.y().recip();
-                        let u = xzuv.z() * z;
-                        let v = xzuv.w() * z;
+                        let inv_z = xzuv.y().recip();
+                        let u = xzuv.z() * inv_z;
+                        let v = xzuv.w() * inv_z;
 
                         let fg_u = u
                             .to_int_unchecked::<isize>()
@@ -625,7 +645,9 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                             .rem_euclid(height)
                             .cast_unsigned();
 
-                        let fg_color = *texture.data.get_unchecked(fg_v * texture.stride + fg_u);
+                        let fg_color = *texture.data.get_unchecked(fg_v
+                            .wrapping_mul(texture.stride)
+                            .wrapping_add(fg_u));
 
                         // Check foreground color and fetch backround if foreground is transparent
                         if fg_color == 0 {
@@ -648,20 +670,23 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                         } else {
                             src_color = fg_color;
                         }
-                    } else {
-                        let z = xzuv.y().recip();
 
-                        let u = (xzuv.z() * z)
+                    } else {
+                        let inv_z = xzuv.y().recip();
+
+                        let u = (xzuv.z() * inv_z)
                             .to_int_unchecked::<isize>()
                             .rem_euclid(width)
                             .cast_unsigned();
 
-                        let v = (xzuv.w() * z)
+                        let v = (xzuv.w() * inv_z)
                             .to_int_unchecked::<isize>()
                             .rem_euclid(height)
                             .cast_unsigned();
 
-                        src_color = *texture.data.get_unchecked(v * texture.stride + u);
+                        src_color = *texture.data.get_unchecked(v
+                            .wrapping_mul(texture.stride)
+                            .wrapping_add(u));
                     }
 
                 } else {
@@ -736,35 +761,34 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
         is_transparent: bool,
         is_sky: bool,
         clip_oct: &geom::ClipOct,
-        points: &mut Vec<Vec5UVf>,
-        point_dst: &mut Vec<Vec5UVf>,
+        vertices: &mut Vec<Vertex>,
+        vertex_dst: &mut Vec<Vertex>,
     ) {
-        points.clear();
+        vertices.clear();
 
         // Apply projection (and calculate UVs)
         if is_sky {
-            self.camera.project_sky_polygon(polygon, points, self.sky_uv_offset);
+            self.camera.project_sky_polygon(polygon, vertices, self.sky_uv_offset);
         } else {
-            self.camera.project_polygon(polygon, material_u, material_v, points);
+            self.camera.project_polygon(polygon, material_u, material_v, vertices);
         }
 
         // Clip polygon by Z=1
-        point_dst.clear();
-        if !clip_points::<{ClipNorm::Z}>(points, point_dst, 1.0, std::cmp::Ordering::is_gt) {
+        if !clip_polygon(vertices, vertex_dst, 1.0, |l, r| l > r, |v| v.position.z) {
             return;
         }
 
-        self.camera.get_screenspace_polygon(points);
+        // Project polygon to the screen space
+        self.camera.get_screenspace_polygon(vertices);
 
         // Clip polygon by volume clipping octagon
-        point_dst.clear();
-        if !clip_polygon_oct(points, point_dst, clip_oct) {
+        if !clip_polygon_oct(vertices, vertex_dst, clip_oct) {
             return;
         }
 
         // Just for safety
-        for pt in points.iter() {
-            if !pt.x.is_finite() || !pt.y.is_finite() {
+        for pt in vertices.iter() {
+            if !pt.position.x.is_finite() || !pt.position.y.is_finite() {
                 return;
             }
         }
@@ -774,7 +798,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
             self.render_clipped_polygon(
                 is_transparent,
                 is_sky,
-                &points,
+                &vertices,
                 color,
                 texture
             );
@@ -786,8 +810,8 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
         &mut self,
         id: bsp::VolumeId,
         clip_oct: &geom::ClipOct,
-        points: &mut Vec<Vec5UVf>,
-        point_dst: &mut Vec<Vec5UVf>,
+        points: &mut Vec<Vertex>,
+        point_dst: &mut Vec<Vertex>,
         surface_texture_data: &mut Vec<u64>,
     ) {
         let volume = self.map.get_volume(id).unwrap();

@@ -162,11 +162,11 @@ macro_rules! impl_vecn_unary_operator {
 }
 
 macro_rules! operator_on_variadic {
-    ($operator: tt, $first: expr_2021) => {
+    ($operator: tt, $first: expr) => {
         $first
     };
 
-    ($operator: tt, $first: expr_2021, $($rest: expr_2021),*) => {
+    ($operator: tt, $first: expr, $($rest: expr),*) => {
         $first $operator operator_on_variadic!($operator, $($rest),*)
     };
 }
@@ -261,48 +261,11 @@ impl_vecn!(Vec2, x, y);
 impl_vecn!(Vec3, x, y, z);
 impl_vecn!(Vec4, x, y, z, w);
 
-impl_vecn!(Vec5UV, x, y, z, u, v);
-
 impl_extn!(Ext2, w, h);
 impl_extn!(Ext3, w, h, d);
 
 impl_rectn!(Rect, Vec2, Ext2, x, y);
 impl_rectn!(Box, Vec3, Ext3, x, y, z);
-
-pub type Vec5UVf = Vec5UV<f32>;
-
-impl Vec5UVf {
-    pub fn from_32(xyz: Vec3f, uv: Vec2f) -> Self {
-        Self {
-            x: xyz.x,
-            y: xyz.y,
-            z: xyz.z,
-            u: uv.x,
-            v: uv.y,
-        }
-    }
-
-    pub fn zero() -> Self {
-        Self::new(0.0, 0.0, 0.0, 0.0, 0.0)
-    }
-
-    pub fn xyz(&self) -> Vec3f {
-        Vec3f::new(self.x, self.y, self.z)
-    }
-
-    pub fn uv(&self) -> Vec2f {
-        Vec2f::new(self.u, self.v)
-    }
-
-    pub fn xzuv(&self) -> Vec4f {
-        Vec4f::new(self.x, self.z, self.u, self.v)
-    }
-
-
-    pub fn zuv(&self) -> Vec3f {
-        Vec3f::new(self.z, self.u, self.v)
-    }
-}
 
 impl Vec3f {
     pub fn checked_normalized(&self) -> Option<Self> {

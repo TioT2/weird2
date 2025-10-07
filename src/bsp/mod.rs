@@ -92,7 +92,7 @@ pub struct Surface {
 /// Directional lightmap
 pub struct Lightmap {
     /// Image pixels
-    pub data: Vec<u64>,
+    pub data: Box<[u64]>,
 
     /// Image width
     pub width: usize,
@@ -234,11 +234,11 @@ pub struct Map {
     /// Set of BSP models
     bsp_models: Vec<BspModel>,
 
-    /// World BSP model
-    world_model_id: BspModelId,
-
     /// Set of dynamically-rendered objects
     dynamic_models: Vec<DynamicModel>,
+
+    /// Id of the BSP model used as the world
+    world_model_id: BspModelId,
 }
 
 impl Map {

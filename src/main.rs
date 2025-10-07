@@ -4,9 +4,9 @@
 // [WMAP -> WBSP], WRES -> WDAT/WRES
 //
 // WMAP - In-development map format, using during map editing
-// WBSP - Intermediate format, used to exchange during different map compilation stages (e.g. Visible and Physical BSP building/Optimization/Lightmapping/etc.)
+// WBSP - Intermediate format, used to exchange during different map compilation stages (e.g. Render and Physics BSP's building/Optimization/Lightmapping/etc.)
 // WRES - Resource format, contains textures/sounds/models/etc.
-// WDAT - Data format, contains 'final' project with location BSP's.
+// WDAT - Data format, contains 'final' project with BSP's.
 
 use std::{collections::{HashMap, HashSet}, sync::Arc};
 use math::{Mat4f, Vec2f, Vec3f, Vec5UVf};
@@ -14,9 +14,6 @@ use sdl2::keyboard::Scancode;
 
 /// Basic math utility
 pub mod math;
-
-/// Arena
-// pub mod arena;
 
 /// System font
 pub mod system_font;
@@ -46,22 +43,23 @@ pub mod input;
 /// Different rasterization modes
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub enum RasterizationMode {
-    /// Solid color
-    Standard = 0,
+    /// Monochromatic polygons
+    Monochrome = 0,
 
     /// Overdraw (brighter => more overdraw)
     Overdraw = 1,
 
-    /// Inverse depth
+    /// Inverse depth value
     Depth = 2,
 
-    /// Checker texture
+    /// UV checker
     UV = 3,
 
-    /// Textuers, actually
+    /// Unlit textures
     Textured = 4,
 }
 
+/// Make u64 from [u16; 4]
 pub const fn u64_from_u16(value: [u16; 4]) -> u64 {
     ((value[0] as u64) <<  0) |
     ((value[1] as u64) << 16) |
@@ -69,6 +67,7 @@ pub const fn u64_from_u16(value: [u16; 4]) -> u64 {
     ((value[3] as u64) << 48)
 }
 
+/// Convert u64 into [u16; 4]
 pub const fn u64_into_u16(value: u64) -> [u16; 4] {
     [
         ((value >>  0) & 0xFFFF) as u16,
@@ -85,7 +84,7 @@ impl RasterizationMode {
     /// Build rasterization mode from u32
     pub const fn from_u32(n: u32) -> Option<RasterizationMode> {
         Some(match n {
-            0 => RasterizationMode::Standard,
+            0 => RasterizationMode::Monochrome,
             1 => RasterizationMode::Overdraw,
             2 => RasterizationMode::Depth,
             3 => RasterizationMode::UV,
@@ -100,12 +99,19 @@ impl RasterizationMode {
     }
 }
 
-/// Final surface texture
+/// Texture that's used for final shading
 #[derive(Copy, Clone)]
 struct SurfaceTexture<'t> {
+    /// Texture width
     width: usize,
+
+    /// Texture height
     height: usize,
+
+    /// Texture stride
     stride: usize,
+
+    /// Texture data slice
     data: &'t [u64],
 }
 
@@ -121,28 +127,72 @@ impl<'t> SurfaceTexture<'t> {
     }
 }
 
-/// Clip polygon by z=1 plane
-fn clip_polygon_z1(points: &mut Vec<Vec5UVf>, result: &mut Vec<Vec5UVf>) -> bool {
+/// POint norm for the `clip_points` function
+struct ClipNorm;
+
+impl ClipNorm {
+    /// X compmonent
+    const X     : u32 = 0;
+
+    /// Y component
+    const Y     : u32 = 1;
+
+    /// Z component
+    const Z     : u32 = 2;
+
+    /// Y + X
+    const Y_A_X : u32 = 3;
+
+    /// Y - X
+    const Y_S_X : u32 = 4;
+}
+
+/// Clip edge by function
+/// # Panics
+/// `CLIP_NORM` is not a constant from `ClipNorm` structure.
+pub fn clip_points<const CLIP_NORM: u32>(
+    points: &mut Vec<Vec5UVf>,
+    temp: &mut Vec<Vec5UVf>,
+    value: f32,
+    ord_fn: impl Fn(std::cmp::Ordering) -> bool
+) -> bool {
+
+    /// Get vertex metric by id
+    fn norm<const ID: u32>(pt: Vec5UVf) -> f32 {
+        match ID {
+            ClipNorm::X => pt.x,
+            ClipNorm::Y => pt.y,
+            ClipNorm::Z => pt.z,
+            ClipNorm::Y_A_X => pt.y + pt.x,
+            ClipNorm::Y_S_X => pt.y - pt.x,
+            _ => panic!("Invalid metric ID")
+        }
+    }
+
+    temp.clear();
     for index in 0..points.len() {
         let curr = points[index];
         let next = points[(index + 1) % points.len()];
 
-        if curr.z > 1.0 {
-            result.push(curr);
+        if ord_fn(norm::<CLIP_NORM>(curr).total_cmp(&value)) {
+            temp.push(curr);
 
-            if next.z < 1.0 {
-                let t = (1.0 - curr.z) / (next.z - curr.z);
+            if ord_fn(value.total_cmp(&norm::<CLIP_NORM>(next))) {
 
-                result.push((next - curr) * t + curr);
+                let t = (value - norm::<CLIP_NORM>(curr))
+                    / (norm::<CLIP_NORM>(next) - norm::<CLIP_NORM>(curr));
+                temp.push((next - curr) * t + curr);
             }
-        } else if next.z > 1.0 {
-            let t = (1.0 - curr.z) / (next.z - curr.z);
+        } else if ord_fn(norm::<CLIP_NORM>(next).total_cmp(&value)) {
 
-            result.push((next - curr) * t + curr);
+            let t = (value - norm::<CLIP_NORM>(curr))
+                / (norm::<CLIP_NORM>(next) - norm::<CLIP_NORM>(curr));
+            temp.push((next - curr) * t + curr);
         }
     }
+    std::mem::swap(points, temp);
 
-    result.len() >= 3
+    points.len() >= 3
 }
 
 /// Clip polygon by octagon
@@ -150,57 +200,21 @@ fn clip_polygon_z1(points: &mut Vec<Vec5UVf>, result: &mut Vec<Vec5UVf>) -> bool
 /// True if there are some points
 fn clip_polygon_oct(
     points: &mut Vec<Vec5UVf>,
-    result: &mut Vec<Vec5UVf>,
+    temp: &mut Vec<Vec5UVf>,
     clip_oct: &geom::ClipOct
 ) -> bool {
-    macro_rules! clip_edge {
-        ($metric: ident, $clip_val: expr, $cmp: tt) => {
-            {
-                result.clear();
-                for index in 0..points.len() {
-                    let curr = points[index];
-                    let next = points[(index + 1) % points.len()];
-
-                    if $metric!(curr) $cmp $clip_val {
-                        result.push(curr);
-
-                        if !($metric!(next) $cmp $clip_val) {
-                            let t = ($clip_val - $metric!(curr)) / ($metric!(next) - $metric!(curr));
-                            result.push((next - curr) * t + curr);
-                        }
-                    } else if $metric!(next) $cmp $clip_val {
-                        let t = ($clip_val - $metric!(curr)) / ($metric!(next) - $metric!(curr));
-                        result.push((next - curr) * t + curr);
-                    }
-                }
-                std::mem::swap(points, result);
-
-                points.len() >= 3
-            }
-        }
-    }
-
-    macro_rules! metric_x { ($e: ident) => { ($e.x) } }
-    macro_rules! metric_y { ($e: ident) => { ($e.y) } }
-    macro_rules! metric_y_a_x { ($e: ident) => { ($e.y + $e.x) } }
-    macro_rules! metric_y_s_x { ($e: ident) => { ($e.y - $e.x) } }
+    type Ord = std::cmp::Ordering;
 
     // Utilize '&&' hands calculation rules to stop clipping if there's <= 3 points
-    let value = true
-        && clip_edge!(metric_x,     clip_oct.min_x,     >=) // min X
-        && clip_edge!(metric_x,     clip_oct.max_x,     <=) // max X
-        && clip_edge!(metric_y,     clip_oct.min_y,     >=) // min Y
-        && clip_edge!(metric_y,     clip_oct.max_y,     <=) // max Y
-        && clip_edge!(metric_y_a_x, clip_oct.min_y_a_x, >=) // min Y+X
-        && clip_edge!(metric_y_a_x, clip_oct.max_y_a_x, <=) // max Y+X
-        && clip_edge!(metric_y_s_x, clip_oct.min_y_s_x, >=) // min Y-X
-        && clip_edge!(metric_y_s_x, clip_oct.max_y_s_x, <=) // max Y-X
-    ;
-
-    // Swap results (again)
-    std::mem::swap(points, result);
-
-    value
+    true
+        && clip_points::<{ ClipNorm::X     }>(points, temp, clip_oct.min_x, Ord::is_ge)
+        && clip_points::<{ ClipNorm::X     }>(points, temp, clip_oct.max_x, Ord::is_le)
+        && clip_points::<{ ClipNorm::Y     }>(points, temp, clip_oct.min_y, Ord::is_ge)
+        && clip_points::<{ ClipNorm::Y     }>(points, temp, clip_oct.max_y, Ord::is_le)
+        && clip_points::<{ ClipNorm::Y_A_X }>(points, temp, clip_oct.min_y_a_x, Ord::is_ge)
+        && clip_points::<{ ClipNorm::Y_A_X }>(points, temp, clip_oct.max_y_a_x, Ord::is_le)
+        && clip_points::<{ ClipNorm::Y_S_X }>(points, temp, clip_oct.min_y_s_x, Ord::is_ge)
+        && clip_points::<{ ClipNorm::Y_S_X }>(points, temp, clip_oct.max_y_s_x, Ord::is_le)
 }
 
 /// Camera that (additionally) holds info about projection and frame size
@@ -264,6 +278,7 @@ impl RenderCamera {
         }
     }
 
+    /// Make world->camera space transition sky for polygon
     pub fn project_sky_polygon(
         &self,
         polygon: &geom::Polygon,
@@ -291,7 +306,7 @@ impl RenderCamera {
         }
     }
 
-    /// Apply projection to default polygon
+    /// Apply projection to polygon
     pub fn project_polygon(
         &self,
         polygon: &geom::Polygon,
@@ -311,6 +326,7 @@ impl RenderCamera {
         }
     }
 
+    /// Reproject from camera to screen space
     pub fn get_screenspace_polygon(
         &self,
         polygon: &mut [Vec5UVf],
@@ -429,19 +445,6 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
         color: u64,
         texture: SurfaceTexture,
     ) { unsafe {
-        /// Index forward by point list
-        macro_rules! ind_prev {
-            ($index: expr) => {
-                ((($index) + points.len() - 1) % points.len())
-            };
-        }
-
-        /// Index backward by point list
-        macro_rules! ind_next {
-            ($index: expr) => {
-                (($index + 1) % points.len())
-            };
-        }
 
         // Find polygon min/max
         let (min_y_index, min_y_value, max_y_index, max_y_value) = {
@@ -485,6 +488,31 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
             slope_xzuv: math::FVec4,
         }
 
+        impl LineContext {
+            /// Perform next border line step
+            fn step<const IND_NEXT: bool>(&mut self, points: &[Vec5UVf]) {
+
+                self.index += if IND_NEXT { 1 } else { points.len() - 1 };
+                self.index %= points.len();
+
+                self.prev_y = self.curr_y;
+                self.prev_xzuv = self.curr_xzuv;
+
+                self.curr_y = points[self.index].y;
+                self.curr_xzuv = points[self.index].xzuv().into();
+
+                let dy = self.curr_y - self.prev_y;
+
+                // Check if edge is flat
+                self.slope_xzuv = if dy <= DY_EPSILON {
+                    math::FVec4::zero()
+                } else {
+                    (self.curr_xzuv - self.prev_xzuv) / dy
+                };
+            }
+        }
+
+
         let mut left = LineContext {
             index: min_y_index,
             curr_xzuv: points[min_y_index].xzuv().into(),
@@ -493,29 +521,8 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
         };
         let mut right = left;
 
-        macro_rules! side_line_step {
-            ($side: ident, $ind: ident) => {
-                $side.index = $ind!($side.index);
-
-                $side.prev_y = $side.curr_y;
-                $side.prev_xzuv = $side.curr_xzuv;
-
-                $side.curr_y = points[$side.index].y;
-                $side.curr_xzuv = points[$side.index].xzuv().into();
-
-                let dy = $side.curr_y - $side.prev_y;
-
-                // Check if edge is flat
-                $side.slope_xzuv = if dy <= DY_EPSILON {
-                    math::FVec4::zero()
-                } else {
-                    ($side.curr_xzuv - $side.prev_xzuv) / dy
-                };
-            }
-        }
-
-        side_line_step!(left, ind_next);
-        side_line_step!(right, ind_prev);
+        left.step::<true>(points);
+        right.step::<false>(points);
 
         let width = texture.width as isize >> (IS_SKY as isize);
         let height = texture.height as isize;
@@ -529,14 +536,16 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                 if left.index == max_y_index {
                     break 'line_loop;
                 }
-                side_line_step!(left, ind_next);
+                left.step::<true>(points);
+                // side_line_step!(left, ind_next);
             }
 
             while y > right.curr_y {
                 if right.index == max_y_index {
                     break 'line_loop;
                 }
-                side_line_step!(right, ind_prev);
+                right.step::<false>(points);
+                // side_line_step!(right, ind_prev);
             }
 
             let left_xzuv = math::FVec4::mul_add(
@@ -584,7 +593,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                 let src_color;
 
                 // Handle different rasterization modes
-                if MODE == RasterizationMode::Standard as u32 {
+                if MODE == RasterizationMode::Monochrome as u32 {
                     src_color = color;
                 } else if MODE == RasterizationMode::Overdraw as u32 {
                     src_color = 0x0010_0010_0010u64.wrapping_add(*pixel_ptr);
@@ -660,7 +669,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                 }
 
                 if IS_TRANSPARENT {
-                    // SSE-based transparency calculation
+                    // SIMD-based transparency
                     #[cfg(target_feature = "sse")]
                     {
                         use std::arch::x86_64 as arch;
@@ -693,7 +702,8 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                             std::mem::transmute(cvt)
                         );
                     }
-                    
+
+                    // Fallback (slow) transparency
                     #[cfg(not(target_feature = "sse"))]
                     {
                         let dst_color = *pixel_ptr;
@@ -738,12 +748,11 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
             self.camera.project_polygon(polygon, material_u, material_v, points);
         }
 
-        // Clip polygon invisible part
+        // Clip polygon by Z=1
         point_dst.clear();
-        if !clip_polygon_z1(points, point_dst) {
+        if !clip_points::<{ClipNorm::Z}>(points, point_dst, 1.0, std::cmp::Ordering::is_gt) {
             return;
         }
-        std::mem::swap(points, point_dst);
 
         self.camera.get_screenspace_polygon(points);
 
@@ -752,7 +761,6 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
         if !clip_polygon_oct(points, point_dst, clip_oct) {
             return;
         }
-        std::mem::swap(points, point_dst);
 
         // Just for safety
         for pt in points.iter() {
@@ -838,7 +846,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
             let light = light_diffuse * 0.9 + 0.09;
 
             let surface_texture = match self.rasterization_mode {
-                RasterizationMode::Depth | RasterizationMode::Overdraw | RasterizationMode::UV | RasterizationMode::Standard => {
+                RasterizationMode::Depth | RasterizationMode::Overdraw | RasterizationMode::UV | RasterizationMode::Monochrome => {
                     SurfaceTexture::empty()
                 }
                 RasterizationMode::Textured => {
@@ -1178,6 +1186,7 @@ pub enum RenderOutputMessage {
         frame_buffer: Vec<u64>,
         width: u32,
         height: u32,
+        stride: u32,
     }
 }
 
@@ -1288,6 +1297,177 @@ pub fn hdr_to_ldr(hdr: &[u64], ldr: &mut[u32], enable_tonemapping: bool) {
         hdr_to_ldr_clamp(hdr, ldr);
     }
 }
+fn present_frame(
+    frame_buffer: *mut u32,
+    frame_width: usize,
+    frame_height: usize,
+    frame_stride: usize,
+    window_surface: &mut sdl2::video::WindowSurfaceRef,
+) {
+    let mut render_surface = match sdl2::surface::Surface::from_data(
+        unsafe {
+            std::slice::from_raw_parts_mut(
+                frame_buffer as *mut u8,
+                frame_stride * frame_height * 4
+            )
+        },
+        frame_width as u32,
+        frame_height as u32,
+        frame_stride as u32 * 4,
+        sdl2::pixels::PixelFormatEnum::ABGR8888
+    ) {
+        Ok(surface) => surface,
+        Err(err) => {
+            eprintln!("Source surface create error: {}", err);
+            return;
+        }
+    };
+
+    // Disable alpha blending
+    if let Err(err) = render_surface.set_blend_mode(sdl2::render::BlendMode::None) {
+        eprintln!("Cannot disable render surface blending: {}", err);
+    };
+
+    // Perform render surface blit
+    let (window_w, window_h) = window_surface.size();
+    let src_rect = sdl2::rect::Rect::new(0, 0, frame_width as u32, frame_height as u32);
+    let dst_rect = sdl2::rect::Rect::new(0, 0, window_w, window_h);
+
+    if let Err(err) = render_surface.blit_scaled(src_rect, window_surface, dst_rect) {
+        eprintln!("Surface blit failed: {}", err);
+    }
+
+
+    if let Err(err) = window_surface.update_window() {
+        eprintln!("Window update failed: {}", err);
+    }
+}
+
+/// Wrap function call with time calculation
+fn with_time_ms<T>(f: impl FnOnce() -> T) -> (T, f64) {
+    let start = std::time::Instant::now();
+    let value = f();
+    let end = std::time::Instant::now();
+
+    (value, end.duration_since(start).as_nanos() as f64 / 1_000_000f64)
+}
+
+fn init_render_thread(
+    map: Arc<bsp::Map>,
+    material_table: Arc<res::MaterialTable>
+) -> (std::sync::mpsc::Sender<RenderInputMessage>, std::sync::mpsc::Receiver<RenderOutputMessage>) {
+    let (render_in_sender, render_in_reciever) =
+        std::sync::mpsc::channel::<RenderInputMessage>();
+    let (render_out_sender, render_out_reciever) =
+        std::sync::mpsc::channel::<RenderOutputMessage>();
+
+    // Spawn render thread
+    _ = std::thread::spawn(move || {
+        // Create new local timer
+        let mut timer = timer::Timer::new();
+
+        let msg_reciever = render_in_reciever;
+        let msg_sender = render_out_sender;
+
+        // Map reference
+        let map_arc = map.clone();
+        let material_table_arc = material_table;
+
+        let map = map_arc.as_ref();
+        let material_table = material_table_arc.as_ref();
+
+        let material_reference_table = material_table
+            .build_reference_table(&map);
+
+        // Send empty frame to match sending order
+        _ = msg_sender.send(RenderOutputMessage::RenderedFrame {
+            frame_buffer: Vec::new(),
+            width: 0,
+            height: 0,
+            stride: 0
+        });
+
+        'frame_render_loop: loop {
+            let Ok(message) = msg_reciever.recv() else {
+                break 'frame_render_loop;
+            };
+
+            match message {
+                RenderInputMessage::NewFrame {
+                    mut frame_buffer,
+                    width,
+                    height,
+                    shadow_camera,
+                    camera,
+                    projection_matrix,
+                    rasterization_mode
+                } => {
+                    timer.response();
+
+                    let time = timer.get_time();
+
+                    // Clear framebuffer
+                    unsafe {
+                        std::ptr::write_bytes(
+                            frame_buffer.as_mut_ptr(),
+                            0,
+                            frame_buffer.len()
+                        );
+                    }
+
+                    // Very long function call, actually
+                    let mut render_context = RenderContext {
+                        camera: RenderCamera {
+                            view_projection: camera.compute_view_matrix() * projection_matrix,
+                            location: camera.location,
+                            half_fw: width as f32 * 0.5,
+                            half_fh: height as f32 * 0.5,
+                        },
+
+                        shadow_camera: shadow_camera.map(|shadow_camera| RenderCamera {
+                            view_projection: shadow_camera.compute_view_matrix() * projection_matrix,
+                            location: shadow_camera.location,
+                            half_fw: width as f32 * 0.5,
+                            half_fh: height as f32 * 0.5,
+                        }),
+
+                        frame: RenderFrame {
+                            pixels: frame_buffer.as_mut_ptr(),
+                            width: width as usize,
+                            height: height as usize,
+                            stride: width as usize
+                        },
+
+                        map: &map,
+                        material_table: &material_reference_table,
+                        rasterization_mode,
+
+                        sky_background_uv_offset: Vec2f::new(
+                            time * -12.0,
+                            time * -12.0,
+                        ),
+                        sky_uv_offset: Vec2f::new(
+                            time * 16.0,
+                            time * 16.0,
+                        ),
+                    };
+
+                    render_context.render();
+
+                    // Send output message
+                    _ = msg_sender.send(RenderOutputMessage::RenderedFrame {
+                        frame_buffer,
+                        width,
+                        height,
+                        stride: width,
+                    });
+                }
+            }
+        }
+    });
+
+    (render_in_sender, render_out_reciever)
+}
 
 fn main() {
     print!("\n\n\n\n\n\n\n\n");
@@ -1299,27 +1479,10 @@ fn main() {
     let mut shadow_camera: Option<camera::Camera> = None;
 
     // Enable rendering with synchronization after some portion of frame pixels renderend
-    let mut rasterization_mode = RasterizationMode::Standard;
+    let mut rasterization_mode = RasterizationMode::Monochrome;
 
     // Load map
     let map = {
-        /*
-        {
-            let canals = map::source_vmf::Entry::parse_vmf(include_str!("../temp/canals.vmf"))
-                .unwrap()
-                .build_wmap()
-                .unwrap();
-    
-            let map = bsp::Map::compile(&canals).unwrap();
-
-            let mut file = std::fs::File::create("temp/wbsp/canals.wbsp").unwrap();
-    
-            map.save(&mut file).unwrap();
-
-            break 'map map;
-        }
-        */
-
         // yay, this code will not compile on non-local builds)))
         // --
         let map_name = "q1/e1m1";
@@ -1327,6 +1490,14 @@ fn main() {
 
         let wbsp_path = format!("{}wbsp/{}.wbsp", data_path, map_name);
         let map_path = format!("{}{}.map", data_path, map_name);
+
+        fn compile_map(path: &str) -> bsp::Map {
+            let source = std::fs::read_to_string(path).unwrap();
+            let q1_location_map = map::q1_map::Map::parse(&source).unwrap();
+            let location_map = q1_location_map.build_wmap();
+
+            bsp::Map::compile(&location_map).unwrap()
+        }
 
         if do_enable_map_caching {
             match std::fs::File::open(&wbsp_path) {
@@ -1336,10 +1507,7 @@ fn main() {
                 }
                 Err(_) => {
                     // Compile map
-                    let source = std::fs::read_to_string(&map_path).unwrap();
-                    let q1_location_map = map::q1_map::Map::parse(&source).unwrap();
-                    let location_map = q1_location_map.build_wmap();
-                    let compiled_map = bsp::Map::compile(&location_map).unwrap();
+                    let compiled_map = compile_map(&map_path);
 
                     if let Some(directory) = std::path::Path::new(&wbsp_path).parent() {
                         _ = std::fs::create_dir(directory);
@@ -1354,10 +1522,7 @@ fn main() {
                 }
             }
         } else {
-            let source = std::fs::read_to_string(&map_path).unwrap();
-            let q1_location_map = map::q1_map::Map::parse(&source).unwrap();
-            let location_map = q1_location_map.build_wmap();
-            bsp::Map::compile(&location_map).unwrap()
+            compile_map(&map_path)
         }
     };
     let mut map = map;
@@ -1371,50 +1536,7 @@ fn main() {
     };
     let material_table = Arc::new(material_table);
 
-    struct BspStatBuilder {
-        pub volume_count: usize,
-        pub void_count: usize,
-        pub partition_count: usize,
-    }
-
-    impl BspStatBuilder {
-        /// Build BSP for certain 
-        fn visit(&mut self, bsp: &bsp::Bsp) {
-            match bsp {
-                bsp::Bsp::Partition { splitter_plane: _, front, back } => {
-                    self.partition_count += 1;
-
-                    self.visit(front);
-                    self.visit(back);
-                }
-                bsp::Bsp::Volume(_) => {
-                    self.volume_count += 1;
-                }
-                bsp::Bsp::Void => {
-                    self.void_count += 1;
-                }
-            }
-        }
-    }
-
-    let mut stat = BspStatBuilder {
-        partition_count: 0,
-        void_count: 0,
-        volume_count: 0
-    };
-
-    stat.visit(map.get_world_model().get_bsp());
-
-    let stat_total = stat.partition_count + stat.void_count + stat.volume_count;
-
-    println!("BSP Stat:");
-    println!("    Nodes total : {}", stat_total);
-    println!("    Partitions  : {} ({}%)", stat.partition_count, stat.partition_count as f64 / stat_total as f64 * 100.0);
-    println!("    Volumes     : {} ({}%)", stat.volume_count, stat.volume_count as f64 / stat_total as f64 * 100.0);
-    println!("    Voids       : {} ({}%)", stat.void_count, stat.void_count as f64 / stat_total as f64 * 100.0);
-    // return;
-
-    // Setup render
+    // Setup window
     let sdl = sdl2::init().unwrap();
     let video = sdl.video().unwrap();
     let mut event_pump = sdl.event_pump().unwrap();
@@ -1425,6 +1547,7 @@ fn main() {
         .unwrap()
     ;
 
+    // Setup systems
     let mut timer = timer::Timer::new();
     let mut input = input::Input::new();
     let mut camera = camera::Camera::new();
@@ -1450,135 +1573,8 @@ fn main() {
     // LDR framebuffer
     let mut ldr_frame_buffer = Vec::<u32>::new();
 
-    let (render_in_sender, render_out_reciever) = {
-
-        let (render_in_sender, render_in_reciever) =
-            std::sync::mpsc::channel::<RenderInputMessage>();
-        let (render_out_sender, render_out_reciever) =
-            std::sync::mpsc::channel::<RenderOutputMessage>();
-
-        let map = map.clone();
-        let material_table = material_table.clone();
-
-        // Spawn render thread
-        _ = std::thread::spawn(move || {
-            // Create new local timer
-            let mut timer = timer::Timer::new();
-
-            let render_in_reciever = render_in_reciever;
-            let render_out_sender = render_out_sender;
-
-            // Map reference
-            let map_arc = map.clone();
-            let material_table_arc = material_table;
-
-            let map = map_arc.as_ref();
-            let material_table = material_table_arc.as_ref();
-
-            let material_reference_table = material_table
-                .build_reference_table(&map);
-
-            // Send empty frame
-
-            let init_send_result = render_out_sender.send(RenderOutputMessage::RenderedFrame {
-                frame_buffer: Vec::new(),
-                width: 0,
-                height: 0,
-            });
-
-            if let Err(_) = init_send_result {
-                eprintln!("Send error occured");
-                return;
-            }
-
-            'frame_render_loop: loop {
-                let message = match render_in_reciever.try_recv() {
-                    Ok(message) => message,
-                    Err(err) => match err {
-                        std::sync::mpsc::TryRecvError::Disconnected => break 'frame_render_loop,
-                        std::sync::mpsc::TryRecvError::Empty => continue 'frame_render_loop,
-                    }
-                };
-
-                match message {
-                    RenderInputMessage::NewFrame {
-                        mut frame_buffer,
-                        width,
-                        height,
-                        shadow_camera,
-                        camera,
-                        projection_matrix,
-                        rasterization_mode
-                    } => {
-                        timer.response();
-
-                        let time = timer.get_time();
-
-                        // Clear framebuffer
-                        unsafe {
-                            std::ptr::write_bytes(
-                                frame_buffer.as_mut_ptr(),
-                                0,
-                                frame_buffer.len()
-                            );
-                        }
-
-                        // Very long function call, actually
-                        let mut render_context = RenderContext {
-                            camera: RenderCamera {
-                                view_projection: camera.compute_view_matrix() * projection_matrix,
-                                location: camera.location,
-                                half_fw: width as f32 * 0.5,
-                                half_fh: height as f32 * 0.5,
-                            },
-
-                            shadow_camera: shadow_camera.map(|shadow_camera| RenderCamera {
-                                view_projection: shadow_camera.compute_view_matrix() * projection_matrix,
-                                location: shadow_camera.location,
-                                half_fw: width as f32 * 0.5,
-                                half_fh: height as f32 * 0.5,
-                            }),
-
-                            frame: RenderFrame {
-                                pixels: frame_buffer.as_mut_ptr(),
-                                width: width as usize,
-                                height: height as usize,
-                                stride: width as usize
-                            },
-
-                            map: &map,
-                            material_table: &material_reference_table,
-                            rasterization_mode,
-
-                            sky_background_uv_offset: Vec2f::new(
-                                time * -12.0,
-                                time * -12.0,
-                            ),
-                            sky_uv_offset: Vec2f::new(
-                                time * 16.0,
-                                time * 16.0,
-                            ),
-                        };
-
-                        render_context.render();
-
-                        // Send output message
-                        let result = render_out_sender.send(RenderOutputMessage::RenderedFrame {
-                            frame_buffer,
-                            width,
-                            height
-                        });
-
-                        if let Err(_) = result {
-                            eprintln!("Render thread result sending error occured");
-                        }
-                    }
-                }
-            }
-        });
-
-        (render_in_sender, render_out_reciever)
-    };
+    // Render thread IO channels
+    let (render_in, render_out) = init_render_thread(map.clone(), material_table.clone());
 
     'main_loop: loop {
         input.release_changed();
@@ -1633,69 +1629,24 @@ fn main() {
             window_height / FRAME_SCALE,
         );
 
+        // Calculate aspect ratio
         let (aspect_x, aspect_y) = if window_width > window_height {
             (window_width as f32 / window_height as f32, 1.0)
         } else {
             (1.0, window_height as f32 / window_width as f32)
         };
 
-        // Get projection matrix
+        // Calculate projection matrix
         let projection_matrix = Mat4f::projection_frustum_inf_far(
             -0.5 * aspect_x, 0.5 * aspect_x,
             -0.5 * aspect_y, 0.5 * aspect_y,
-            0.66
+            2.0 / 3.0
         );
 
-        let present_frame = |frame_buffer: *mut u32, frame_width: usize, frame_height: usize, frame_stride: usize| {
-            let mut window_surface = match window.surface(&event_pump) {
-                Ok(window_surface) => window_surface,
-                Err(err) => {
-                    eprintln!("Cannot get window surface: {}", err);
-                    return;
-                }
-            };
-
-            let mut render_surface = match sdl2::surface::Surface::from_data(
-                unsafe {
-                    std::slice::from_raw_parts_mut(
-                        frame_buffer as *mut u8,
-                        frame_stride * frame_width * 4
-                    )
-                },
-                frame_width as u32,
-                frame_height as u32,
-                frame_width as u32 * 4,
-                sdl2::pixels::PixelFormatEnum::ABGR8888
-            ) {
-                Ok(surface) => surface,
-                Err(err) => {
-                    eprintln!("Source surface create error: {}", err);
-                    return;
-                }
-            };
-
-            // Disable alpha blending
-            if let Err(err) = render_surface.set_blend_mode(sdl2::render::BlendMode::None) {
-                eprintln!("Cannot disable render surface blending: {}", err);
-            };
-
-            // Perform render surface blit
-            let src_rect = sdl2::rect::Rect::new(0, 0, frame_width as u32, frame_height as u32);
-            let dst_rect = sdl2::rect::Rect::new(0, 0, window_width as u32, window_height as u32);
-
-            if let Err(err) = render_surface.blit_scaled(src_rect, &mut window_surface, dst_rect) {
-                eprintln!("Surface blit failed: {}", err);
-            }
-
-            if let Err(err) = window_surface.update_window() {
-                eprintln!("Window update failed: {}", err);
-            }
-        };
-        
         // Resize frame buffer to fit window's size
         hdr_frame_buffer.resize(frame_width * frame_height, 0);
 
-        let send_res = render_in_sender.send(RenderInputMessage::NewFrame {
+        let send_res = render_in.send(RenderInputMessage::NewFrame {
             frame_buffer: hdr_frame_buffer,
             width: frame_width as u32,
             height: frame_height as u32,
@@ -1713,37 +1664,31 @@ fn main() {
         let prev_hdr_frame_buffer;
 
         'res_await_loop: loop {
-            let render_result = match render_out_reciever.try_recv() {
-                Ok(result) => result,
-                Err(err) => match err {
-                    std::sync::mpsc::TryRecvError::Disconnected => {
-                        eprintln!("Render thread dropped");
-                        break 'main_loop;
-                    },
-                    std::sync::mpsc::TryRecvError::Empty => continue 'res_await_loop,
-                }
+            let Ok(render_result) = render_out.recv() else {
+                eprintln!("Render thread dropped");
+                break 'main_loop;
             };
     
             match render_result {
                 RenderOutputMessage::RenderedFrame {
                     frame_buffer: rendered_hdr_buffer,
                     width,
-                    height
+                    height,
+                    stride
                 } => {
-                    // Resize ldr buffer to fit screen size
-                    ldr_frame_buffer.resize(width as usize * height as usize, 0);
+                    // Resize ldr buffer to match hdr buffer's size
+                    ldr_frame_buffer.resize(stride as usize * height as usize, 0);
 
-                    let start = std::time::Instant::now();
-                    hdr_to_ldr(&rendered_hdr_buffer, &mut ldr_frame_buffer, true);
-                    let end = std::time::Instant::now();
+                    // Map from hdr to ldr
+                    let tm_time = with_time_ms(
+                        || hdr_to_ldr(&rendered_hdr_buffer, &mut ldr_frame_buffer, true)
+                    ).1;
 
-                    // tonemapping time
-                    let tm_time = end.duration_since(start).as_nanos() as f64 / 1_000_000f64;
-
+                    // Render system text
                     system_font::frame(
                         width as usize,
                         height as usize,
-                        width as usize,
+                        stride as usize,
                         ldr_frame_buffer.as_mut_ptr()
                     )
                         .str(16, 8, &format!("FPS: {} ({}ms)", timer.get_fps(), 1000.0 / timer.get_fps()))
@@ -1755,13 +1700,18 @@ fn main() {
                     ;
 
                     // Present frame
-                    present_frame(
-                        ldr_frame_buffer.as_mut_ptr(),
-                        width as usize,
-                        height as usize,
-                        width as usize,
-                    );
+                    match window.surface(&event_pump) {
+                        Ok(mut window_surface) => present_frame(
+                            ldr_frame_buffer.as_mut_ptr(),
+                            width as usize,
+                            height as usize,
+                            stride as usize,
+                            &mut window_surface
+                        ),
+                        Err(err) => eprintln!("Cannot get window surface: {}", err),
+                    };
 
+                    /* Set previous buffer memory */
                     prev_hdr_frame_buffer = Some(rendered_hdr_buffer);
 
                     break 'res_await_loop;

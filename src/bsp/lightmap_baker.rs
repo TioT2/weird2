@@ -17,8 +17,7 @@ pub fn bake(map: &mut crate::bsp::Map) {
 
             let width = (surface.u_max - surface.u_min) as usize / 4 + 2;
             let height = (surface.v_max - surface.v_min) as usize / 4 + 2;
-            let data = vec![color; width * height];
-            println!("{width} x {height}");
+            let data = vec![color; width * height].into_boxed_slice();
 
             surface.lightmap = Some(Lightmap { width, height, data });
         }

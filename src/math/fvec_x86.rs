@@ -1,6 +1,6 @@
 /// Fast vector implementation
-/// Thia is is common representation of Vec3/Vec4
-/// floating-point vectors based on x86 SSE extension.
+/// This is the common representation of Vec3/Vec4
+/// floating-point vectors based on x86 SSE.
 
 use std::arch::x86_64 as arch;
 

@@ -19,7 +19,7 @@ pub mod fmat4_x86;
 #[cfg(target_feature = "sse")]
 pub type FVec4 = fvec_x86::FVec4;
 
-// Never tested, actually
+// Fallback to standard Vec4 implementation
 #[cfg(not(target_feature = "sse"))]
 pub type FVec4 = Vec4<f32>;
 

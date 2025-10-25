@@ -15,9 +15,22 @@ use crate::{bsp::util, geom, map, math::{Mat3f, Vec3f}};
 
 use super::Id;
 
-/// Polygon that should be drawn
+/// Kind of the material
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum MaterialKind {
+    /// Just material
+    Default,
+
+    /// Transparent polygon
+    Transparent,
+
+    /// Sky polygon
+    Sky,
+}
+
+/// Polygon that should be displayed
 #[derive(Debug)]
-pub struct PhysicalPolygon {
+pub struct DisplayPolygon {
 
     /// Actual polygon
     pub polygon: geom::Polygon,
@@ -31,11 +44,8 @@ pub struct PhysicalPolygon {
     /// Material mapping V axis
     pub material_v: geom::Plane,
 
-    /// True if physical polygon is built from transparent material, false if not
-    pub is_transparent: bool,
-
-    /// True if this physical polygon refers to sky, false if not
-    pub is_sky: bool,
+    /// Kind of the material
+    pub material_kind: MaterialKind,
 }
 
 /// Reference to another volume
@@ -44,11 +54,11 @@ pub struct PortalPolygon {
     /// Index of actual polygon
     pub polygon_set_index: usize,
 
-    /// True denotes that portal polygon should be used 'as-is', False - as check results should be reversed
-    pub is_front: bool,
-
     /// Destination volume
     pub dst_volume_index: usize,
+
+    /// True denotes that portal polygon should be used 'as-is', False - as check results should be reversed
+    pub is_front: bool,
 }
 
 /// Hull polygon
@@ -62,7 +72,7 @@ pub struct HullFace {
     pub is_external: bool,
 
     /// Set of all polygons that will be actually displayed
-    pub physical_polygons: Vec<PhysicalPolygon>,
+    pub display_polygons: Vec<DisplayPolygon>,
 
     /// Polygons, that 'points' to another volumes
     pub portal_polygons: Vec<PortalPolygon>,
@@ -174,7 +184,7 @@ impl HullVolume {
                         vertices[d],
                     ]),
                     is_external: true,
-                    physical_polygons: Vec::new(),
+                    display_polygons: Vec::new(),
                     portal_polygons: Vec::new(),
                     split_reference: None,
                 })
@@ -205,7 +215,7 @@ impl HullVolume {
             .iter()
             .flat_map(|polygon| {
                 std::iter::once(&polygon.polygon)
-                    .chain(polygon.physical_polygons
+                    .chain(polygon.display_polygons
                         .iter()
                         .map(|p| &p.polygon)
                     )
@@ -285,8 +295,8 @@ impl HullVolume {
     pub fn split(
         self,
         plane: geom::Plane,
-        incident_front_polygons: Vec<PhysicalPolygon>,
-        incident_back_polygons: Vec<PhysicalPolygon>,
+        incident_front_polygons: Vec<DisplayPolygon>,
+        incident_back_polygons: Vec<DisplayPolygon>,
         split_id: SplitId,
     ) -> Result<(Self, Self, geom::Polygon), Self> {
   
@@ -315,7 +325,7 @@ impl HullVolume {
                     let mut front_physical_polygons = Vec::new();
                     let mut back_physical_polygons = Vec::new();
 
-                    for physical_polygon in hull_polygon.physical_polygons {
+                    for physical_polygon in hull_polygon.display_polygons {
                         match plane.split_polygon(&physical_polygon.polygon) {
                             geom::PolygonSplitResult::Front => {
                                 front_physical_polygons.push(physical_polygon);
@@ -324,22 +334,20 @@ impl HullVolume {
                                 back_physical_polygons.push(physical_polygon);
                             }
                             geom::PolygonSplitResult::Intersects { front, back } => {
-                                front_physical_polygons.push(PhysicalPolygon {
+                                front_physical_polygons.push(DisplayPolygon {
                                     polygon: front,
                                     material_index: physical_polygon.material_index,
                                     material_u: physical_polygon.material_u,
                                     material_v: physical_polygon.material_v,
-                                    is_transparent: physical_polygon.is_transparent,
-                                    is_sky: physical_polygon.is_sky,
+                                    material_kind: physical_polygon.material_kind,
                                 });
 
-                                back_physical_polygons.push(PhysicalPolygon {
+                                back_physical_polygons.push(DisplayPolygon {
                                     polygon: back,
                                     material_index: physical_polygon.material_index,
                                     material_u: physical_polygon.material_u,
                                     material_v: physical_polygon.material_v,
-                                    is_transparent: physical_polygon.is_transparent,
-                                    is_sky: physical_polygon.is_sky,
+                                    material_kind: physical_polygon.material_kind,
                                 });
                             }
                             geom::PolygonSplitResult::Coplanar => {
@@ -351,7 +359,7 @@ impl HullVolume {
 
                     front_hull_polygons.push(HullFace {
                         is_external: hull_polygon.is_external,
-                        physical_polygons: front_physical_polygons,
+                        display_polygons: front_physical_polygons,
                         portal_polygons: Vec::new(),
                         polygon: front_hull_polygon,
                         split_reference: hull_polygon.split_reference,
@@ -359,7 +367,7 @@ impl HullVolume {
 
                     back_hull_polygons.push(HullFace {
                         is_external: hull_polygon.is_external,
-                        physical_polygons: back_physical_polygons,
+                        display_polygons: back_physical_polygons,
                         portal_polygons: Vec::new(),
                         polygon: back_hull_polygon,
                         split_reference: hull_polygon.split_reference,
@@ -375,7 +383,7 @@ impl HullVolume {
 
         let front_intersection_hull_polygon = HullFace {
             is_external: false,
-            physical_polygons: incident_front_polygons,
+            display_polygons: incident_front_polygons,
             portal_polygons: Vec::new(), // constructed during portal_resolve pass
             polygon: intersection_polygon.clone(),
             split_reference: Some(SplitReference { edge_is_front: false, split_id })
@@ -385,7 +393,7 @@ impl HullVolume {
         intersection_polygon.negate_orientation();
         let back_intersection_hull_polygon = HullFace {
             is_external: false,
-            physical_polygons: incident_back_polygons,
+            display_polygons: incident_back_polygons,
             portal_polygons: Vec::new(),
             polygon: intersection_polygon,
             split_reference: Some(SplitReference { edge_is_front: true, split_id })
@@ -463,7 +471,7 @@ impl BspModelCompileContext {
         self.split_infos.push(info);
     }
 
-    fn build_volume(&mut self, volume: HullVolume, physical_polygons: Vec<PhysicalPolygon>) -> VolumeBsp {
+    fn build_volume(&mut self, volume: HullVolume, physical_polygons: Vec<DisplayPolygon>) -> VolumeBsp {
         // final polygon, insert hull in volume set and return
         if physical_polygons.is_empty() {
 
@@ -559,10 +567,10 @@ impl BspModelCompileContext {
             .plane
         ;
 
-        let mut front_polygons: Vec<PhysicalPolygon> = Vec::new();
-        let mut front_incident_polygons: Vec<PhysicalPolygon> = Vec::new();
-        let mut back_incident_polygons: Vec<PhysicalPolygon> = Vec::new();
-        let mut back_polygons: Vec<PhysicalPolygon> = Vec::new();
+        let mut front_polygons: Vec<DisplayPolygon> = Vec::new();
+        let mut front_incident_polygons: Vec<DisplayPolygon> = Vec::new();
+        let mut back_incident_polygons: Vec<DisplayPolygon> = Vec::new();
+        let mut back_polygons: Vec<DisplayPolygon> = Vec::new();
 
         // classify all polygons to 4 types
         for physical_polygon in physical_polygons {
@@ -585,22 +593,20 @@ impl BspModelCompileContext {
                 // to front and back
                 geom::PolygonSplitResult::Intersects { front, back } => {
                     // it's not good to split polygon
-                    front_polygons.push(PhysicalPolygon {
+                    front_polygons.push(DisplayPolygon {
                         polygon: front,
                         material_index: physical_polygon.material_index,
                         material_u: physical_polygon.material_u,
                         material_v: physical_polygon.material_v,
-                        is_transparent: physical_polygon.is_transparent,
-                        is_sky: physical_polygon.is_sky,
+                        material_kind: physical_polygon.material_kind,
                     });
 
-                    back_polygons.push(PhysicalPolygon {
+                    back_polygons.push(DisplayPolygon {
                         polygon: back,
                         material_index: physical_polygon.material_index,
                         material_u: physical_polygon.material_u,
                         material_v: physical_polygon.material_v,
-                        is_transparent: physical_polygon.is_transparent,
-                        is_sky: physical_polygon.is_sky,
+                        material_kind: physical_polygon.material_kind,
                     });
                 }
             }
@@ -642,7 +648,7 @@ impl BspModelCompileContext {
     }
 
     /// Start volume building pass
-    pub fn start_build_volumes(&mut self, physical_polygons: Vec<PhysicalPolygon>) {
+    pub fn start_build_volumes(&mut self, physical_polygons: Vec<DisplayPolygon>) {
 
         // Calculate boundbox
         self.bound_box = geom::BoundBox::for_points(physical_polygons
@@ -719,11 +725,11 @@ impl BspModelCompileContext {
                 let volume = self.volumes.get(volume_index).unwrap();
                 let face = volume.faces.get(face_index).unwrap();
 
-                face.physical_polygons.iter()
+                face.display_polygons.iter()
             })
             .filter_map(|physical_polygon| {
                 // Do not cut portals by transparent polygons
-                if physical_polygon.is_transparent {
+                if physical_polygon.material_kind == MaterialKind::Transparent {
                     None
                 } else {
                     Some(CutInfo {
@@ -1153,9 +1159,9 @@ pub struct CompileContext {
 
 impl CompileContext {
     // Build entity physical polygon set
-    pub fn build_entity_physical_polygons(&mut self, entity: &map::Entity) -> Vec<PhysicalPolygon> {
+    pub fn build_entity_physical_polygons(&mut self, entity: &map::Entity) -> Vec<DisplayPolygon> {
 
-        let mut physical_polygons = Vec::<PhysicalPolygon>::new();
+        let mut physical_polygons = Vec::<DisplayPolygon>::new();
 
         'brush_polygon_building: for brush in &entity.brushes {
             // Don't merge clip brushes into render BSP
@@ -1235,7 +1241,7 @@ impl CompileContext {
                 let points = geom::sort_points_by_angle(points, f1.plane.normal);
     
                 if f1.is_transparent {
-                    physical_polygons.push(PhysicalPolygon {
+                    physical_polygons.push(DisplayPolygon {
                         polygon: geom::Polygon {
                             points: {
                                 let mut pts = points.clone();
@@ -1247,13 +1253,12 @@ impl CompileContext {
                         material_index: *mtlid,
                         material_u: f1.u,
                         material_v: f1.v,
-                        is_transparent: true,
-                        is_sky: f1.is_sky,
+                        material_kind: MaterialKind::Transparent,
                     });
                 }
     
                 // Build physical polygon
-                physical_polygons.push(PhysicalPolygon {
+                physical_polygons.push(DisplayPolygon {
                     polygon: geom::Polygon {
                         points: points,
                         plane: f1.plane,
@@ -1261,8 +1266,11 @@ impl CompileContext {
                     material_index: *mtlid,
                     material_u: f1.u,
                     material_v: f1.v,
-                    is_transparent: f1.is_transparent,
-                    is_sky: f1.is_sky,
+                    material_kind: if f1.is_sky {
+                        MaterialKind::Sky
+                    } else {
+                        MaterialKind::Default
+                    },
                 });
             }
         }
@@ -1333,7 +1341,7 @@ impl CompileContext {
 
                 for face in hull_volume.faces {
                     surfaces.extend(face
-                        .physical_polygons
+                        .display_polygons
                         .into_iter()
                         .map(|physical_polygon| {
 
@@ -1352,8 +1360,8 @@ impl CompileContext {
                                 polygon_id: super::PolygonId::from_index(polygon_index),
                                 u: physical_polygon.material_u,
                                 v: physical_polygon.material_v,
-                                is_transparent: physical_polygon.is_transparent,
-                                is_sky: physical_polygon.is_sky,
+                                is_transparent: physical_polygon.material_kind == MaterialKind::Transparent,
+                                is_sky: physical_polygon.material_kind == MaterialKind::Sky,
                                 u_min,
                                 u_max,
                                 v_min,

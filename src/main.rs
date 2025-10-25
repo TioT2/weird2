@@ -902,11 +902,11 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                 &polygon,
                 geom::Plane {
                     normal: surface.u.normal / image_uv_scale,
-                    distance: surface.u.distance / image_uv_scale,
+                    distance: surface.u.distance / image_uv_scale - 0.5,
                 },
                 geom::Plane {
                     normal: surface.v.normal / image_uv_scale,
-                    distance: surface.v.distance / image_uv_scale,
+                    distance: surface.v.distance / image_uv_scale - 0.5,
                 },
                 color,
                 surface_texture,
@@ -968,6 +968,9 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
         // Initialize PVS
         pvs.insert(start_volume_id, *start_clip_oct);
 
+        let mut polygon_points = Vec::with_capacity(32);
+        let mut proj_polygon_points = Vec::with_capacity(32);
+
         let traverse_fn = move |volume_id| {
             let Some(volume_clip_oct) = pvs.get(&volume_id) else {
                 return;
@@ -1020,13 +1023,17 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                         break 'portal_validation volume_clip_oct;
                     }
 
-                    let mut polygon_points = portal_polygon.points.clone();
-                    let mut proj_polygon_points = Vec::new();
+                    // let mut polygon_points = portal_polygon.points.clone();
+                    // let mut proj_polygon_points = Vec::new();
+
+                    polygon_points.clear();
+                    polygon_points.extend_from_slice(&portal_polygon.points);
 
                     if !portal.is_facing_front {
                         polygon_points.reverse();
                     }
 
+                    proj_polygon_points.clear();
                     camera.get_screenspace_projected_portal_polygon(
                         &mut polygon_points,
                         &mut proj_polygon_points
@@ -1509,7 +1516,7 @@ fn main() {
     let map = {
         // yay, this code will not compile on non-local builds)))
         // --
-        let map_name = "q1/e1m1";
+        let map_name = "q1/e1m5";
         let data_path = "temp/";
 
         let wbsp_path = format!("{}wbsp/{}.wbsp", data_path, map_name);
@@ -1554,7 +1561,7 @@ fn main() {
     let map = Arc::new(map);
 
     let material_table = {
-        let mut wad_file = std::fs::File::open("temp/q1/gfx/base.wad").unwrap();
+        let mut wad_file = std::fs::File::open("temp/q1/gfx/medieval.wad").unwrap();
 
         res::MaterialTable::load_wad2(&mut wad_file).unwrap()
     };

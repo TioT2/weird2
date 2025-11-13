@@ -1225,22 +1225,30 @@ impl CompileContext {
                     .into_iter()
                     .filter(|point| planes
                         .iter()
-                        .all(|(face, _)| {
-                            face.plane.get_point_relation(*point) != geom::PointRelation::Front
-                        })
+                        .all(|(face, _)| face.plane.get_point_relation(*point) != geom::PointRelation::Front)
                     )
                     .collect::<Vec<_>>();
-    
+
                 points = geom::deduplicate_points(points);
-    
+
                 if points.len() < 3 {
                     // It's not even a polygon, actually
                     continue;
                 }
-    
+
                 let points = geom::sort_points_by_angle(points, f1.plane.normal);
-    
-                if f1.is_transparent {
+
+                // Find material kind
+                let material_kind = if f1.is_sky {
+                    MaterialKind::Sky
+                } else if f1.is_transparent {
+                    MaterialKind::Transparent
+                } else {
+                    MaterialKind::Default
+                };
+
+                // Insert reversed polygon for transparent surfaces
+                if material_kind == MaterialKind::Transparent {
                     physical_polygons.push(DisplayPolygon {
                         polygon: geom::Polygon {
                             points: {
@@ -1253,11 +1261,11 @@ impl CompileContext {
                         material_index: *mtlid,
                         material_u: f1.u,
                         material_v: f1.v,
-                        material_kind: MaterialKind::Transparent,
+                        material_kind,
                     });
                 }
-    
-                // Build physical polygon
+
+                // Build polygon
                 physical_polygons.push(DisplayPolygon {
                     polygon: geom::Polygon {
                         points: points,
@@ -1266,11 +1274,7 @@ impl CompileContext {
                     material_index: *mtlid,
                     material_u: f1.u,
                     material_v: f1.v,
-                    material_kind: if f1.is_sky {
-                        MaterialKind::Sky
-                    } else {
-                        MaterialKind::Default
-                    },
+                    material_kind,
                 });
             }
         }

@@ -522,25 +522,14 @@ pub fn sort_points_by_angle(mut points: Vec<Vec3f>, normal: Vec3f) -> Vec<Vec3f>
                 let v = p - center;
                 let cross_normal_dot = (last % v) ^ normal;
 
-                // check for direction and calculate cotangent
-                if cross_normal_dot < 0.0 {
-                    Some((index, (last ^ v) / cross_normal_dot))
-                } else {
-                    None
-                }
+                (cross_normal_dot < 0.0).then(|| (index, (last ^ v) / cross_normal_dot))
             })
-            .min_by(|l, r| if l.1 <= r.1 {
-                std::cmp::Ordering::Less
-            } else {
-                std::cmp::Ordering::Greater
-            })
-        ;
+            .min_by(|l, r| f32::total_cmp(&l.1, &r.1));
 
-        if let Some((smallest_cotan_index, _)) = smallest_cotan_opt {
-            sorted.push(points.swap_remove(smallest_cotan_index));
-        } else {
+        let Some((smallest_cotan_index, _)) = smallest_cotan_opt else {
             break;
-        }
+        };
+        sorted.push(points.swap_remove(smallest_cotan_index));
     }
 
     // fix point set orientation
@@ -760,7 +749,7 @@ impl ClipRect {
         Self { min, max }
     }
 
-    /// Extend boundbox to contain 'pt' point
+    /// Extend boundbox to contain the point
     pub fn extend_to_contain(self, pt: Vec2f) -> Self {
         Self {
             min: Vec2f::new(

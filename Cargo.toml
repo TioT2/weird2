@@ -3,13 +3,13 @@ name = "weird"
 version = "0.1.0"
 edition = "2024"
 
-[dependencies]
-bytemuck = "1.21.0"
-sdl2 = "0.38.0"
-
 [profile.dev]
 opt-level = 0
 
 [profile.release]
 lto = "fat"
+
+[dependencies]
+bytemuck = "1.24.0"
+sdl2 = "0.38.0"
 # debug = "line-tables-only"

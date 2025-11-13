@@ -12,6 +12,8 @@ use std::{collections::{HashMap, HashSet}, sync::Arc};
 use math::{Mat4f, Vec2f, Vec3f};
 use sdl2::keyboard::Scancode;
 
+use crate::math::FVec4;
+
 /// Basic math utility
 pub mod math;
 
@@ -59,6 +61,28 @@ pub enum RasterizationMode {
 
     /// Unlit textures
     Textured = 4,
+}
+
+impl RasterizationMode {
+    // Rasterization mode count
+    const COUNT: u32 = 5;
+
+    /// Build rasterization mode from u32
+    const fn from_u32(n: u32) -> Option<RasterizationMode> {
+        Some(match n {
+            0 => RasterizationMode::Monochrome,
+            1 => RasterizationMode::Overdraw,
+            2 => RasterizationMode::Depth,
+            3 => RasterizationMode::UV,
+            4 => RasterizationMode::Textured,
+            _ => return None,
+        })
+    }
+
+    /// Get next rasterization mode
+    pub const fn next(self) -> RasterizationMode {
+        Self::from_u32((self as u32 + 1) % Self::COUNT).unwrap()
+    }
 }
 
 /// Make u64 from [u16; 4]
@@ -130,28 +154,6 @@ impl std::ops::Mul<f32> for Vertex {
             position: self.position * rhs,
             tex_coord: self.tex_coord * rhs,
         }
-    }
-}
-
-impl RasterizationMode {
-    // Rasterization mode count
-    const COUNT: u32 = 5;
-
-    /// Build rasterization mode from u32
-    pub const fn from_u32(n: u32) -> Option<RasterizationMode> {
-        Some(match n {
-            0 => RasterizationMode::Monochrome,
-            1 => RasterizationMode::Overdraw,
-            2 => RasterizationMode::Depth,
-            3 => RasterizationMode::UV,
-            4 => RasterizationMode::Textured,
-            _ => return None,
-        })
-    }
-
-    /// Get next rasterization mode
-    pub const fn next(self) -> RasterizationMode {
-        Self::from_u32((self as u32 + 1) % Self::COUNT).unwrap()
     }
 }
 
@@ -406,63 +408,14 @@ struct RenderContext<'t, 'ref_table> {
 
 impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
 
-    /// Render already clipped polygon
-    unsafe fn render_clipped_polygon(
-        &mut self,
-        is_transparent: bool,
-        is_sky: bool,
-        points: &[Vertex],
-        color: u64,
-        texture: SurfaceTexture
-    ) { unsafe {
-        // Potential rasterization function set
-        let rasterize_fn = [
-            Self::render_clipped_polygon_impl::<0, false, false>,
-            Self::render_clipped_polygon_impl::<1, false, false>,
-            Self::render_clipped_polygon_impl::<2, false, false>,
-            Self::render_clipped_polygon_impl::<3, false, false>,
-            Self::render_clipped_polygon_impl::<4, false, false>,
-
-            Self::render_clipped_polygon_impl::<0, true, false>,
-            Self::render_clipped_polygon_impl::<1, true, false>,
-            Self::render_clipped_polygon_impl::<2, true, false>,
-            Self::render_clipped_polygon_impl::<3, true, false>,
-            Self::render_clipped_polygon_impl::<4, true, false>,
-
-            Self::render_clipped_polygon_impl::<0, false, true>,
-            Self::render_clipped_polygon_impl::<1, false, true>,
-            Self::render_clipped_polygon_impl::<2, false, true>,
-            Self::render_clipped_polygon_impl::<3, false, true>,
-            Self::render_clipped_polygon_impl::<4, false, true>,
-
-            Self::render_clipped_polygon_impl::<0, true, true>,
-            Self::render_clipped_polygon_impl::<1, true, true>,
-            Self::render_clipped_polygon_impl::<2, true, true>,
-            Self::render_clipped_polygon_impl::<3, true, true>,
-            Self::render_clipped_polygon_impl::<4, true, true>,
-        ];
-
-        // Generate rendering function id
-        let id = 0
-            + is_sky as usize * 10
-            + is_transparent as usize * 5
-            + self.rasterization_mode as usize;
-
-        rasterize_fn[id](self, points, color, texture);
-    }}
-
-    /// render_clipped_polygon function optimized implementation
-    unsafe fn render_clipped_polygon_impl<
-        const MODE: u32,
-        const IS_TRANSPARENT: bool,
-        const IS_SKY: bool,
-    >(
+    /// Call pixel_fn on all polygon pixels
+    unsafe fn render_clipped_polygon_impl<F>(
         &mut self,
         vertices: &[Vertex],
-        color: u64,
-        texture: SurfaceTexture,
-    ) { unsafe {
-
+        mut pixel_fn: F
+    ) where
+        F: FnMut(&mut u64, FVec4)
+    {
         // Find polygon min/max
         let (min_y_index, min_y_value, max_y_index, max_y_value) = {
             let mut min_y_index = 0;
@@ -530,7 +483,6 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
             }
         }
 
-
         let mut left = LineContext {
             index: min_y_index,
             curr_xzuv: vertices[min_y_index].xzuv().into(),
@@ -541,9 +493,6 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
 
         left.next_point::<true>(vertices);
         right.next_point::<false>(vertices);
-
-        let width = texture.width as isize >> (IS_SKY as isize);
-        let height = texture.height as isize;
 
         // Scan for lines
         'line_loop: for pixel_y in first_line..last_line {
@@ -569,6 +518,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                 math::FVec4::from_single(y - left.prev_y),
                 left.prev_xzuv,
             );
+
             let right_xzuv = math::FVec4::mul_add(
                 right.slope_xzuv,
                 math::FVec4::from_single(y - right.prev_y),
@@ -585,7 +535,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
             let start = left_x.floor() as usize;
             let end = usize::min(right_x.floor() as usize, self.frame.width);
 
-            let pixel_row = self.frame.pixels.add(self.frame.stride * pixel_y);
+            let pixel_row = unsafe { self.frame.pixels.add(self.frame.stride * pixel_y) };
 
             let dx = right_x - left_x;
 
@@ -598,157 +548,188 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
             // Calculate pixel position 'remainder'
             let pixel_off = left_x.fract() - 0.5;
 
+            // Render hline
             for pixel_x in start..end {
-                let xzuv = math::FVec4::mul_add(
-                    slope_xzuv,
-                    math::FVec4::from_single(pixel_x.wrapping_sub(start) as f32 - pixel_off),
-                    left_xzuv
+                pixel_fn(
+                    unsafe { pixel_row.wrapping_add(pixel_x).as_mut().unwrap_unchecked() },
+                    math::FVec4::mul_add(
+                        slope_xzuv,
+                        math::FVec4::from_single(pixel_x.wrapping_sub(start) as f32 - pixel_off),
+                        left_xzuv
+                    )
                 );
-                let pixel_ptr = pixel_row.wrapping_add(pixel_x);
+            }
+        }
+    }
 
-                let src_color;
+    /// Render polygon
+    unsafe fn render_clipped_polygon(
+        &mut self,
+        is_transparent: bool,
+        is_sky: bool,
+        points: &[Vertex],
+        color: u64,
+        texture: SurfaceTexture
+    ) {
+        /// Add transparency layer after fragment function
+        fn wrap_transparent(mut f: impl FnMut(&mut u64, FVec4)) -> impl FnMut(&mut u64, FVec4) {
+            move |pixel_ptr: &mut u64, xzuv: FVec4| {
+                // uugh transparency performance...
+                let mut src_color = *pixel_ptr;
+                f(&mut src_color, xzuv);
 
-                // Handle different rasterization modes
-                if MODE == RasterizationMode::Monochrome as u32 {
-                    src_color = color;
+                // SIMD-based transparency
+                #[cfg(target_feature = "sse")]
+                unsafe {
+                    use std::arch::x86_64 as arch;
 
-                } else if MODE == RasterizationMode::Overdraw as u32 {
-                    src_color = 0x0010_0010_0010u64.wrapping_add(*pixel_ptr);
+                    let src = std::mem::transmute(
+                        arch::_mm_set_sd(f64::from_bits(src_color))
+                    );
+                    let src32 = arch::_mm_cvtepi16_epi32(src);
+                    let src_m = arch::_mm_mul_ps(
+                        arch::_mm_cvtepi32_ps(src32),
+                        arch::_mm_set1_ps(0.6)
+                    );
 
-                } else if MODE == RasterizationMode::Depth as u32 {
-                    let color = (xzuv.y() * 25500.0) as u16;
-                    src_color = u64_from_u16([color; 4]);
+                    let dst = std::mem::transmute(
+                        arch::_mm_load_sd(
+                            std::mem::transmute(pixel_ptr as *mut u64)
+                        )
+                    );
+                    let dst32 = arch::_mm_cvtepi16_epi32(dst);
+                    let dst_m = arch::_mm_mul_ps(
+                        arch::_mm_cvtepi32_ps(dst32),
+                        arch::_mm_set1_ps(0.4)
+                    );
 
-                } else if MODE == RasterizationMode::UV as u32 {
-                    let inv_z = xzuv.y().recip();
-                    let u = xzuv.z() * inv_z;
-                    let v = xzuv.w() * inv_z;
-
-                    let xi = (u as i64 & 0xFF) as u8;
-                    let yi = (v as i64 & 0xFF) as u8;
-
-                    src_color = color.wrapping_mul((((xi >> 5) ^ (yi >> 5)) & 1) as u64);
-
-                } else if MODE == RasterizationMode::Textured as u32 {
-                    if IS_SKY {
-                        let inv_z = xzuv.y().recip();
-                        let u = xzuv.z() * inv_z;
-                        let v = xzuv.w() * inv_z;
-
-                        let fg_u = u
-                            .to_int_unchecked::<isize>()
-                            .rem_euclid(width)
-                            .cast_unsigned();
-
-                        let fg_v = v
-                            .to_int_unchecked::<isize>()
-                            .rem_euclid(height)
-                            .cast_unsigned();
-
-                        let fg_color = *texture.data.get_unchecked(fg_v
-                            .wrapping_mul(texture.stride)
-                            .wrapping_add(fg_u));
-
-                        // Check foreground color and fetch backround if foreground is transparent
-                        if fg_color == 0 {
-                            let bg_u = (u + self.sky_background_uv_offset.x)
-                                .to_int_unchecked::<isize>()
-                                .rem_euclid(width)
-                                .wrapping_add(width)
-                                .cast_unsigned();
-
-                            let bg_v = (v + self.sky_background_uv_offset.y)
-                                .to_int_unchecked::<isize>()
-                                .rem_euclid(height)
-                                .cast_unsigned();
-
-                            src_color = *texture.data.get_unchecked(
-                                bg_v
-                                    .wrapping_mul(texture.stride)
-                                    .wrapping_add(bg_u)
-                            );
-                        } else {
-                            src_color = fg_color;
-                        }
-
-                    } else {
-                        let inv_z = xzuv.y().recip();
-
-                        let u = (xzuv.z() * inv_z)
-                            .to_int_unchecked::<isize>()
-                            .rem_euclid(width)
-                            .cast_unsigned();
-
-                        let v = (xzuv.w() * inv_z)
-                            .to_int_unchecked::<isize>()
-                            .rem_euclid(height)
-                            .cast_unsigned();
-
-                        src_color = *texture.data.get_unchecked(v
-                            .wrapping_mul(texture.stride)
-                            .wrapping_add(u));
-                    }
-
-                } else {
-                    panic!("Invalid rasterization mode: {}", MODE);
+                    let sum = arch::_mm_add_ps(src_m, dst_m);
+                    let res = arch::_mm_cvtps_epi32(sum);
+                    let cvt = arch::_mm_packus_epi32(res, res);
+                    arch::_mm_store_sd(
+                        std::mem::transmute(pixel_ptr as *mut u64),
+                        std::mem::transmute(cvt)
+                    );
                 }
 
-                if IS_TRANSPARENT {
-                    // SIMD-based transparency
-                    #[cfg(target_feature = "sse")]
-                    {
-                        use std::arch::x86_64 as arch;
+                // Fallback (slow) transparency
+                #[cfg(not(target_feature = "sse"))]
+                {
+                    let dst_color = *pixel_ptr;
+                    let [dr, dg, db, _] = u64_into_u16(dst_color);
+                    let [sr, sg, sb, _] = u64_into_u16(src_color);
 
-                        let src = std::mem::transmute(
-                            arch::_mm_set_sd(f64::from_bits(src_color))
-                        );
-                        let src32 = arch::_mm_cvtepi16_epi32(src);
-                        let src_m = arch::_mm_mul_ps(
-                            arch::_mm_cvtepi32_ps(src32),
-                            arch::_mm_set1_ps(0.6)
-                        );
-
-                        let dst = std::mem::transmute(
-                            arch::_mm_load_sd(
-                                std::mem::transmute(pixel_ptr)
-                            )
-                        );
-                        let dst32 = arch::_mm_cvtepi16_epi32(dst);
-                        let dst_m = arch::_mm_mul_ps(
-                            arch::_mm_cvtepi32_ps(dst32),
-                            arch::_mm_set1_ps(0.4)
-                        );
-
-                        let sum = arch::_mm_add_ps(src_m, dst_m);
-                        let res = arch::_mm_cvtps_epi32(sum);
-                        let cvt = arch::_mm_packus_epi32(res, res);
-                        arch::_mm_store_sd(
-                            std::mem::transmute(pixel_ptr),
-                            std::mem::transmute(cvt)
-                        );
-                    }
-
-                    // Fallback (slow) transparency
-                    #[cfg(not(target_feature = "sse"))]
-                    {
-                        let dst_color = *pixel_ptr;
-                        let [dr, dg, db, _] = u64_into_u16(dst_color);
-                        let [sr, sg, sb, _] = u64_into_u16(src_color);
-
-                        *pixel_ptr = u64_from_u16([
-                            (sr as f32 * 0.6 + dr as f32 * 0.4) as u16,
-                            (sg as f32 * 0.6 + dg as f32 * 0.4) as u16,
-                            (sb as f32 * 0.6 + db as f32 * 0.4) as u16,
-                            0
-                        ]);
-                    }
-
-                } else {
-                    *pixel_ptr = src_color;
+                    *pixel_ptr = u64_from_u16([
+                        (sr as f32 * 0.6 + dr as f32 * 0.4) as u16,
+                        (sg as f32 * 0.6 + dg as f32 * 0.4) as u16,
+                        (sb as f32 * 0.6 + db as f32 * 0.4) as u16,
+                        0
+                    ]);
                 }
             }
         }
-    }}
+
+        // Macro that wraps render function call
+        macro_rules! run {
+            ($func: expr) => {
+                {
+                    // Make life of macro expander a bit happier
+                    let f = $func;
+
+                    if is_transparent {
+                        unsafe { self.render_clipped_polygon_impl(points, wrap_transparent(f)) };
+                    } else {
+                        unsafe { self.render_clipped_polygon_impl(points, f) };
+                    }
+                }
+            };
+        }
+
+        match self.rasterization_mode {
+            RasterizationMode::Monochrome => run!(move |dst: &mut u64, _| {
+                *dst = color;
+            }),
+            RasterizationMode::Overdraw => run!(|dst: &mut u64, _| {
+                *dst = dst.wrapping_add(0x0010_0010_0010u64);
+            }),
+            RasterizationMode::Depth => run!(|dst: &mut u64, xzuv: FVec4| {
+                let color = (xzuv.y() * 25500.0) as u16;
+                *dst = u64_from_u16([color; 4]);
+            }),
+            RasterizationMode::UV => run!(|dst: &mut u64, xzuv: FVec4| {
+                let inv_z = xzuv.y().recip();
+                let u = xzuv.z() * inv_z;
+                let v = xzuv.w() * inv_z;
+
+                let xi = (u as i64 & 0xFF) as u8;
+                let yi = (v as i64 & 0xFF) as u8;
+
+                *dst = color.wrapping_mul((((xi >> 5) ^ (yi >> 5)) & 1) as u64);
+            }),
+            RasterizationMode::Textured => {
+                let width = texture.width as isize >> (is_sky as isize);
+                let height = texture.height as isize;
+
+                if is_sky {
+                    let uv_offset = self.sky_uv_offset;
+                    let background_uv_offset = self.sky_background_uv_offset;
+
+                    run!(move |dst: &mut u64, xzuv: FVec4| {
+                        let inv_z = xzuv.y().recip();
+                        let u = xzuv.z() * inv_z + uv_offset.x;
+                        let v = xzuv.w() * inv_z + uv_offset.y;
+
+                        let fg_u = unsafe { u.to_int_unchecked::<isize>() }
+                            .rem_euclid(width)
+                            .cast_unsigned();
+
+                        let fg_v = unsafe { v.to_int_unchecked::<isize>() }
+                            .rem_euclid(height)
+                            .cast_unsigned();
+
+                        let fg_off = fg_v.wrapping_mul(texture.stride).wrapping_add(fg_u);
+                        let fg_color = *unsafe { texture.data.get_unchecked(fg_off) };
+
+                        // Check foreground color and fetch backround if foreground is transparent
+                        if fg_color != 0 {
+                            *dst = fg_color;
+                            return;
+                        }
+
+                        let bg_u = unsafe { (u + background_uv_offset.x).to_int_unchecked::<isize>() }
+                            .rem_euclid(width)
+                            .wrapping_add(width)
+                            .cast_unsigned();
+
+                        let bg_v = unsafe { (v + background_uv_offset.y).to_int_unchecked::<isize>() }
+                            .rem_euclid(height)
+                            .cast_unsigned();
+
+                        let bg_off = bg_v.wrapping_mul(texture.stride).wrapping_add(bg_u);
+                        *dst = *unsafe { texture.data.get_unchecked(bg_off) };
+                    })
+                } else {
+                    run!(move |dst: &mut u64, xzuv: FVec4| {
+                        let inv_z = xzuv.y().recip();
+                        // UV Dithering for first mipmap is not used yet(
+                        // const DITHER: [(i8, i8); 4] = [(1, 0), (2, 3), (3, 2), (0, 1)];
+                        // let (du, dv) = DITHER[(pixel_x * 2 + pixel_y) % DITHER.len()];
+
+                        let u = unsafe { (xzuv.z() * inv_z).to_int_unchecked::<isize>() }
+                            .rem_euclid(width)
+                            .cast_unsigned();
+
+                        let v = unsafe { (xzuv.w() * inv_z).to_int_unchecked::<isize>() }
+                            .rem_euclid(height)
+                            .cast_unsigned();
+
+                        let off = v.wrapping_mul(texture.stride).wrapping_add(u);
+                        *dst = *unsafe { texture.data.get_unchecked(off) };
+                    })
+                }
+            }
+        }
+    }
 
     /// Render polygon
     fn render_polygon(
@@ -1516,8 +1497,8 @@ fn main() {
     let map = {
         // yay, this code will not compile on non-local builds)))
         // --
-        let map_name = "q1/e1m5";
-        let data_path = "temp/";
+        let map_name = "quake/e1m5";
+        let data_path = ".local/";
 
         let wbsp_path = format!("{}wbsp/{}.wbsp", data_path, map_name);
         let map_path = format!("{}{}.map", data_path, map_name);
@@ -1561,7 +1542,7 @@ fn main() {
     let map = Arc::new(map);
 
     let material_table = {
-        let mut wad_file = std::fs::File::open("temp/q1/gfx/medieval.wad").unwrap();
+        let mut wad_file = std::fs::File::open(".local/quake/gfx/medieval.wad").unwrap();
 
         res::MaterialTable::load_wad2(&mut wad_file).unwrap()
     };
@@ -1586,8 +1567,11 @@ fn main() {
     // camera.location = Vec3f::new(-174.0, 2114.6, -64.5); // -200, 2000, -50
     // camera.direction = Vec3f::new(-0.4, 0.9, 0.1);
 
-    camera.location = Vec3f::new(1402.4, 1913.7, -86.3);
-    camera.direction = Vec3f::new(-0.74, 0.63, -0.24);
+    // camera.location = Vec3f::new(1402.4, 1913.7, -86.3);
+    // camera.direction = Vec3f::new(-0.74, 0.63, -0.24);
+
+    camera.location = Vec3f::new(-543.3503, 1378.1802, 434.5833);
+    camera.direction = Vec3f::new(-0.004, 0.935, -0.354).normalized();
 
     // camera.direction = Vec3f::new(0.055, -0.946, 0.320); // (-0.048328593, -0.946524262, 0.318992347)
 
@@ -1631,6 +1615,14 @@ fn main() {
 
         timer.response();
         camera.response(&timer, &input);
+        // println!("<{}, {}, {}> <{}, {}, {}>",
+        //     camera.location.x(),
+        //     camera.location.y(),
+        //     camera.location.z(),
+        //     camera.direction.x(),
+        //     camera.direction.y(),
+        //     camera.direction.z(),
+        // );
 
         // Toggle shadow camera
         if input.is_key_clicked(Scancode::Num9) {

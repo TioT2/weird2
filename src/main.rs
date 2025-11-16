@@ -409,13 +409,11 @@ struct RenderContext<'t, 'ref_table> {
 impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
 
     /// Call pixel_fn on all polygon pixels
-    unsafe fn render_clipped_polygon_impl<F>(
+    unsafe fn render_clipped_polygon_impl<PixelFn: FnMut(&mut u64, FVec4)>(
         &mut self,
         vertices: &[Vertex],
-        mut pixel_fn: F
-    ) where
-        F: FnMut(&mut u64, FVec4)
-    {
+        mut pixel_fn: PixelFn
+    ) {
         // Find polygon min/max
         let (min_y_index, min_y_value, max_y_index, max_y_value) = {
             let mut min_y_index = 0;
@@ -629,7 +627,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
             }
         }
 
-        // Macro that wraps render function call
+        // Macro that wraps actual rendering function call
         macro_rules! run {
             ($func: expr) => {
                 {
@@ -711,9 +709,6 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                 } else {
                     run!(move |dst: &mut u64, xzuv: FVec4| {
                         let inv_z = xzuv.y().recip();
-                        // UV Dithering for first mipmap is not used yet(
-                        // const DITHER: [(i8, i8); 4] = [(1, 0), (2, 3), (3, 2), (0, 1)];
-                        // let (du, dv) = DITHER[(pixel_x * 2 + pixel_y) % DITHER.len()];
 
                         let u = unsafe { (xzuv.z() * inv_z).to_int_unchecked::<isize>() }
                             .rem_euclid(width)
@@ -1065,11 +1060,11 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
     }
 
     /// Traverse BSP in order dictated by camera_location
-    pub fn traverse_bsp<VolumeFn: FnMut(bsp::VolumeId)>(
+    pub fn traverse_bsp<TraverseFn: FnMut(bsp::VolumeId)>(
         &self,
         bsp_root: &bsp::Bsp,
         camera_location: Vec3f,
-        mut volume_fn: VolumeFn,
+        mut volume_fn: TraverseFn,
     ) {
         let mut visit_stack = vec![bsp_root];
 
@@ -1203,10 +1198,7 @@ pub enum RenderOutputMessage {
 }
 
 /// Build surface texture
-fn build_surface_texture_impl<
-    't,
-    const ENABLE_LIGHTING: bool
->(
+fn build_surface_texture_impl<'t, const ENABLE_LIGHTING: bool>(
     data: &'t mut [u64],
     src: res::ImageRef,
     light: f32

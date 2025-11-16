@@ -125,6 +125,7 @@ pub enum VolumeBsp {
 
 /// Statistics about volume split, used during splitter selection process to
 /// find best fitting splitter
+#[derive(Copy, Clone, Default)]
 pub struct VolumeSplitStat {
     /// Count of polygons in front of splitter plane
     pub front: u32,
@@ -135,7 +136,7 @@ pub struct VolumeSplitStat {
     /// Count of splits occured
     pub split: u32,
 
-    // Indicent volumes aren't accounted, because it's assumed that all possible splitter planes 
+    // Indicent faces aren't accounted, because it's assumed that all possible splitter planes
     // are located IN volume user is getting statistics for.
 
     // pub indicent: u32,
@@ -143,24 +144,19 @@ pub struct VolumeSplitStat {
 
 impl HullVolume {
     /// Build hull volume from boundbox
-    pub fn from_bound_box(boundbox: geom::BoundBox) -> HullVolume {
+    pub fn from_bound_box(bb: geom::BoundBox) -> HullVolume {
 
         // Box vertices
-        let mut vertices = [
-            Vec3f::new(0.0, 0.0, 0.0),
-            Vec3f::new(1.0, 0.0, 0.0),
-            Vec3f::new(1.0, 1.0, 0.0),
-            Vec3f::new(0.0, 1.0, 0.0),
-            Vec3f::new(0.0, 0.0, 1.0),
-            Vec3f::new(1.0, 0.0, 1.0),
-            Vec3f::new(1.0, 1.0, 1.0),
-            Vec3f::new(0.0, 1.0, 1.0),
+        let vertices = [
+            (0.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+            (1.0, 1.0, 0.0),
+            (0.0, 1.0, 0.0),
+            (0.0, 0.0, 1.0),
+            (1.0, 0.0, 1.0),
+            (1.0, 1.0, 1.0),
+            (0.0, 1.0, 1.0),
         ];
-
-        // t (x/y/z): [0, 1] -> [bb.min.t, bb.max.t]
-        for vertex in &mut vertices {
-            *vertex = *vertex * (boundbox.max() - boundbox.min()) + boundbox.min();
-        }
 
         // Box indices
         let indices = [
@@ -171,6 +167,8 @@ impl HullVolume {
             [2, 6, 7, 3],
             [3, 7, 4, 0],
         ];
+
+        let vertices = vertices.map(|v| Vec3f::from_tuple(v) * (bb.max() - bb.min()) + bb.min());
 
         HullVolume {
             faces: indices
@@ -205,46 +203,34 @@ impl HullVolume {
 
     /// Calculate statistics about splitting
     pub fn get_split_stat(&self, plane: geom::Plane) -> VolumeSplitStat {
-        let mut result = VolumeSplitStat {
-            front: 0,
-            back: 0,
-            split: 0,
-        };
-
-        _ = self.faces
+        self.faces
             .iter()
-            .flat_map(|polygon| {
-                std::iter::once(&polygon.polygon)
-                    .chain(polygon.display_polygons
-                        .iter()
-                        .map(|p| &p.polygon)
-                    )
-            })
-            .fold(&mut result, |stat, polygon| {
-                match plane.get_polygon_relation(polygon) {
-                    geom::PolygonRelation::Front => {
-                        stat.front += 1;
-                    },
-                    geom::PolygonRelation::Back => {
-                        stat.back += 1;
-                    },
-                    geom::PolygonRelation::Intersects => {
-                        stat.front += 1;
-                        stat.back += 1;
-                        stat.split += 1;
-                    },
-                    geom::PolygonRelation::Coplanar => {
-                        // It's technically **should not** be reached,
-                        // but I don't want to have a panic here...
-                        eprintln!("Potential splitter plane is incident to face of volume it holds.");
-                    }
+            .flat_map(|polygon| std::iter::once(&polygon.polygon)
+                .chain(polygon.display_polygons
+                    .iter()
+                    .map(|p| &p.polygon)))
+            .fold(VolumeSplitStat::default(), |stat, polygon| match plane.get_polygon_relation(polygon) {
+                geom::PolygonRelation::Front => VolumeSplitStat {
+                    front: stat.front + 1,
+                    ..stat
+                },
+                geom::PolygonRelation::Back => VolumeSplitStat {
+                    back: stat.back + 1,
+                    ..stat
+                },
+                geom::PolygonRelation::Intersects => VolumeSplitStat {
+                    front: stat.front + 1,
+                    back: stat.back + 1,
+                    split: stat.split + 1,
+                },
+                geom::PolygonRelation::Coplanar => {
+                    // It's technically **should not** be reached,
+                    // but I don't want to have a panic here...
+                    eprintln!("Potential splitter plane is incident to face of volume it holds.");
+
+                    stat
                 }
-
-                stat
             })
-        ;
-
-        result
     }
 
     // Get intersection polygon of current volume and plane
@@ -253,8 +239,7 @@ impl HullVolume {
 
         let mut intersection_points = self.faces
             .iter()
-            .map(|hull_polygon| plane.intersect_polygon(&hull_polygon.polygon))
-            .filter_map(|v| v)
+            .filter_map(|hull_polygon| plane.intersect_polygon(&hull_polygon.polygon))
             .flat_map(|(begin, end)| [begin, end].into_iter())
             .collect::<Vec<Vec3f>>();
 
@@ -474,16 +459,6 @@ impl BspModelCompileContext {
     fn build_volume(&mut self, volume: HullVolume, physical_polygons: Vec<DisplayPolygon>) -> VolumeBsp {
         // final polygon, insert hull in volume set and return
         if physical_polygons.is_empty() {
-
-            // for face in &volume.faces {
-            //     if let Some(split_ref) = face.split_reference {
-            //         let split_info = self.split_infos.get(split_ref.split_id.0.get() as usize - 1).unwrap();
-            //         if face.polygon.plane != split_info.split_polygon.plane && face.polygon.plane != split_info.split_polygon.plane.negate_direction() {
-            //             panic!("Early planarity check failed");
-            //         }
-            //     }
-            // }
-
             self.volumes.push(volume);
             return VolumeBsp::Leaf(self.volumes.len() - 1);
         }
@@ -534,10 +509,9 @@ impl BspModelCompileContext {
                 continue 'splitter_search_loop;
             }
 
-            let volume_polygon_rate = 
-            volume_split_stat.front.abs_diff(volume_split_stat.back) as f32 + volume_split_stat.split as f32;
-
-            std::hint::black_box(&volume_split_stat);
+            let volume_polygon_rate = volume_split_stat.front
+                .abs_diff(volume_split_stat.back) as f32
+                + volume_split_stat.split as f32;
 
             // -- kind of heuristics
             let splitter_rate = 0.0
@@ -831,23 +805,6 @@ impl BspModelCompileContext {
 
         // Build portal resolution 'tasks'
         let resolve_tasks = self.build_resolve_tasks();
-
-        /*
-        for (id, task_contents) in &resolve_tasks {
-            let info = &self.split_infos[id.0.get() as usize - 1];
-            let split_polygon = &info.split_polygon;
-            let plane = split_polygon.plane;
-            for (volume_id, face_id) in task_contents.iter().copied() {
-                let face_polygon = &self.volumes[volume_id].faces[face_id].polygon;
-                let face_plane = face_polygon.plane;
-                if face_plane != plane && face_plane.negate_direction() != plane {
-                    panic!("Task face coplanarity check failed!\n First plane: {:?}\nSecond plane: {:?}",
-                        plane, face_plane
-                    );
-                }
-            }
-        }
-         */
 
         // process tasks into polygon set
         'task_loop: for (_, task) in resolve_tasks {
@@ -1514,5 +1471,3 @@ pub fn compile(map: &map::Map) -> Result<super::Map, Error> {
 
     Ok(context.finish(worldspawn_entity_index))
 }
-
-// builder.rs

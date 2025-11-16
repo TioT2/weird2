@@ -249,6 +249,17 @@ pub enum PointRelation {
     Front,
 }
 
+impl PointRelation {
+    /// Get opposite relation
+    pub fn opposite(self) -> Self {
+        match self {
+            Self::Back => Self::Front,
+            Self::OnPlane => Self::OnPlane,
+            Self::Front => Self::Back,
+        }
+    }
+}
+
 /// Polygon by plane splitting result, resembles `PolygonRelation` by structure
 pub enum PolygonSplitResult {
     /// Polygon located in front of plane, so it doesn't require splitting
@@ -443,10 +454,7 @@ impl Plane {
 
                 first_is_front = !first_is_front;
                 std::mem::swap(&mut first_point_set, &mut second_point_set);
-            } else if false
-                || prev_relation == PointRelation::Front && curr_relation == PointRelation::Back
-                || curr_relation == PointRelation::Front && prev_relation == PointRelation::Back
-            {
+            } else if prev_relation == curr_relation.opposite() {
                 let intr = self.intersect_line(Line::from_points(prev_point, curr_point));
                 first_point_set.push(intr);
                 second_point_set.push(intr);
@@ -803,5 +811,3 @@ impl ClipRect {
         }
     }
 }
-
-// geom.rs

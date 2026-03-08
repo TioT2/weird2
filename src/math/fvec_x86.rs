@@ -37,9 +37,7 @@ impl FVec4 {
 
     /// Construct vector from single number
     pub fn from_single(v: f32) -> Self {
-        Self(unsafe {
-            arch::_mm_set1_ps(v)
-        })
+        Self(unsafe { arch::_mm_set1_ps(v) })
     }
 
     /// Get field by (compile-time) index
@@ -143,9 +141,7 @@ impl FVec4 {
             let tmp3 = arch::_mm_mul_ps(tmp0, tmp1);
             let tmp4 = arch::_mm_shuffle_ps::<0b11_00_10_01>(tmp2, tmp2);
 
-            Self(
-                arch::_mm_sub_ps(tmp3, tmp4)
-            )
+            Self(arch::_mm_sub_ps(tmp3, tmp4))
         }
 
         // 4 shuffles, 2 products and 1 substraction

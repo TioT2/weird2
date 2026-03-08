@@ -8,7 +8,7 @@
 // WRES - Resource format, contains textures/sounds/models/etc.
 // WDAT - Data format, contains 'final' project with BSP's.
 
-use std::{collections::{HashMap, HashSet}, sync::Arc};
+use std::{collections::{HashMap, HashSet}, marker::PhantomData, sync::Arc};
 use math::{Mat4f, Vec2f, Vec3f};
 use sdl2::keyboard::Scancode;
 
@@ -324,6 +324,7 @@ impl RenderCamera {
         }
     }
 
+
     /// Apply projection to polygon
     pub fn project_polygon(
         &self,
@@ -364,20 +365,121 @@ impl RenderCamera {
     }
 }
 
-/// Renderer frame
-#[derive(Copy, Clone)]
-pub struct RenderFrame {
-    /// Frame pixel data
-    pixels: *mut u64,
-
-    /// Count of pixels in line that are allowed to write
+/// Structure that allows safe mutable access to disjoint framebuffer subsets
+pub struct FrameSliceMut<'t, T> {
+    /// Width of region allowed to write
     width: usize,
 
-    /// Count of lines
+    /// Height of region allowed to write
     height: usize,
 
-    /// Count of pixels in line
+    /// Region stride (e.g. number of pixels to jump to next line, **must be** greater than width)
     stride: usize,
+
+    /// Pointer to top-left part of frame
+    data: *mut T,
+
+    /// `data` contents lifetime holder
+    _phantom: PhantomData<&'t mut ()>,
+}
+
+impl<'t, T> FrameSliceMut<'t, T> {
+    /// Construct new RenderFrame from w, h, s parameters
+    pub const fn new(width: usize, height: usize, stride: usize, data: &'t mut [T]) -> Self {
+        assert!(height * stride <= data.len(), "Data array width must be equal to content width");
+        assert!(width <= stride, "Slice width must be less or equal to frame stride");
+
+        Self {
+            width,
+            height,
+            stride,
+            data: data.as_mut_ptr(),
+            _phantom: PhantomData,
+        }
+    }
+
+    /// Create empty frame slice
+    pub const fn empty() -> Self {
+        Self {
+            width: 0,
+            height: 0,
+            stride: 0,
+            data: std::ptr::dangling_mut(),
+            _phantom: PhantomData,
+        }
+    }
+
+    /// Get frame width
+    #[inline]
+    pub fn width(&self) -> usize {
+        self.width
+    }
+
+    /// Get frame height
+    #[inline]
+    pub fn height(&self) -> usize {
+        self.height
+    }
+
+    /// Get frame stride (in size_of::<T>())
+    #[inline]
+    pub fn stride(&self) -> usize {
+        self.stride
+    }
+
+    /// Get data mutable pointer
+    #[inline]
+    pub fn as_mut_ptr(&self) -> *mut T {
+        self.data
+    }
+
+    /// Split framebuffer by vertical line at `x` into two disjoint subsets.
+    /// `x` is truncated to buffer width.
+    pub fn split_vertical(self, x: usize) -> (Self, Self) {
+        let x = usize::min(x, self.width);
+
+        (
+            Self {
+                width: x,
+                data: self.data,
+                ..self
+            },
+            Self {
+                width: self.width - x,
+                data: unsafe { self.data.add(x) },
+                ..self
+            }
+        )
+    }
+
+    /// Split framebuffer by horizontal line at `y` into two disjoint subsets.
+    /// `y` is truncated to buffer height.
+    pub fn split_horizontal(self, y: usize) -> (Self, Self) {
+        let y = usize::min(y, self.height);
+
+        (
+            Self {
+                height: y,
+                data: self.data,
+                ..self
+            },
+            Self {
+                height: self.height - y,
+                data: unsafe { self.data.add(y * self.stride) },
+                ..self
+            }
+        )
+    }
+
+    /// Get horizontal line by it's y coordinate
+    pub fn getline<'l>(&'l mut self, y: usize) -> Option<&'l mut [T]> {
+        (y < self.height).then(|| unsafe {
+            std::slice::from_raw_parts_mut(
+                self.data.add(y * self.stride),
+                self.width
+            )
+        })
+    }
 }
 
 /// Render context
@@ -399,17 +501,16 @@ struct RenderContext<'t, 'ref_table> {
     /// Table of materials
     material_table: &'t res::MaterialReferenceTable<'ref_table>,
 
-    /// Frame structure
-    frame: RenderFrame,
+    /// Rendering destination
+    frame: FrameSliceMut<'t, u64>,
 
     /// Rasterization mode
     rasterization_mode: RasterizationMode,
 }
 
 impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
-
-    /// Call pixel_fn on all polygon pixels
-    unsafe fn render_clipped_polygon_impl<PixelFn: FnMut(&mut u64, FVec4)>(
+    /// Call pixel_fn for all polygon pixels
+    fn render_clipped_polygon_impl<PixelFn: FnMut(&mut u64, FVec4)>(
         &mut self,
         vertices: &[Vertex],
         mut pixel_fn: PixelFn
@@ -443,10 +544,10 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
         const DY_EPSILON: f32 = 0.01;
 
         // Calculate polygon bounds
-        let first_line = usize::min(min_y_value.floor() as usize, self.frame.height);
-        let last_line = usize::min(max_y_value.ceil() as usize, self.frame.height);
+        let last_line = usize::min(max_y_value.ceil() as usize, self.frame.height());
+        let first_line = usize::min(min_y_value.floor() as usize, last_line);
 
-        /// Context of line traversal
+        /// Line vertical traversal context
         #[derive(Copy, Clone, Default)]
         struct LineContext {
             index: usize,
@@ -523,17 +624,8 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                 right.prev_xzuv,
             );
 
-            // Get left x
             let left_x = left_xzuv.x();
-
-            // Get right x
             let right_x = right_xzuv.x();
-
-            // Calculate hline start/end, clip it
-            let start = left_x.floor() as usize;
-            let end = usize::min(right_x.floor() as usize, self.frame.width);
-
-            let pixel_row = unsafe { self.frame.pixels.add(self.frame.stride * pixel_y) };
 
             let dx = right_x - left_x;
 
@@ -543,19 +635,27 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                 (right_xzuv - left_xzuv) / (right_x - left_x)
             };
 
+            // Destination hline part
+            let pixel_row_slice = {
+                let end = usize::min(right_x.floor() as usize, self.frame.width());
+                let start = usize::min(left_x.floor() as usize, end);
+
+                &mut self.frame
+                    .getline(pixel_y)
+                    .unwrap()
+                    .get_mut(start..end)
+                    .unwrap()
+            };
+
             // Calculate pixel position 'remainder'
             let pixel_off = left_x.fract() - 0.5;
 
-            // Render hline
-            for pixel_x in start..end {
-                pixel_fn(
-                    unsafe { pixel_row.wrapping_add(pixel_x).as_mut().unwrap_unchecked() },
-                    math::FVec4::mul_add(
-                        slope_xzuv,
-                        math::FVec4::from_single(pixel_x.wrapping_sub(start) as f32 - pixel_off),
-                        left_xzuv
-                    )
-                );
+            for (x, p) in pixel_row_slice.into_iter().enumerate() {
+                pixel_fn(p, math::FVec4::mul_add(
+                    slope_xzuv,
+                    math::FVec4::from_single(x as f32 - pixel_off),
+                    left_xzuv
+                ));
             }
         }
     }
@@ -581,9 +681,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                 unsafe {
                     use std::arch::x86_64 as arch;
 
-                    let src = std::mem::transmute(
-                        arch::_mm_set_sd(f64::from_bits(src_color))
-                    );
+                    let src = std::mem::transmute(arch::_mm_set_sd(f64::from_bits(src_color)));
                     let src32 = arch::_mm_cvtepi16_epi32(src);
                     let src_m = arch::_mm_mul_ps(
                         arch::_mm_cvtepi32_ps(src32),
@@ -591,9 +689,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                     );
 
                     let dst = std::mem::transmute(
-                        arch::_mm_load_sd(
-                            std::mem::transmute(pixel_ptr as *mut u64)
-                        )
+                        arch::_mm_load_sd(std::mem::transmute(pixel_ptr as *mut u64))
                     );
                     let dst32 = arch::_mm_cvtepi16_epi32(dst);
                     let dst_m = arch::_mm_mul_ps(
@@ -635,9 +731,9 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                     let f = $func;
 
                     if is_transparent {
-                        unsafe { self.render_clipped_polygon_impl(points, wrap_transparent(f)) };
+                        self.render_clipped_polygon_impl(points, wrap_transparent(f));
                     } else {
-                        unsafe { self.render_clipped_polygon_impl(points, f) };
+                        self.render_clipped_polygon_impl(points, f);
                     }
                 }
             };
@@ -827,7 +923,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                     }
                 }
 
-                let res = (self.frame.width * self.frame.height) as f32;
+                let res = (self.frame.width() * self.frame.height()) as f32;
     
                 // Strange, but...
                 ((min_dist_2 / res).log2() / 2.0 + 1.3) as usize
@@ -907,8 +1003,8 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                 CLIP_OFFSET,
             ),
             max: Vec2f::new(
-                self.frame.width as f32 + CLIP_OFFSET,
-                self.frame.height as f32 + CLIP_OFFSET,
+                self.frame.width() as f32 + CLIP_OFFSET,
+                self.frame.height() as f32 + CLIP_OFFSET,
             ),
         }
     }
@@ -1341,7 +1437,6 @@ fn present_frame(
         eprintln!("Surface blit failed: {}", err);
     }
 
-
     if let Err(err) = window_surface.update_window() {
         eprintln!("Window update failed: {}", err);
     }
@@ -1411,13 +1506,7 @@ fn init_render_thread(
                     let time = timer.get_time();
 
                     // Clear framebuffer
-                    unsafe {
-                        std::ptr::write_bytes(
-                            frame_buffer.as_mut_ptr(),
-                            0,
-                            frame_buffer.len()
-                        );
-                    }
+                    frame_buffer.fill(0);
 
                     // Very long function call, actually
                     let mut render_context = RenderContext {
@@ -1435,12 +1524,12 @@ fn init_render_thread(
                             half_fh: height as f32 * 0.5,
                         }),
 
-                        frame: RenderFrame {
-                            pixels: frame_buffer.as_mut_ptr(),
-                            width: width as usize,
-                            height: height as usize,
-                            stride: width as usize
-                        },
+                        frame: FrameSliceMut::<u64>::new(
+                            width as usize,
+                            height as usize,
+                            width as usize,
+                            frame_buffer.as_mut_slice()
+                        ),
 
                         map: &map,
                         material_table: &material_reference_table,
@@ -1489,7 +1578,7 @@ fn main() {
     let map = {
         // yay, this code will not compile on non-local builds)))
         // --
-        let map_name = "quake/e1m5";
+        let map_name = "quake/e1m1";
         let data_path = ".local/";
 
         let wbsp_path = format!("{}wbsp/{}.wbsp", data_path, map_name);
@@ -1534,7 +1623,7 @@ fn main() {
     let map = Arc::new(map);
 
     let material_table = {
-        let mut wad_file = std::fs::File::open(".local/quake/gfx/medieval.wad").unwrap();
+        let mut wad_file = std::fs::File::open(".local/quake/gfx/base.wad").unwrap();
 
         res::MaterialTable::load_wad2(&mut wad_file).unwrap()
     };
@@ -1559,11 +1648,11 @@ fn main() {
     // camera.location = Vec3f::new(-174.0, 2114.6, -64.5); // -200, 2000, -50
     // camera.direction = Vec3f::new(-0.4, 0.9, 0.1);
 
-    // camera.location = Vec3f::new(1402.4, 1913.7, -86.3);
-    // camera.direction = Vec3f::new(-0.74, 0.63, -0.24);
+    camera.location = Vec3f::new(1402.4, 1913.7, -86.3);
+    camera.direction = Vec3f::new(-0.74, 0.63, -0.24);
 
-    camera.location = Vec3f::new(-543.3503, 1378.1802, 434.5833);
-    camera.direction = Vec3f::new(-0.004, 0.935, -0.354).normalized();
+    // camera.location = Vec3f::new(-543.3503, 1378.1802, 434.5833);
+    // camera.direction = Vec3f::new(-0.004, 0.935, -0.354).normalized();
 
     // camera.direction = Vec3f::new(0.055, -0.946, 0.320); // (-0.048328593, -0.946524262, 0.318992347)
 

@@ -1,6 +1,7 @@
 ///! Main project BSP structure declaration module
 
 pub use compiler::Error as MapCompilationError;
+use zerocopy::{FromBytes, Immutable, IntoBytes};
 use std::num::NonZeroU32;
 use crate::{geom, map, math::Vec3f};
 
@@ -393,9 +394,10 @@ impl Map {
 }
 
 impl Map {
-    pub fn load(src: &mut dyn std::io::Read) -> Result<Self, MapLoadingError> {
+    /// Load map from bytes
+    pub fn load(data: &[u8]) -> Result<Self, MapLoadingError> {
         // Read typed span
-        pub fn load_read_tspan<'t, T: Copy + Clone + bytemuck::AnyBitPattern>(
+        pub fn load_read_tspan<'t, T: Copy + Clone + FromBytes + Immutable>(
             data: &'t [u8],
             span: wbsp::Span
         ) -> Result<&'t [T], MapLoadingError> {
@@ -416,18 +418,14 @@ impl Map {
                     span
                 })?;
 
-            bytemuck::try_cast_slice::<_, T>(slice)
-                .map_err(|err| {
-                    let reason = match err {
-                        bytemuck::PodCastError::AlignmentMismatch => "alignment mismatch",
-                        bytemuck::PodCastError::OutputSliceWouldHaveSlop => "output slice would have slop",
-                        bytemuck::PodCastError::SizeMismatch => "size mismatch",
-                        bytemuck::PodCastError::TargetAlignmentGreaterAndInputNotAligned => "target alignment greater and input not aligned",
-                    };
-
+            <[T]>::ref_from_prefix_with_elems(slice, elem_count)
+                .map(|v| v.0)
+                .map_err(|e| {
+                    eprint!("Zerocopy error: {}", e);
+                    
                     MapLoadingError::InvalidSpan {
-                        invalid_reason: reason,
                         span_kind: "header",
+                        invalid_reason: "zerocopy ref_from_prefix error",
                         buffer_size: data.len(),
                         span,
                     }
@@ -475,7 +473,7 @@ impl Map {
                 }
                 wbsp::BspType::Volume => {
                     let volume = unsafe { &elem.data.volume };
-                    let id: VolumeId = get_id(volume.volume_index, volumes, "volume")?;
+                    let id: VolumeId = get_id(volume.volume.volume_index, volumes, "volume")?;
 
                     (Box::new(Bsp::Volume(id)), start + 1)
                 }
@@ -499,11 +497,6 @@ impl Map {
                     span,
                 })
         }
-
-
-        let mut data = Vec::new();
-
-        src.read_to_end(&mut data)?;
 
         let header = load_read_tspan::<wbsp::Header>(
             &data,
@@ -592,8 +585,8 @@ impl Map {
                             Ok(Surface {
                                 material_id: get_id(surface.material_index, material_names, "material")?,
                                 polygon_id,
-                                is_sky: surface.is_sky != 0,
-                                is_transparent: surface.is_transparent != 0,
+                                is_sky: surface.flags.0 & wbsp::SurfaceFlags::SKY != 0,
+                                is_transparent: surface.flags.0 & wbsp::SurfaceFlags::TRANSPARENT != 0,
                                 lightmap: None,
                                 u,
                                 v,
@@ -664,6 +657,7 @@ impl Map {
                 } => {
                     dst.push(wbsp::BspElement {
                         ty: wbsp::BspType::Partition as u8,
+                        _pad: [0; _],
                         data: wbsp::BspElementData {
                             partition: wbsp::BspPartition {
                                 plane: (*splitter_plane).into(),
@@ -676,18 +670,25 @@ impl Map {
                 Bsp::Volume(id) => {
                     dst.push(wbsp::BspElement {
                         ty: wbsp::BspType::Volume as u8,
+                        _pad: [0; _],
                         data: wbsp::BspElementData {
-                            volume: wbsp::BspVolume {
-                                volume_index: id.into_index() as u32,
-                            },
+                            volume: wbsp::BspElementVolume {
+                                volume: wbsp::BspVolume {
+                                    volume_index: id.into_index() as u32,
+                                },
+                                _pad: [0; _],
+                            }
                         },
                     });
                 }
                 Bsp::Void => {
                     dst.push(wbsp::BspElement {
                         ty: wbsp::BspType::Void as u8,
+                        _pad: [0; _],
                         data: wbsp::BspElementData {
-                            void: ()
+                            void: wbsp::BspElementVoid {
+                                _pad: [0; _],
+                            }
                         },
                     });
                 }
@@ -746,8 +747,10 @@ impl Map {
                     polygon_index: surface.polygon_id.into_index() as u32,
                     u: surface.u.into(),
                     v: surface.v.into(),
-                    is_transparent: surface.is_transparent as u8,
-                    is_sky: surface.is_sky as u8,
+                    flags: wbsp::SurfaceFlags(0
+                        | if surface.is_transparent { wbsp::SurfaceFlags::TRANSPARENT } else { 0 }
+                        | if surface.is_sky         { wbsp::SurfaceFlags::SKY         } else { 0 }
+                    ),
                 });
             }
 
@@ -756,6 +759,7 @@ impl Map {
                     polygon_index: portal.polygon_id.into_index() as u32,
                     dst_volume_index: portal.dst_volume_id.into_index() as u32,
                     is_facing_front: portal.is_facing_front as u8,
+                    _pad: [0; _],
                 });
             }
         }
@@ -797,35 +801,47 @@ impl Map {
         };
 
         let mut infos: [(&mut wbsp::Span, &[u8]); 10] = [
-            (&mut header.chars, bytemuck::cast_slice::<_, u8>(&chars)),
-            (&mut header.points, bytemuck::cast_slice::<_, u8>(&points)),
-            (&mut header.polygons, bytemuck::cast_slice::<_, u8>(&polygons)),
-            (&mut header.material_names, bytemuck::cast_slice::<_, u8>(&material_names)),
-            (&mut header.volume_surfaces, bytemuck::cast_slice::<_, u8>(&volume_surfaces)),
-            (&mut header.volume_portals, bytemuck::cast_slice::<_, u8>(&volume_portals)),
-            (&mut header.volumes, bytemuck::cast_slice::<_, u8>(&volumes)),
-            (&mut header.bsp_elements, bytemuck::cast_slice::<_, u8>(&bsp_elements)),
-            (&mut header.bsp_models, bytemuck::cast_slice::<_, u8>(&bsp_models)),
-            (&mut header.dynamic_models, bytemuck::cast_slice::<_, u8>(&dynamic_models)),
+            (&mut header.chars,           chars.as_bytes()),
+            (&mut header.points,          points.as_bytes()),
+            (&mut header.polygons,        polygons.as_bytes()),
+            (&mut header.material_names,  material_names.as_bytes()),
+            (&mut header.volume_surfaces, volume_surfaces.as_bytes()),
+            (&mut header.volume_portals,  volume_portals.as_bytes()),
+            (&mut header.volumes,         volumes.as_bytes()),
+            (&mut header.bsp_elements,    bsp_elements.as_bytes()),
+            (&mut header.bsp_models,      bsp_models.as_bytes()),
+            (&mut header.dynamic_models,  dynamic_models.as_bytes()),
         ];
 
-        let mut offset = std::mem::size_of::<wbsp::Header>();
+        // Bytes used for padding writes
+        let pad_bytes = [0u8; 16];
+
+        fn align16(n: usize) -> usize { (n / 16 + (n % 16 != 0) as usize) * 16 }
+        let pad_for = |n| &pad_bytes[..align16(n) - n];
+
+        let mut write_infos = Vec::with_capacity(2 + infos.len() * 2);
+
+        // Insert two dummy write infos
+        write_infos.push(std::io::IoSlice::new(&[]));
+        write_infos.push(std::io::IoSlice::new(&[]));
+
+        // Calculate sizes and paddings
+        let mut offset = align16(std::mem::size_of::<wbsp::Header>());
         for (span, vec) in &mut infos {
             span.offset = offset as u32;
             span.size = vec.len() as u32;
-            offset += vec.len();
+            offset += align16(vec.len());
+
+            write_infos.push(std::io::IoSlice::new(vec));
+            write_infos.push(std::io::IoSlice::new(pad_for(vec.len())));
         }
 
-        let total_length = offset - std::mem::size_of::<wbsp::Header>();
-        let write_info = infos.map(|(_, v)| std::io::IoSlice::new(v));
+        // Update header and header padding slices
+        write_infos[0] = std::io::IoSlice::new(header.as_bytes());
+        write_infos[1] = std::io::IoSlice::new(pad_for(std::mem::size_of::<wbsp::Header>()));
 
-        let count = dst.write(bytemuck::bytes_of(&header))?;
-        if count != std::mem::size_of::<wbsp::Header>() {
-            return Err(MapSavingError::IncompleteWrite);
-        }
-
-        let count = dst.write_vectored(&write_info)?;
-        if count != total_length {
+        // Perform write!
+        if dst.write_vectored(&write_infos)? != offset {
             return Err(MapSavingError::IncompleteWrite);
         }
 

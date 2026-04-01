@@ -1,6 +1,7 @@
+use zerocopy::{FromBytes, Immutable, IntoBytes};
+
 ///! WBSP file format description module.
 
-use bytemuck::{AnyBitPattern, NoUninit, Zeroable};
 use crate::geom;
 
 /// .WBSP file Magic number
@@ -8,8 +9,7 @@ pub const MAGIC: u32 = u32::from_le_bytes(*b"WBSP");
 
 /// Span in any kind of set
 #[repr(C, packed)]
-#[derive(Copy, Clone)]
-#[derive(Debug)]
+#[derive(Copy, Clone, Debug, FromBytes, IntoBytes, Immutable)]
 pub struct Span {
     /// String offset
     pub offset: u32,
@@ -41,8 +41,8 @@ impl Span {
 }
 
 /// Header
-#[repr(C, packed)]
-#[derive(Copy, Clone)]
+#[repr(C)]
+#[derive(Copy, Clone, FromBytes, IntoBytes, Immutable)]
 pub struct Header {
     /// WBSP file magic
     pub magic: u32,
@@ -81,16 +81,29 @@ pub struct Header {
     pub dynamic_models: Span,
 }
 
-#[repr(C, packed)]
-#[derive(Copy, Clone)]
+#[repr(C)]
+#[derive(Copy, Clone, FromBytes, IntoBytes)]
 pub struct Material {
     /// In 'chars' span
     pub name: Span,
 }
 
+/// Wad2 file flags
+#[repr(C)]
+#[derive(Copy, Clone, FromBytes, IntoBytes, Immutable)]
+pub struct SurfaceFlags(pub u32);
+
+impl SurfaceFlags {
+    /// Transparency flag
+    pub const TRANSPARENT : u32 = 0b01;
+
+    /// Sky flag
+    pub const SKY         : u32 = 0b10;
+}
+
 /// Visible volume face piece
-#[repr(C, packed)]
-#[derive(Copy, Clone)]
+#[repr(C)]
+#[derive(Copy, Clone, FromBytes, IntoBytes, Immutable)]
 pub struct Surface {
     /// Index of surface material in material set
     pub material_index: u32,
@@ -104,15 +117,12 @@ pub struct Surface {
     /// V axis
     pub v: Plane,
 
-    /// True if transparent, false if not
-    pub is_transparent: u8,
-
-    /// Sky flag
-    pub is_sky: u8,
+    /// Surface flags
+    pub flags: SurfaceFlags,
 }
 
-#[repr(C, packed)]
-#[derive(Copy, Clone)]
+#[repr(C)]
+#[derive(Copy, Clone, FromBytes, IntoBytes, Immutable)]
 pub struct Plane {
     /// Plane normal vector
     pub normal: Vec3,
@@ -134,8 +144,8 @@ impl From<geom::Plane> for Plane {
 }
 
 /// Portal (volume-volume connection)
-#[repr(C, packed)]
-#[derive(Copy, Clone)]
+#[repr(C)]
+#[derive(Copy, Clone, FromBytes, IntoBytes, Immutable)]
 pub struct Portal {
     /// Index of portal polygon in polygon set
     pub polygon_index: u32,
@@ -145,11 +155,14 @@ pub struct Portal {
 
     /// If true, portal polygon is faced towards camera
     pub is_facing_front: u8,
+
+    /// Padding bytes
+    pub _pad: [u8; 3],
 }
 
 /// Volume structure
-#[repr(C, packed)]
-#[derive(Copy, Clone)]
+#[repr(C)]
+#[derive(Copy, Clone, FromBytes, IntoBytes, Immutable)]
 pub struct Volume {
     /// Surface span
     pub surfaces: Span,
@@ -165,8 +178,8 @@ pub struct Volume {
 }
 
 /// Stable (e.g. with certain field order) 3-component float vector
-#[repr(C, packed)]
-#[derive(Copy, Clone)]
+#[repr(C)]
+#[derive(Copy, Clone, FromBytes, IntoBytes, Immutable)]
 pub struct Vec3 {
     /// X coordinate
     pub x: f32,
@@ -216,48 +229,68 @@ impl TryFrom<u8> for BspType {
     }
 }
 
-#[repr(C, packed)]
-#[derive(Copy, Clone)]
+#[repr(C)]
+#[derive(Copy, Clone, FromBytes, IntoBytes, Immutable)]
 pub struct BspElement {
     /// Element type byte
     pub ty: u8,
+
+    /// Padding bytes
+    pub _pad: [u8; 3],
 
     /// Element contents
     pub data: BspElementData,
 }
 
 /// BSP element data
-#[repr(C, packed)]
-#[derive(Copy, Clone)]
+#[repr(C)]
+#[derive(Copy, Clone, FromBytes, IntoBytes, Immutable)]
 pub union BspElementData {
     /// Volume contents
-    pub volume: BspVolume,
+    pub volume: BspElementVolume,
 
     /// Partition contents
     pub partition: BspPartition,
 
     /// Void case
-    pub void: (),
+    pub void: BspElementVoid,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, FromBytes, IntoBytes, Immutable)]
+pub struct BspElementVolume {
+    /// Exact volume
+    pub volume: BspVolume,
+
+    /// Default padding
+    pub _pad: [u8; 12],
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, FromBytes, IntoBytes, Immutable)]
+pub struct BspElementVoid {
+    /// Void element
+    pub _pad: [u8; 16],
 }
 
 /// BSP helper structure
-#[repr(C, packed)]
-#[derive(Copy, Clone)]
+#[repr(C)]
+#[derive(Copy, Clone, FromBytes, IntoBytes, Immutable)]
 pub struct BspPartition {
     /// Partition plane's distance
     pub plane: Plane,
 }
 
 /// BSP helper structure
-#[repr(C, packed)]
-#[derive(Copy, Clone)]
+#[repr(C)]
+#[derive(Copy, Clone, FromBytes, IntoBytes, Immutable)]
 pub struct BspVolume {
     /// Destination volume index
     pub volume_index: u32,
 }
 
-#[repr(C, packed)]
-#[derive(Copy, Clone)]
+#[repr(C)]
+#[derive(Copy, Clone, FromBytes, IntoBytes, Immutable)]
 pub struct BspModel {
     /// BSP head offset
     pub bsp_root_index: u32,
@@ -270,8 +303,8 @@ pub struct BspModel {
 }
 
 /// Dynamic model (moving stuff, like doors etc.)
-#[repr(C, packed)]
-#[derive(Copy, Clone)]
+#[repr(C)]
+#[derive(Copy, Clone, FromBytes, IntoBytes, Immutable)]
 pub struct DynamicModel {
     /// BSP model index
     pub bsp_model_index: u32,
@@ -282,38 +315,5 @@ pub struct DynamicModel {
     /// Rotation
     pub rotation: f32,
 }
-
-// Export-targeted structure macro
-macro_rules! bin_format {
-    ($name: ident) => {
-        unsafe impl Zeroable for $name {}
-        unsafe impl AnyBitPattern for $name {}
-        unsafe impl NoUninit for $name {}
-    };
-
-    ($head: ident, $($tail: ident),* $(,)?) => {
-        bin_format!($head);
-
-        bin_format!($($tail),*);
-    };
-}
-
-// Binary format
-bin_format!(
-    BspElement,
-    BspElementData,
-    BspVolume,
-    BspPartition,
-    BspModel,
-    DynamicModel,
-    Material,
-    Span,
-    Header,
-    Vec3,
-    Volume,
-    Portal,
-    Surface,
-    Plane,
-);
 
 // wbsp.rs

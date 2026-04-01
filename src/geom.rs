@@ -60,14 +60,6 @@ pub struct BoundBox {
 }
 
 impl BoundBox {
-    /// Build boundbox from min/max vectors
-    /// 
-    /// # Safety
-    /// It's safe to call this function only if for all t min.t <= max.t
-    pub unsafe fn from_minmax(min: Vec3f, max: Vec3f) -> Self {
-        Self { min, max }
-    }
-
     /// 'Empty' bounding box
     pub fn zero() -> Self {
         Self {

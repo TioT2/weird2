@@ -10,6 +10,6 @@ opt-level = 0
 lto = "fat"
 
 [dependencies]
-bytemuck = "1.24.0"
 sdl2 = "0.38.0"
+zerocopy = { version = "0.8.48", features = ["derive"] }
 # debug = "line-tables-only"

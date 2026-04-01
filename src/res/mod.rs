@@ -4,6 +4,8 @@
 pub mod q1_wad2;
 
 use std::{collections::BTreeMap, ffi::CStr};
+use zerocopy::FromBytes;
+
 use crate::{bsp::{self, Id}, rand};
 
 /// Image reference
@@ -165,63 +167,27 @@ impl<'t> MaterialReferenceTable<'t> {
 }
 
 impl MaterialTable {
-    /// Load Quake WAD2 file in material table
-    pub fn load_wad2(file: &mut dyn std::io::Read) -> Result<Self, Wad2LoadingError> {
-        let mut data = Vec::<u8>::new();
-
-        file.read_to_end(&mut data)?;
-
-        let header_data = data
-            .get(0..std::mem::size_of::<q1_wad2::Header>())
-            .ok_or(Wad2LoadingError::UnexpectedFileEnd)?;
-        let header = bytemuck::pod_read_unaligned::<q1_wad2::Header>(header_data);
+    /// Load material table from Quake WAD2 file
+    pub fn load_wad2(data: &[u8]) -> Result<Self, Wad2LoadingError> {
+        let header = q1_wad2::Header::read_from_prefix(data).map_err(|_| Wad2LoadingError::UnexpectedFileEnd)?.0;
 
         // Read WAD2 header
         if header.magic != q1_wad2::MAGIC {
             return Err(Wad2LoadingError::InvalidWadMagic(header.magic));
         }
 
-        let entry_bytes = data
-            .get(header.entry_array_offset as usize..)
-            .ok_or(Wad2LoadingError::UnexpectedFileEnd)?;
+        // Entry array
+        let entries = {
+            let off = header.entry_array_offset as usize;
+            let n = header.entry_count as usize;
+            let edata = data
+                .get(off..off + n * std::mem::size_of::<q1_wad2::Entry>())
+                .ok_or(Wad2LoadingError::UnexpectedFileEnd)?;
 
-        let entries = bytemuck::cast_slice::<_, q1_wad2::Entry>(entry_bytes);
-
-        // Standard quake color palette
-        let mut color_palette: [u32; 256] = [
-            0x000000, 0x0f0f0f, 0x1f1f1f, 0x2f2f2f, 0x3f3f3f, 0x4b4b4b, 0x5b5b5b, 0x6b6b6b,
-            0x7b7b7b, 0x8b8b8b, 0x9b9b9b, 0xababab, 0xbbbbbb, 0xcbcbcb, 0xdbdbdb, 0xebebeb,
-            0x070b0f, 0x0b0f17, 0x0b171f, 0x0f1b27, 0x13232f, 0x172b37, 0x172f3f, 0x1b374b,
-            0x1b3b53, 0x1f435b, 0x1f4b63, 0x1f536b, 0x1f5773, 0x235f7b, 0x236783, 0x236f8f,
-            0x0f0b0b, 0x1b1313, 0x271b1b, 0x332727, 0x3f2f2f, 0x4b3737, 0x573f3f, 0x674747,
-            0x734f4f, 0x7f5b5b, 0x8b6363, 0x976b6b, 0xa37373, 0xaf7b7b, 0xbb8383, 0xcb8b8b,
-            0x000000, 0x000707, 0x000b0b, 0x001313, 0x001b1b, 0x002323, 0x072b2b, 0x072f2f,
-            0x073737, 0x073f3f, 0x074747, 0x0b4b4b, 0x0b5353, 0x0b5b5b, 0x0b6363, 0x0f6b6b,
-            0x000007, 0x00000f, 0x000017, 0x00001f, 0x000027, 0x00002f, 0x000037, 0x00003f,
-            0x000047, 0x00004f, 0x000057, 0x00005f, 0x000067, 0x00006f, 0x000077, 0x00007f,
-            0x001313, 0x001b1b, 0x002323, 0x002b2f, 0x002f37, 0x003743, 0x073b4b, 0x074357,
-            0x07475f, 0x0b4b6b, 0x0f5377, 0x135783, 0x135b8b, 0x1b5f97, 0x1f63a3, 0x2367af,
-            0x071323, 0x0b172f, 0x0f1f3b, 0x13234b, 0x172b57, 0x1f2f63, 0x233773, 0x2b3b7f,
-            0x33438f, 0x334f9f, 0x2f63af, 0x2f77bf, 0x2b8fcf, 0x27abdf, 0x1fcbef, 0x1bf3ff,
-            0x00070b, 0x00131b, 0x0f232b, 0x132b37, 0x1b3347, 0x233753, 0x2b3f63, 0x33476f,
-            0x3f537f, 0x475f8b, 0x536b9b, 0x5f7ba7, 0x6b87b7, 0x7b93c3, 0x8ba3d3, 0x97b3e3,
-            0xa38bab, 0x977f9f, 0x877393, 0x7b678b, 0x6f5b7f, 0x635377, 0x574b6b, 0x4b3f5f,
-            0x433757, 0x372f4b, 0x2f2743, 0x231f37, 0x1b172b, 0x131323, 0x0b0b17, 0x07070f,
-            0x9f73bb, 0x8f6baf, 0x835fa3, 0x775797, 0x6b4f8b, 0x5f4b7f, 0x534373, 0x4b3b6b,
-            0x3f335f, 0x372b53, 0x2b2347, 0x231f3b, 0x1b172f, 0x131323, 0x0b0b17, 0x07070f,
-            0xbbc3db, 0xa7b3cb, 0x9ba3bf, 0x8b97af, 0x7b87a3, 0x6f7b97, 0x5f6f87, 0x53637b,
-            0x47576b, 0x3b4b5f, 0x333f53, 0x273343, 0x1f2b37, 0x171f27, 0x0f131b, 0x070b0f,
-            0x7b836f, 0x6f7b67, 0x67735f, 0x5f6b57, 0x57634f, 0x4f5b47, 0x47533f, 0x3f4b37,
-            0x37432f, 0x2f3b2b, 0x273323, 0x1f2b1f, 0x172317, 0x131b0f, 0x0b130b, 0x070b07,
-            0x1bf3ff, 0x17dfef, 0x13cbdb, 0x0fb7cb, 0x0fa7bb, 0x0b97ab, 0x07839b, 0x07738b,
-            0x07637b, 0x00536b, 0x00475b, 0x00374b, 0x002b3b, 0x001f2b, 0x000f1b, 0x00070b,
-            0xff0000, 0xef0b0b, 0xdf1313, 0xcf1b1b, 0xbf2323, 0xaf2b2b, 0x9f2f2f, 0x8f2f2f,
-            0x7f2f2f, 0x6f2f2f, 0x5f2f2f, 0x4f2b2b, 0x3f2323, 0x2f1b1b, 0x1f1313, 0x0f0b0b,
-            0x00002b, 0x00003b, 0x00074b, 0x00075f, 0x000f6f, 0x07177f, 0x071f93, 0x0b27a3,
-            0x0f33b7, 0x1b4bc3, 0x2b63cf, 0x3b7fdb, 0x4f97e3, 0x5fabe7, 0x77bfef, 0x8bd3f7,
-            0x3b7ba7, 0x379bb7, 0x37c3c7, 0x57e3e7, 0xffbf7f, 0xffe7ab, 0xffffd7, 0x000067,
-            0x00008b, 0x0000b3, 0x0000d7, 0x0000ff, 0x93f3ff, 0xc7f7ff, 0xffffff, 0x535b9f,
-        ];
+            <[q1_wad2::Entry]>::ref_from_prefix(edata)
+                .map_err(|_| Wad2LoadingError::UnexpectedFileEnd)?.0
+        };
+        let mut color_palette: [u32; 256] = q1_wad2::DEFAULT_COLOR_PALETTE;
 
         // Find palette entry and parse it
 
@@ -252,9 +218,9 @@ impl MaterialTable {
 
             match ty {
                 q1_wad2::EntryType::ColorPalette => {
-                    let wad_color_slice: &[q1_wad2::Color; 256] = bytemuck::cast_slice::<_, q1_wad2::Color>(entry_data)
-                        .try_into()
-                        .map_err(|_| Wad2LoadingError::UnexpectedEntryEnd)?;
+                    let wad_color_slice: &[q1_wad2::Color; 256] = <[q1_wad2::Color; 256]>::ref_from_prefix(entry_data)
+                        .map_err(|_| Wad2LoadingError::UnexpectedEntryEnd)?
+                        .0;
 
                     color_palette = wad_color_slice.map(|v| v.rgb_u32());
                 }
@@ -265,11 +231,8 @@ impl MaterialTable {
                     // ignore
                 }
                 q1_wad2::EntryType::MipTexture => {
-                    // Try to parse texture
-                    let header_data = entry_data
-                        .get(..std::mem::size_of::<q1_wad2::MipTextureHeader>())
-                        .ok_or(Wad2LoadingError::UnexpectedEntryEnd)?;
-                    let header = bytemuck::pod_read_unaligned::<q1_wad2::MipTextureHeader>(header_data);
+                    let header = q1_wad2::MipTextureHeader::read_from_prefix(entry_data)
+                        .map_err(|_| Wad2LoadingError::UnexpectedEntryEnd)?.0;
 
                     let bytes = entry_data;
 

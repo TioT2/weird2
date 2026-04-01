@@ -1,4 +1,4 @@
-/// Main project module
+// Main project module
 
 // Resources:
 // [WMAP -> WBSP], WRES -> WDAT/WRES
@@ -8,7 +8,7 @@
 // WRES - Resource format, contains textures/sounds/models/etc.
 // WDAT - Data format, contains 'final' project with BSP's.
 
-use std::{collections::{HashMap, HashSet}, marker::PhantomData, sync::Arc};
+use std::{collections::{HashMap, HashSet}, io::Read, marker::PhantomData, sync::Arc};
 use math::{Mat4f, Vec2f, Vec3f};
 use sdl2::keyboard::Scancode;
 
@@ -487,6 +487,7 @@ struct RenderContext<'t, 'ref_table> {
     /// Projection info holder
     camera: RenderCamera,
 
+    /// Camera used for calculation of clipping
     shadow_camera: Option<RenderCamera>,
 
     /// Offset of background from foreground
@@ -1390,6 +1391,7 @@ fn hdr_to_ldr_tonemap(hdr: &[u64], ldr: &mut [u32]) {
     }
 }
 
+/// Convert HDR to LDR
 pub fn hdr_to_ldr(hdr: &[u64], ldr: &mut[u32], enable_tonemapping: bool) {
     if enable_tonemapping {
         hdr_to_ldr_tonemap(hdr, ldr);
@@ -1397,6 +1399,7 @@ pub fn hdr_to_ldr(hdr: &[u64], ldr: &mut[u32], enable_tonemapping: bool) {
         hdr_to_ldr_clamp(hdr, ldr);
     }
 }
+
 fn present_frame(
     frame_buffer: *mut u32,
     frame_width: usize,
@@ -1563,8 +1566,6 @@ fn init_render_thread(
 }
 
 fn main() {
-    print!("\n\n\n\n\n\n\n\n");
-
     // Enable/disable map caching
     let do_enable_map_caching = true;
 
@@ -1596,7 +1597,10 @@ fn main() {
             match std::fs::File::open(&wbsp_path) {
                 Ok(mut bsp_file) => {
                     // Load map from map cache
-                    bsp::Map::load(&mut bsp_file).unwrap()
+
+                    let mut bsp_file_data = Vec::new();
+                    bsp_file.read_to_end(&mut bsp_file_data).unwrap();
+                    bsp::Map::load(&bsp_file_data).unwrap()
                 }
                 Err(_) => {
                     // Compile map
@@ -1624,8 +1628,10 @@ fn main() {
 
     let material_table = {
         let mut wad_file = std::fs::File::open(".local/quake/gfx/base.wad").unwrap();
+        let mut wad_file_data = Vec::new();
+        wad_file.read_to_end(&mut wad_file_data).unwrap();
 
-        res::MaterialTable::load_wad2(&mut wad_file).unwrap()
+        res::MaterialTable::load_wad2(&wad_file_data).unwrap()
     };
     let material_table = Arc::new(material_table);
 

@@ -1,6 +1,6 @@
 /// Standard analytic geometry primitive module
 
-use std::ops::{Add, AddAssign, BitXor, Div, DivAssign, Mul, MulAssign, Neg, Range, Rem, RemAssign, Sub, SubAssign};
+use std::ops::{Add, BitXor, Div, Mul, Neg, Rem, RemAssign, Sub};
 
 /// CPU-dependent 3/4-component vector implementation
 #[cfg(target_feature = "sse")]
@@ -9,7 +9,7 @@ pub mod fvec_x86;
 #[cfg(target_feature = "sse")]
 impl From<Vec4f> for fvec_x86::FVec4 {
     fn from(value: Vec4f) -> Self {
-        Self::from_xyzw(value.x(), value.y(), value.z(), value.w())
+        Self::new(value.x(), value.y(), value.z(), value.w())
     }
 }
 
@@ -19,9 +19,35 @@ pub mod fmat4_x86;
 #[cfg(target_feature = "sse")]
 pub type FVec4 = fvec_x86::FVec4;
 
-// Fallback to standard Vec4 implementation
 #[cfg(not(target_feature = "sse"))]
-pub type FVec4 = Vec4<f32>;
+pub use fallback_fvec4::*;
+
+#[cfg(not(target_feature = "sse"))]
+mod fallback_fvec4 {
+    use crate::math::Vec4;
+
+    /// Fallback FVec4 value
+    #[allow(unused)]
+    pub type FVec4 = Vec4<f32>;
+
+    impl Vec4<f32> {
+        /// Construct zero vector
+        pub fn zero() -> Self {
+            Self::broadcast(0.0)
+        }
+
+        /// Multiply and add self
+        pub fn mul_add(self, mul: Self, add: Self) -> Self {
+            self * mul + add
+        }
+    }
+
+    impl Default for Vec4<f32> {
+        fn default() -> Self {
+            Self::zero()
+        }
+    }
+}
 
 pub mod numeric_traits {
     pub trait Sqrt {
@@ -41,126 +67,6 @@ pub mod numeric_traits {
     }
 }
 
-macro_rules! consume_ident {
-    ($type: ty, $i: ident) => { $type };
-}
-
-macro_rules! impl_vecn_base {
-    ($struct_name: ident, $template_type: ident, $value_type: ty, $($x: ident),*) => {
-        #[derive(Debug, Default, PartialEq)]
-        pub struct $struct_name<$template_type> {
-            $( pub $x : $value_type, )*
-        }
-
-        impl<$template_type: Clone> Clone for $struct_name<$template_type> where $value_type: Clone {
-            fn clone(&self) -> Self {
-                Self {
-                    $( $x: self.$x.clone() ),*
-                }
-            }
-        }
-
-        impl<$template_type: Copy> Copy for $struct_name<$template_type> where $value_type: Copy {
-
-        }
-
-        impl<$template_type> $struct_name<$template_type> {
-            pub const fn new($($x: $value_type,)*) -> Self {
-                Self { $($x,)* }
-            }
-
-            pub fn from_tuple(t: ( $( consume_ident!($value_type, $x) ),* )) -> Self {
-                Self::from(t)
-            }
-
-            pub fn into_tuple(self) -> ( $( consume_ident!($value_type, $x) ),* ) {
-                self.into()
-            }
-
-            $(
-                #[inline]
-                pub fn $x(self) -> $value_type {
-                    self.$x
-                }
-            )*
-        }
-
-        impl<$template_type: Clone> $struct_name<$template_type> {
-            pub fn from_single(t: $value_type) -> Self {
-                Self { $($x: t.clone(),)* }
-            }
-        }
-
-        impl<$template_type> Into<( $( consume_ident!($value_type, $x) ),* )> for $struct_name<$template_type> {
-            fn into(self) -> ( $( consume_ident!($value_type, $x) ),* ) {
-                ( $( self.$x ),* )
-            }
-        }
-
-        impl<$template_type> From<( $( consume_ident!($value_type, $x) ),* )> for $struct_name<$template_type> {
-            fn from(t: ( $( consume_ident!($value_type, $x) ),* )) -> Self {
-                let ($($x),*) = t;
-
-                Self { $($x),* }
-            }
-        }
-    }
-}
-
-macro_rules! impl_vecn_binary_operator {
-    ($op_name: ident, $op_fn_name: ident, $struct_name: ident, $($x: ident),*) => {
-        impl<A: $op_name<Output = A>> $op_name<$struct_name<A>> for $struct_name<A> {
-            type Output = $struct_name<A>;
-
-            fn $op_fn_name(self, rhs: $struct_name<A>) -> Self::Output {
-                Self::Output {
-                    $( $x: $op_name::$op_fn_name(self.$x, rhs.$x), )*
-                }
-            }
-        }
-
-        impl<T: Clone + $op_name<Output = T>> $op_name<T> for $struct_name<T> {
-            type Output = $struct_name<T>;
-
-            fn $op_fn_name(self, rhs: T) -> Self::Output {
-                Self::Output {
-                    $( $x: $op_name::$op_fn_name(self.$x, rhs.clone()), )*
-                }
-            }
-        }
-    }
-}
-
-macro_rules! impl_vecn_assignment_operator {
-    ($op_name: ident, $op_fn_name: ident, $struct_name: ident, $($x: ident),*) => {
-        impl<T: $op_name> $op_name<$struct_name<T>> for $struct_name<T> {
-            fn $op_fn_name(&mut self, rhs: $struct_name<T>) {
-                $( $op_name::<T>::$op_fn_name(&mut self.$x, rhs.$x); )*
-            }
-        }
-
-        impl<T: Clone + $op_name> $op_name<T> for $struct_name<T> {
-            fn $op_fn_name(&mut self, rhs: T) {
-                $( $op_name::<T>::$op_fn_name(&mut self.$x, rhs.clone()); )*
-            }
-        }
-    }
-}
-
-macro_rules! impl_vecn_unary_operator {
-    ($op_name: ident, $op_fn_name: ident, $struct_name: ident, $($x: ident),*) => {
-        impl<T: $op_name<Output = T>> $op_name for $struct_name<T> {
-            type Output = $struct_name<T>;
-
-            fn $op_fn_name(self) -> Self::Output {
-                Self::Output {
-                    $( $x: $op_name::$op_fn_name(self.$x), )*
-                }
-            }
-        }
-    }
-}
-
 macro_rules! operator_on_variadic {
     ($operator: tt, $first: expr) => {
         $first
@@ -171,37 +77,120 @@ macro_rules! operator_on_variadic {
     };
 }
 
-macro_rules! impl_vecn {
-    ($struct_name: ident, $($x: ident),*) => {
-        impl_vecn_base!($struct_name, T, T, $($x),*);
+macro_rules! cfoldl1 {
+    ($f: expr, $head: expr, $($tail: expr),*) => {
+        {
+            let mut _r = $head;
+            $( _r = $f(_r, $tail); )*
+            _r
+        }
+    };
+}
 
-        impl<T: Add<T, Output = T> + Mul<T, Output = T>> BitXor for $struct_name<T> {
+macro_rules! impl_vecn {
+    ($DIM: expr, $Vec: ident { $($x: ident),* }) => {
+        #[doc = concat!(stringify!($DIM), "-component generic vector")]
+        #[derive(Debug)]
+        pub struct $Vec<T> {
+            $($x: T),*
+        }
+
+        impl<T: Clone> Clone for $Vec<T> {
+            fn clone(&self) -> Self {
+                Self { $($x: self.$x.clone()),* }
+            }
+        }
+
+        impl<T: Copy> Copy for $Vec<T> {}
+
+        impl<T> $Vec<T> {
+            pub const DIM: usize = $DIM;
+
+            /// Construct new vector
+            pub const fn new($($x: T),*) -> Self {
+                Self { $($x),* }
+            }
+
+            /// Construct vector from array
+            pub fn from_array(arr: [T; $DIM]) -> Self {
+                let [$($x),*] = arr;
+                Self { $($x),* }
+            }
+
+            /// Convert vector from one type to another
+            pub fn map<U, F: FnMut(T) -> U>(self, mut f: F) -> $Vec<U> {
+                $Vec::<U> { $($x: f(self.$x)),* }
+            }
+
+            /// Zip two vectors with some function
+            pub fn zip<U, V, F: FnMut(T, U) -> V>(self, othr: $Vec<U>, mut f: F) -> $Vec<V> {
+                $Vec::<V> { $($x: f(self.$x, othr.$x)),* }
+            }
+
+            /// Perform left fold on vector contents
+            pub fn fold<U, F: FnMut(U, T) -> U>(self, mut u: U, mut f: F) -> U {
+                $( u = f(u, self.$x); )*
+                u
+            }
+
+            /// Perform left fold without first element
+            pub fn fold1<F: FnMut(T, T) -> T>(self, mut f: F) -> T {
+                cfoldl1!(f, $(self.$x),*)
+            }
+
+            $(
+                #[doc = concat!("Extract ", stringify!($x), " component from vector")]
+                pub fn $x(self) -> T {
+                    self.$x
+                }
+            )*
+        }
+
+        impl<T: Clone> $Vec<T> {
+            /// Broadcast value to the vector
+            pub fn broadcast(v: T) -> Self {
+                Self { $($x: v.clone()),* }
+            }
+        }
+
+        impl<T: Clone> From<T> for $Vec<T> {
+            fn from(v: T) -> $Vec<T> {
+                $Vec::<T>::broadcast(v)
+            }
+        }
+
+        impl<T: Add<T, Output = T> + Mul<T, Output = T>> BitXor for $Vec<T> {
             type Output = T;
 
-            fn bitxor(self, rhs: $struct_name<T>) -> Self::Output {
+            fn bitxor(self, rhs: $Vec<T>) -> Self::Output {
                 self.dot(rhs)
             }
         }
 
-        impl<T: Add<T, Output = T> + Mul<T, Output = T>> $struct_name<T> {
-            pub fn dot(self, rhs: $struct_name<T>) -> T {
-                operator_on_variadic!(+, $(self.$x * rhs.$x),*)
+        impl<T> $Vec<T> {
+            /// Calculate dot product of two vectors
+            pub fn dot<U, V>(self, othr: $Vec<U>) -> V
+            where
+                V: std::ops::Add<V, Output = V>,
+                T: std::ops::Mul<U, Output = V>
+            {
+                operator_on_variadic!(+, $(self.$x * othr.$x),*)
             }
         }
 
-        impl<T: Add<T, Output = T> + Mul<T, Output = T> + Clone> $struct_name<T> {
+        impl<T: Add<T, Output = T> + Mul<T, Output = T> + Clone> $Vec<T> {
             pub fn length2(&self) -> T {
                 self.clone() ^ self.clone()
             }
         }
 
-        impl<T: Add<T, Output = T> + Mul<T, Output = T> + Clone + numeric_traits::Sqrt> $struct_name<T> {
+        impl<T: Add<T, Output = T> + Mul<T, Output = T> + Clone + numeric_traits::Sqrt> $Vec<T> {
             pub fn length(&self) -> T {
                 self.length2().sqrt()
             }
         }
 
-        impl<T: Add<T, Output = T> + Mul<T, Output = T> + Div<T, Output = T> + Clone + numeric_traits::Sqrt> $struct_name<T> {
+        impl<T: Add<T, Output = T> + Mul<T, Output = T> + Div<T, Output = T> + Clone + numeric_traits::Sqrt> $Vec<T> {
             pub fn normalized(&self) -> Self {
                 let len = self.length();
 
@@ -215,83 +204,51 @@ macro_rules! impl_vecn {
             }
         }
 
-        impl_vecn_binary_operator!(Add, add, $struct_name, $($x),*);
-        impl_vecn_binary_operator!(Sub, sub, $struct_name, $($x),*);
-        impl_vecn_binary_operator!(Mul, mul, $struct_name, $($x),*);
-        impl_vecn_binary_operator!(Div, div, $struct_name, $($x),*);
+        macro_rules! binary_operator {
+            ($Op: ident, $op: ident, $AOp: ident, $aop: ident) => {
+                impl<T, U, V> std::ops::$Op<$Vec<U>> for $Vec<T>
+                where
+                    T: std::ops::$Op<U, Output = V>
+                {
+                    type Output = $Vec<V>;
 
-        impl_vecn_unary_operator!(Neg, neg, $struct_name, $($x),*);
+                    fn $op(self, othr: $Vec<U>) -> $Vec<V> {
+                        $Vec::<V> { $($x: std::ops::$Op::$op(self.$x, othr.$x)),* }
+                    }
+                }
 
-        impl_vecn_assignment_operator!(AddAssign, add_assign, $struct_name, $($x),*);
-        impl_vecn_assignment_operator!(SubAssign, sub_assign, $struct_name, $($x),*);
-        impl_vecn_assignment_operator!(MulAssign, mul_assign, $struct_name, $($x),*);
-        impl_vecn_assignment_operator!(DivAssign, div_assign, $struct_name, $($x),*);
-    }
-}
-
-macro_rules! impl_extn {
-    ($struct_name: ident, $($x: ident),*) => {
-        impl_vecn_base!($struct_name, T, T, $($x),*);
-    }
-}
-
-macro_rules! impl_rectn {
-    ($struct_name: ident, $point_name: ident, $ext_name: ident, $($x: ident),*) => {
-        impl_vecn_base!($struct_name, T, Range<T>, $($x),*);
-
-        impl<T> $struct_name<T> where Range<T>: ExactSizeIterator {
-            pub fn extent(&self) -> $ext_name<usize> {
-                $ext_name::<usize>::new($( self.$x.len() ),*)
-            }
+                impl<T, U> std::ops::$AOp<$Vec<U>> for $Vec<T>
+                where
+                    T: std::ops::$AOp<U>
+                {
+                    fn $aop(&mut self, othr: $Vec<U>) {
+                        $( std::ops::$AOp::$aop(&mut self.$x, othr.$x); )*
+                    }
+                }
+            };
         }
 
-        impl<T: Clone> $struct_name<T> {
-            pub fn start(&self) -> $point_name<T> {
-                $point_name::<T>::new($( self.$x.start.clone() ),*)
-            }
+        binary_operator!(Add, add, AddAssign, add_assign);
+        binary_operator!(Sub, sub, SubAssign, sub_assign);
+        binary_operator!(Mul, mul, MulAssign, mul_assign);
+        binary_operator!(Div, div, DivAssign, div_assign);
 
-            pub fn end(&self) -> $point_name<T> {
-                $point_name::<T>::new($( self.$x.end.clone() ),*)
+        impl<T, U> std::ops::Neg for $Vec<T>
+        where
+            T: std::ops::Neg<Output = U>
+        {
+            type Output = $Vec<U>;
+
+            fn neg(self) -> $Vec<U> {
+                $Vec::<U> { $($x: -self.$x),* }
             }
         }
     }
 }
 
-impl_vecn!(Vec2, x, y);
-impl_vecn!(Vec3, x, y, z);
-impl_vecn!(Vec4, x, y, z, w);
-
-impl_extn!(Ext2, w, h);
-impl_extn!(Ext3, w, h, d);
-
-impl_rectn!(Rect, Vec2, Ext2, x, y);
-impl_rectn!(Box, Vec3, Ext3, x, y, z);
-
-impl Vec3f {
-    pub fn checked_normalized(&self) -> Option<Self> {
-        let len2 = self.length2();
-
-        if len2 > f32::EPSILON {
-            Some(*self / len2.sqrt())
-        } else {
-            None
-        }
-    }
-}
-
-#[macro_export]
-macro_rules! vec3f {
-    ($x: expr, $y: expr, $z: expr $(,)?) => {
-        crate::math::Vec3f::new($x, $y, $z)
-    };
-}
-
-#[macro_export]
-macro_rules! vec2f {
-    ($x: expr, $y: expr $(,)?) => {
-        crate::math::Vec2f::new($x, $y)
-    };
-}
+impl_vecn!(2, Vec2 { x, y });
+impl_vecn!(3, Vec3 { x, y, z });
+impl_vecn!(4, Vec4 { x, y, z, w });
 
 impl<T: Clone + Mul<T, Output = T> + Sub<T, Output = T>> Vec3<T> {
     pub fn cross(self, rhs: Self) -> Vec3<T> {
@@ -325,6 +282,7 @@ impl<T: Clone + Mul<T, Output = T> + Sub<T, Output = T>> Rem for Vec2<T> {
 }
 
 
+/// 2-component generic matrix
 #[derive(Copy, Clone)]
 pub struct Mat2<T> {
     pub e00: T,
@@ -465,16 +423,9 @@ impl<T: Copy + Add<T, Output = T> + Mul<T, Output = T>> Mul<Vec3<T>> for Mat3<T>
     }
 }
 
-pub type Ext2f = Ext2<f32>;
 pub type Vec2f = Vec2<f32>;
 pub type Vec3f = Vec3<f32>;
 pub type Vec4f = Vec4<f32>;
-
-pub type Vec2u32 = Vec2<u32>;
-pub type Ext2u32 = Ext2<u32>;
-
-pub type Vec2us = Vec2<usize>;
-pub type Ext2us = Ext2<usize>;
 
 pub type Mat2f = Mat2<f32>;
 pub type Mat3f = Mat3<f32>;
@@ -518,86 +469,36 @@ impl<T: Clone> Clone for Mat4<T> {
 
 impl<T: Copy> Copy for Mat4<T> {}
 
+// Compile-time for for 4x4 matrix
+macro_rules! mat4_foreach {
+    ($action: ident) => {
+        $action!(0, 0); $action!(0, 1); $action!(0, 2); $action!(0, 3);
+        $action!(1, 0); $action!(1, 1); $action!(1, 2); $action!(1, 3);
+        $action!(2, 0); $action!(2, 1); $action!(2, 2); $action!(2, 3);
+        $action!(3, 0); $action!(3, 1); $action!(3, 2); $action!(3, 3);
+    };
+}
+
 impl Mul<Mat4<f32>> for Mat4<f32> {
     type Output = Mat4<f32>;
 
-    fn mul(self, rhs: Mat4<f32>) -> Self::Output {
-        Self {
-            data: [
-                [
-                    self.data[0][0].clone() * rhs.data[0][0].clone()
-                        + self.data[0][1].clone() * rhs.data[1][0].clone()
-                        + self.data[0][2].clone() * rhs.data[2][0].clone()
-                        + self.data[0][3].clone() * rhs.data[3][0].clone(),
-                    self.data[0][0].clone() * rhs.data[0][1].clone()
-                        + self.data[0][1].clone() * rhs.data[1][1].clone()
-                        + self.data[0][2].clone() * rhs.data[2][1].clone()
-                        + self.data[0][3].clone() * rhs.data[3][1].clone(),
-                    self.data[0][0].clone() * rhs.data[0][2].clone()
-                        + self.data[0][1].clone() * rhs.data[1][2].clone()
-                        + self.data[0][2].clone() * rhs.data[2][2].clone()
-                        + self.data[0][3].clone() * rhs.data[3][2].clone(),
-                    self.data[0][0].clone() * rhs.data[0][3].clone()
-                        + self.data[0][1].clone() * rhs.data[1][3].clone()
-                        + self.data[0][2].clone() * rhs.data[2][3].clone()
-                        + self.data[0][3].clone() * rhs.data[3][3].clone(),
-                ],
-                [
-                    self.data[1][0].clone() * rhs.data[0][0].clone()
-                        + self.data[1][1].clone() * rhs.data[1][0].clone()
-                        + self.data[1][2].clone() * rhs.data[2][0].clone()
-                        + self.data[1][3].clone() * rhs.data[3][0].clone(),
-                    self.data[1][0].clone() * rhs.data[0][1].clone()
-                        + self.data[1][1].clone() * rhs.data[1][1].clone()
-                        + self.data[1][2].clone() * rhs.data[2][1].clone()
-                        + self.data[1][3].clone() * rhs.data[3][1].clone(),
-                    self.data[1][0].clone() * rhs.data[0][2].clone()
-                        + self.data[1][1].clone() * rhs.data[1][2].clone()
-                        + self.data[1][2].clone() * rhs.data[2][2].clone()
-                        + self.data[1][3].clone() * rhs.data[3][2].clone(),
-                    self.data[1][0].clone() * rhs.data[0][3].clone()
-                        + self.data[1][1].clone() * rhs.data[1][3].clone()
-                        + self.data[1][2].clone() * rhs.data[2][3].clone()
-                        + self.data[1][3].clone() * rhs.data[3][3].clone(),
-                ],
-                [
-                    self.data[2][0].clone() * rhs.data[0][0].clone()
-                        + self.data[2][1].clone() * rhs.data[1][0].clone()
-                        + self.data[2][2].clone() * rhs.data[2][0].clone()
-                        + self.data[2][3].clone() * rhs.data[3][0].clone(),
-                    self.data[2][0].clone() * rhs.data[0][1].clone()
-                        + self.data[2][1].clone() * rhs.data[1][1].clone()
-                        + self.data[2][2].clone() * rhs.data[2][1].clone()
-                        + self.data[2][3].clone() * rhs.data[3][1].clone(),
-                    self.data[2][0].clone() * rhs.data[0][2].clone()
-                        + self.data[2][1].clone() * rhs.data[1][2].clone()
-                        + self.data[2][2].clone() * rhs.data[2][2].clone()
-                        + self.data[2][3].clone() * rhs.data[3][2].clone(),
-                    self.data[2][0].clone() * rhs.data[0][3].clone()
-                        + self.data[2][1].clone() * rhs.data[1][3].clone()
-                        + self.data[2][2].clone() * rhs.data[2][3].clone()
-                        + self.data[2][3].clone() * rhs.data[3][3].clone(),
-                ],
-                [
-                    self.data[3][0].clone() * rhs.data[0][0].clone()
-                        + self.data[3][1].clone() * rhs.data[1][0].clone()
-                        + self.data[3][2].clone() * rhs.data[2][0].clone()
-                        + self.data[3][3].clone() * rhs.data[3][0].clone(),
-                    self.data[3][0].clone() * rhs.data[0][1].clone()
-                        + self.data[3][1].clone() * rhs.data[1][1].clone()
-                        + self.data[3][2].clone() * rhs.data[2][1].clone()
-                        + self.data[3][3].clone() * rhs.data[3][1].clone(),
-                    self.data[3][0].clone() * rhs.data[0][2].clone()
-                        + self.data[3][1].clone() * rhs.data[1][2].clone()
-                        + self.data[3][2].clone() * rhs.data[2][2].clone()
-                        + self.data[3][3].clone() * rhs.data[3][2].clone(),
-                    self.data[3][0].clone() * rhs.data[0][3].clone()
-                        + self.data[3][1].clone() * rhs.data[1][3].clone()
-                        + self.data[3][2].clone() * rhs.data[2][3].clone()
-                        + self.data[3][3].clone() * rhs.data[3][3].clone(),
-                ],
-            ],
+    fn mul(self, othr: Mat4<f32>) -> Self::Output {
+        // Resulting data
+        let mut data = [[0f32; 4]; 4];
+
+        macro_rules! mul {
+            ($i: expr, $j: expr) => {
+                data[$i][$j] = 0.0
+                    + self.data[0][$j] * othr.data[$i][0]
+                    + self.data[1][$j] * othr.data[$i][1]
+                    + self.data[2][$j] * othr.data[$i][2]
+                    + self.data[3][$j] * othr.data[$i][3]
+                ;
+            }
         }
+        mat4_foreach!(mul);
+
+        Self { data }
     }
 }
 
@@ -1047,7 +948,7 @@ impl Mat4<f32> {
     } // fn transform_4x4
 } // impl Mat4x4
 
-/// Quaternion structure
+/// Quaternion
 pub struct Quat<T> {
     pub w: T,
     pub x: T,

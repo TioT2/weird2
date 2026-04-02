@@ -1,6 +1,6 @@
 use crate::{bsp::{Id, Lightmap}, math::Vec3f, u64_from_u16};
 
-// Bake the most primitive lightmap ever
+/// Bake the most primitive lightmap possible
 pub fn bake(map: &mut crate::bsp::Map) {
     for volume in map.volume_set.iter_mut() {
         for surface in volume.surfaces.iter_mut() {

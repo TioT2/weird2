@@ -50,8 +50,8 @@ use crate::{geom, math::{Vec2f, Vec3f}};
 pub fn calculate_uv_ranges(points: &[Vec3f], u: geom::Plane, v: geom::Plane) -> (i32, i32, i32, i32) {
     let uv_bounds = points.iter().fold(
         geom::ClipRect {
-            max: Vec2f::from_single(f32::MIN),
-            min: Vec2f::from_single(f32::MAX),
+            max: Vec2f::broadcast(f32::MIN),
+            min: Vec2f::broadcast(f32::MAX),
         },
         |b, point| b.extend_to_contain(Vec2f::new(
             point.dot(u.normal) + u.distance,
@@ -60,10 +60,10 @@ pub fn calculate_uv_ranges(points: &[Vec3f], u: geom::Plane, v: geom::Plane) -> 
     );
 
     (
-        uv_bounds.min.x.floor() as i32,
-        uv_bounds.max.x.ceil() as i32,
-        uv_bounds.min.y.floor() as i32,
-        uv_bounds.max.y.ceil() as i32,
+        uv_bounds.min.x().floor() as i32,
+        uv_bounds.max.x().ceil() as i32,
+        uv_bounds.min.y().floor() as i32,
+        uv_bounds.max.y().ceil() as i32,
     )
 }
 

@@ -115,12 +115,21 @@ pub struct Vertex {
 impl Vertex {
     /// Get vertex XZUV
     pub fn xzuv(self) -> math::FVec4 {
-        math::FVec4::from_xyzw(
-            self.position.x,
-            self.position.z,
-            self.tex_coord.x,
-            self.tex_coord.y
+        math::FVec4::new(
+            self.position.x(),
+            self.position.z(),
+            self.tex_coord.x(),
+            self.tex_coord.y()
         )
+    }
+}
+
+impl From<f32> for Vertex {
+    fn from(v: f32) -> Self {
+        Self {
+            position: v.into(),
+            tex_coord: v.into(),
+        }
     }
 }
 
@@ -146,13 +155,13 @@ impl std::ops::Sub<Self> for Vertex {
     }
 }
 
-impl std::ops::Mul<f32> for Vertex {
+impl std::ops::Mul<Self> for Vertex {
     type Output = Self;
 
-    fn mul(self, rhs: f32) -> Self::Output {
+    fn mul(self, rhs: Self) -> Self::Output {
         Self {
-            position: self.position * rhs,
-            tex_coord: self.tex_coord * rhs,
+            position: self.position * rhs.position,
+            tex_coord: self.tex_coord * rhs.tex_coord,
         }
     }
 }
@@ -199,7 +208,8 @@ where
     V: Copy
         + std::ops::Add<V, Output = V>
         + std::ops::Sub<V, Output = V>
-        + std::ops::Mul<f32, Output = V>
+        + std::ops::Mul<V, Output = V>
+        + From<f32>
 {
     temp.clear();
     for index in 0..points.len() {
@@ -211,11 +221,11 @@ where
 
             if cmp(value, norm(next)) {
                 let t = (value - norm(curr)) / (norm(next) - norm(curr));
-                temp.push((next - curr) * t + curr);
+                temp.push((next - curr) * V::from(t) + curr);
            }
         } else if cmp(norm(next), value) {
             let t = (value - norm(curr)) / (norm(next) - norm(curr));
-            temp.push((next - curr) * t + curr);
+            temp.push((next - curr) * V::from(t) + curr);
         }
     }
     std::mem::swap(points, temp);
@@ -232,10 +242,10 @@ fn clip_polygon_oct(
     clip_oct: &geom::ClipOct
 ) -> bool {
     // Norm functions
-    fn norm_x     (vt: Vertex) -> f32 { vt.position.x }
-    fn norm_y     (vt: Vertex) -> f32 { vt.position.y }
-    fn norm_y_a_x (vt: Vertex) -> f32 { vt.position.y + vt.position.x }
-    fn norm_y_s_x (vt: Vertex) -> f32 { vt.position.y - vt.position.x }
+    fn norm_x     (vt: Vertex) -> f32 { vt.position.x() }
+    fn norm_y     (vt: Vertex) -> f32 { vt.position.y() }
+    fn norm_y_a_x (vt: Vertex) -> f32 { vt.position.y() + vt.position.x() }
+    fn norm_y_s_x (vt: Vertex) -> f32 { vt.position.y() - vt.position.x() }
 
     // Comparison functions
     fn ge(l: f32, r: f32) -> bool { l >= r }
@@ -243,14 +253,23 @@ fn clip_polygon_oct(
 
     // Utilize '&&' hands calculation rules to stop clipping if there's <= 3 points
     true
-        && clip_polygon(vertices, temp, clip_oct.min_x, ge, norm_x)
-        && clip_polygon(vertices, temp, clip_oct.max_x, le, norm_x)
-        && clip_polygon(vertices, temp, clip_oct.min_y, ge, norm_y)
-        && clip_polygon(vertices, temp, clip_oct.max_y, le, norm_y)
-        && clip_polygon(vertices, temp, clip_oct.min_y_a_x, ge, norm_y_a_x)
-        && clip_polygon(vertices, temp, clip_oct.max_y_a_x, le, norm_y_a_x)
-        && clip_polygon(vertices, temp, clip_oct.min_y_s_x, ge, norm_y_s_x)
-        && clip_polygon(vertices, temp, clip_oct.max_y_s_x, le, norm_y_s_x)
+        && clip_polygon(vertices, temp, clip_oct.min.x(), ge, norm_x)
+        && clip_polygon(vertices, temp, clip_oct.max.x(), le, norm_x)
+        && clip_polygon(vertices, temp, clip_oct.min.y(), ge, norm_y)
+        && clip_polygon(vertices, temp, clip_oct.max.y(), le, norm_y)
+        && clip_polygon(vertices, temp, clip_oct.min.z(), ge, norm_y_s_x)
+        && clip_polygon(vertices, temp, clip_oct.max.z(), le, norm_y_s_x)
+        && clip_polygon(vertices, temp, clip_oct.min.w(), ge, norm_y_a_x)
+        && clip_polygon(vertices, temp, clip_oct.max.w(), le, norm_y_a_x)
+    // true
+    //     && clip_polygon(vertices, temp, clip_oct.min_x, ge, norm_x)
+    //     && clip_polygon(vertices, temp, clip_oct.max_x, le, norm_x)
+    //     && clip_polygon(vertices, temp, clip_oct.min_y, ge, norm_y)
+    //     && clip_polygon(vertices, temp, clip_oct.max_y, le, norm_y)
+    //     && clip_polygon(vertices, temp, clip_oct.min_y_s_x, ge, norm_y_s_x)
+    //     && clip_polygon(vertices, temp, clip_oct.max_y_s_x, le, norm_y_s_x)
+    //     && clip_polygon(vertices, temp, clip_oct.min_y_a_x, ge, norm_y_a_x)
+    //     && clip_polygon(vertices, temp, clip_oct.max_y_a_x, le, norm_y_a_x)
 }
 
 /// Camera that (additionally) holds info about projection and frame size
@@ -282,15 +301,15 @@ impl RenderCamera {
         std::mem::swap(points, point_dst);
 
         // Clip polygon by z=1
-        clip_polygon(points, point_dst, 1.0, |l, r| l > r, |p| p.z);
+        clip_polygon(points, point_dst, 1.0, |l, r| l > r, |p| p.z());
 
         point_dst.clear();
         for pt in points.iter() {
-            let inv_z = pt.z.recip();
+            let inv_z = pt.z().recip();
 
             point_dst.push(Vec3f::new(
-                (1.0 + pt.x * inv_z) * self.half_fw,
-                (1.0 - pt.y * inv_z) * self.half_fh,
+                (1.0 + pt.x() * inv_z) * self.half_fw,
+                (1.0 - pt.y() * inv_z) * self.half_fh,
                 inv_z,
             ));
         }
@@ -311,10 +330,10 @@ impl RenderCamera {
             let rp = *point - self.location;
 
             // Copy z sign to correct back-z case (s_dist - signed distance)
-            let s_dist = DIST.copysign(rp.z);
+            let s_dist = DIST.copysign(rp.z());
 
-            let u = rp.x / rp.z * s_dist;
-            let v = rp.y / rp.z * s_dist;
+            let u = rp.x() / rp.z() * s_dist;
+            let v = rp.y() / rp.z() * s_dist;
 
             point_dst.push(Vertex {
                 // Vector-only transform is used here to don't add camera location back.
@@ -351,15 +370,15 @@ impl RenderCamera {
         polygon: &mut [Vertex],
     ) {
         for pt in polygon {
-            let inv_z = pt.position.z.recip();
+            let inv_z = pt.position.z().recip();
 
             *pt = Vertex {
                 position: Vec3f::new(
-                    (1.0 + pt.position.x * inv_z) * self.half_fw,
-                    (1.0 - pt.position.y * inv_z) * self.half_fh,
+                    (1.0 + pt.position.x() * inv_z) * self.half_fw,
+                    (1.0 - pt.position.y() * inv_z) * self.half_fh,
                     inv_z,
                 ),
-                tex_coord: pt.tex_coord * inv_z
+                tex_coord: pt.tex_coord * inv_z.into()
             };
         }
     }
@@ -521,11 +540,11 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
             let mut min_y_index = 0;
             let mut max_y_index = 0;
 
-            let mut min_y = vertices[0].position.y;
+            let mut min_y = vertices[0].position.y();
             let mut max_y = min_y;
 
             for index in 1..vertices.len() {
-                let y = vertices[index].position.y;
+                let y = vertices[index].position.y();
 
                 if y < min_y {
                     min_y_index = index;
@@ -569,7 +588,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                 self.prev_y = self.curr_y;
                 self.prev_xzuv = self.curr_xzuv;
 
-                self.curr_y = points[self.index].position.y;
+                self.curr_y = points[self.index].position.y();
                 self.curr_xzuv = points[self.index].xzuv().into();
 
                 let dy = self.curr_y - self.prev_y;
@@ -578,7 +597,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                 self.slope_xzuv = if dy <= DY_EPSILON {
                     math::FVec4::zero()
                 } else {
-                    (self.curr_xzuv - self.prev_xzuv) / dy
+                    (self.curr_xzuv - self.prev_xzuv) / dy.into()
                 };
             }
         }
@@ -586,7 +605,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
         let mut left = LineContext {
             index: min_y_index,
             curr_xzuv: vertices[min_y_index].xzuv().into(),
-            curr_y: vertices[min_y_index].position.y,
+            curr_y: vertices[min_y_index].position.y(),
             ..Default::default()
         };
         let mut right = left;
@@ -615,13 +634,13 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
 
             let left_xzuv = math::FVec4::mul_add(
                 left.slope_xzuv,
-                math::FVec4::from_single(y - left.prev_y),
+                math::FVec4::broadcast(y - left.prev_y),
                 left.prev_xzuv,
             );
 
             let right_xzuv = math::FVec4::mul_add(
                 right.slope_xzuv,
-                math::FVec4::from_single(y - right.prev_y),
+                math::FVec4::broadcast(y - right.prev_y),
                 right.prev_xzuv,
             );
 
@@ -633,7 +652,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
             let slope_xzuv = if dx <= DY_EPSILON {
                 math::FVec4::zero()
             } else {
-                (right_xzuv - left_xzuv) / (right_x - left_x)
+                (right_xzuv - left_xzuv) / dx.into()
             };
 
             // Destination hline part
@@ -654,7 +673,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
             for (x, p) in pixel_row_slice.into_iter().enumerate() {
                 pixel_fn(p, math::FVec4::mul_add(
                     slope_xzuv,
-                    math::FVec4::from_single(x as f32 - pixel_off),
+                    math::FVec4::broadcast(x as f32 - pixel_off),
                     left_xzuv
                 ));
             }
@@ -771,8 +790,8 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
 
                     run!(move |dst: &mut u64, xzuv: FVec4| {
                         let inv_z = xzuv.y().recip();
-                        let u = xzuv.z() * inv_z + uv_offset.x;
-                        let v = xzuv.w() * inv_z + uv_offset.y;
+                        let u = xzuv.z() * inv_z + uv_offset.x();
+                        let v = xzuv.w() * inv_z + uv_offset.y();
 
                         let fg_u = unsafe { u.to_int_unchecked::<isize>() }
                             .rem_euclid(width)
@@ -791,12 +810,12 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                             return;
                         }
 
-                        let bg_u = unsafe { (u + background_uv_offset.x).to_int_unchecked::<isize>() }
+                        let bg_u = unsafe { (u + background_uv_offset.x()).to_int_unchecked::<isize>() }
                             .rem_euclid(width)
                             .wrapping_add(width)
                             .cast_unsigned();
 
-                        let bg_v = unsafe { (v + background_uv_offset.y).to_int_unchecked::<isize>() }
+                        let bg_v = unsafe { (v + background_uv_offset.y()).to_int_unchecked::<isize>() }
                             .rem_euclid(height)
                             .cast_unsigned();
 
@@ -847,7 +866,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
         }
 
         // Clip polygon by Z=1
-        if !clip_polygon(vertices, vertex_dst, 1.0, |l, r| l > r, |v| v.position.z) {
+        if !clip_polygon(vertices, vertex_dst, 1.0, |l, r| l > r, |v| v.position.z()) {
             return;
         }
 
@@ -861,7 +880,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
 
         // Just for safety
         for pt in vertices.iter() {
-            if !pt.position.x.is_finite() || !pt.position.y.is_finite() {
+            if !pt.position.x().is_finite() || !pt.position.y().is_finite() {
                 return;
             }
         }
@@ -974,11 +993,11 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
             self.render_polygon(
                 &polygon,
                 geom::Plane {
-                    normal: surface.u.normal / image_uv_scale,
+                    normal: surface.u.normal / image_uv_scale.into(),
                     distance: surface.u.distance / image_uv_scale - 0.5,
                 },
                 geom::Plane {
-                    normal: surface.v.normal / image_uv_scale,
+                    normal: surface.v.normal / image_uv_scale.into(),
                     distance: surface.v.distance / image_uv_scale - 0.5,
                 },
                 color,
@@ -1117,9 +1136,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                         continue 'portal_rendering;
                     }
 
-                    let proj_oct = geom::ClipOct::from_points_xy(
-                        proj_polygon_points.iter().copied()
-                    );
+                    let proj_oct = geom::ClipOct::for_points(proj_polygon_points.iter().map(|v| Vec2f::new(v.x(), v.y())));
 
                     let Some(clip_oct) = geom::ClipOct::intersection(
                         &volume_clip_oct,
@@ -1168,16 +1185,16 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
         while let Some(bsp) = visit_stack.pop() {
             match bsp {
                 bsp::Bsp::Partition { splitter_plane, front, back } => {
-                    visit_stack.extend_from_slice(
-                        &match splitter_plane.get_point_relation(camera_location) {
-                            geom::PointRelation::Front | geom::PointRelation::OnPlane => {
-                                [back, front]
-                            }
-                            geom::PointRelation::Back => {
-                                [front, back]
-                            }
+                    match splitter_plane.get_point_relation(camera_location) {
+                        geom::PointRelation::Front | geom::PointRelation::OnPlane => {
+                            visit_stack.push(back);
+                            visit_stack.push(front);
                         }
-                    );
+                        geom::PointRelation::Back => {
+                            visit_stack.push(front);
+                            visit_stack.push(back);
+                        }
+                    }
                 }
                 bsp::Bsp::Volume(vol) => volume_fn(*vol),
                 bsp::Bsp::Void => {},
@@ -1237,8 +1254,8 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
         let inv_render_set = partial_render_set_opt
             .unwrap_or_else(|| {
                 let mut render_set = Vec::new();
-                let render_set_ref = &mut render_set;
 
+                let render_set_ref = &mut render_set;
                 self.traverse_bsp(
                     world_bsp,
                     self.camera.location,
@@ -1272,7 +1289,9 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
 
 /// Input render message
 pub enum RenderInputMessage {
+    /// Request for frame rendering
     NewFrame {
+        /// Frame buffer used for rendering
         frame_buffer: Vec<u64>,
         width: u32,
         height: u32,
@@ -1285,7 +1304,7 @@ pub enum RenderInputMessage {
 
 /// Render output message
 pub enum RenderOutputMessage {
-    /// Rendered frame
+    /// Response containing rendered frame
     RenderedFrame {
         frame_buffer: Vec<u64>,
         width: u32,

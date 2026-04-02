@@ -396,18 +396,18 @@ impl Map {
                     let rsin = face.texture_rotation.to_radians().sin();
 
                     let (u, v) = (
-                        u * rcos - v * rsin,
-                        u * rsin + v * rcos,
+                        u * rcos.into() - v * rsin.into(),
+                        u * rsin.into() + v * rcos.into(),
                     );
 
                     faces.push(super::BrushFace {
                         plane: geom::Plane::from_points(face.p1, face.p0, face.p2),
                         u: geom::Plane {
-                            normal: u / face.texture_scale_x,
+                            normal: u / face.texture_scale_x.into(),
                             distance: face.texture_offset_x,
                         },
                         v: geom::Plane {
-                            normal: v / face.texture_scale_y,
+                            normal: v / face.texture_scale_y.into(),
                             distance: face.texture_offset_y,
                         },
                         mtl_name: face.texture_name.clone(),

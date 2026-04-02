@@ -148,14 +148,14 @@ impl HullVolume {
 
         // Box vertices
         let vertices = [
-            (0.0, 0.0, 0.0),
-            (1.0, 0.0, 0.0),
-            (1.0, 1.0, 0.0),
-            (0.0, 1.0, 0.0),
-            (0.0, 0.0, 1.0),
-            (1.0, 0.0, 1.0),
-            (1.0, 1.0, 1.0),
-            (0.0, 1.0, 1.0),
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [1.0, 0.0, 1.0],
+            [1.0, 1.0, 1.0],
+            [0.0, 1.0, 1.0],
         ];
 
         // Box indices
@@ -168,7 +168,7 @@ impl HullVolume {
             [3, 7, 4, 0],
         ];
 
-        let vertices = vertices.map(|v| Vec3f::from_tuple(v) * (bb.max() - bb.min()) + bb.min());
+        let vertices = vertices.map(|v| Vec3f::from_array(v) * (bb.max() - bb.min()) + bb.min());
 
         HullVolume {
             faces: indices
@@ -443,7 +443,7 @@ impl BspModelCompileContext {
             split_infos: Vec::new(),
             portal_polygons: Vec::new(),
             volume_bsp: None,
-            bound_box: geom::BoundBox::zero(),
+            bound_box: geom::BoundBox::empty(),
         }
     }
 
@@ -1289,13 +1289,7 @@ impl CompileContext {
             .volumes
             .into_iter()
             .map(|hull_volume| {
-                let mut bound_box = geom::BoundBox::zero();
-
-                for face in &hull_volume.faces {
-                    bound_box = bound_box.total(
-                        &geom::BoundBox::for_points(face.polygon.points.iter().copied())
-                    );
-                }
+                let bound_box = geom::BoundBox::for_points(hull_volume.faces.iter().map(|f| f.polygon.points.iter().copied()).flatten());
 
                 let mut surfaces = Vec::new();
                 let mut portals = Vec::new();
@@ -1408,7 +1402,7 @@ pub fn compile(map: &map::Map) -> Result<super::Map, Error> {
         let is_worldspawn = classname == "worldspawn";
 
         let mut model_compile_context = BspModelCompileContext {
-            bound_box: geom::BoundBox::zero(),
+            bound_box: geom::BoundBox::empty(),
             portal_polygons: Vec::new(),
             split_infos: Vec::new(),
             volume_bsp: None,

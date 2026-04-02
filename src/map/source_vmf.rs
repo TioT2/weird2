@@ -179,7 +179,7 @@ impl Entry {
             let s = num_iter.next()?.parse::<f32>().ok()?;
 
             Some(geom::Plane {
-                normal: Vec3f::new(x, y, z) * s,
+                normal: Vec3f::new(x, y, z) * s.into(),
                 distance: d * s,
             })
         }

@@ -1,13 +1,13 @@
-use zerocopy::{FromBytes, Immutable, IntoBytes};
+///! Module with WBSP raw structure descriptions
 
-///! WBSP file format description module.
+use zerocopy::{FromBytes, Immutable, IntoBytes};
 
 use crate::geom;
 
 /// .WBSP file Magic number
 pub const MAGIC: u32 = u32::from_le_bytes(*b"WBSP");
 
-/// Span in any kind of set
+/// Some span
 #[repr(C, packed)]
 #[derive(Copy, Clone, Debug, FromBytes, IntoBytes, Immutable)]
 pub struct Span {
@@ -19,20 +19,21 @@ pub struct Span {
 }
 
 impl Span {
+    /// Construct zero-sized span
     pub const fn zero() -> Self {
         Self { offset: 0, size: 0 }
     }
 
-    /// Range
-    pub fn range(self) -> std::ops::Range<usize> {
+    /// Convert span to usize range
+    pub const fn range(self) -> std::ops::Range<usize> {
         std::ops::Range::<usize> {
             start: self.offset as usize,
             end: self.offset as usize + self.size as usize,
         }
     }
 
-    // TODO: TryFrom
-    pub fn from_range(range: std::ops::Range<usize>) -> Self {
+    /// Construct span from range
+    pub const fn from_range(range: std::ops::Range<usize>) -> Self {
         Self {
             offset: range.start as u32,
             size: (range.end - range.start) as u32,
@@ -40,35 +41,35 @@ impl Span {
     }
 }
 
-/// Header
+/// File header structure
 #[repr(C)]
 #[derive(Copy, Clone, FromBytes, IntoBytes, Immutable)]
 pub struct Header {
     /// WBSP file magic
     pub magic: u32,
 
-    /// World BSP model index
+    /// Index of world (e.g. root) model in BSP model list
     pub world_bsp_model_index: u32,
 
-    /// Length of material string set
+    /// Span that holds all string characters (String are just indices in the span data)
     pub chars: Span,
 
-    /// Count of points
+    /// Span containing (unique) points referenced by polygons
     pub points: Span,
 
-    /// Count of polygon lengths
+    /// Span of polygons
     pub polygons: Span,
 
     /// Material name spans
     pub material_names: Span,
 
-    /// Surface count
+    /// Span containing volume (displayed) surfaces
     pub volume_surfaces: Span,
 
-    /// Portal count
+    /// Span containing volume-to-volume portals
     pub volume_portals: Span,
 
-    /// Total volume count
+    /// Span containing volumes (e.g. BSP leafs)
     pub volumes: Span,
 
     /// BSP element span
@@ -160,24 +161,24 @@ pub struct Portal {
     pub _pad: [u8; 3],
 }
 
-/// Volume structure
+/// Volume (BSP leaf) structure
 #[repr(C)]
 #[derive(Copy, Clone, FromBytes, IntoBytes, Immutable)]
 pub struct Volume {
-    /// Surface span
+    /// Subspan of surface span containing volumes that belongs to this volume
     pub surfaces: Span,
 
-    /// Portal span
+    /// Subspan of surface span containing portals that belongs to this volume
     pub portals: Span,
 
-    /// Boundbox min
+    /// Volume bound box minimum
     pub bound_box_min: Vec3,
 
-    /// Boundbox max
+    /// Volume bound box maximum
     pub bound_box_max: Vec3,
 }
 
-/// Stable (e.g. with certain field order) 3-component float vector
+/// 3-component f32 vector vector
 #[repr(C)]
 #[derive(Copy, Clone, FromBytes, IntoBytes, Immutable)]
 pub struct Vec3 {
@@ -193,13 +194,13 @@ pub struct Vec3 {
 
 impl Into<super::Vec3f> for Vec3 {
     fn into(self) -> super::Vec3f {
-        super::Vec3f { x: self.x, y: self.y, z: self.z }
+        super::Vec3f::new(self.x, self.y, self.z)
     }
 }
 
 impl From<super::Vec3f> for Vec3 {
     fn from(value: super::Vec3f) -> Self {
-        Self { x: value.x, y: value.y, z: value.z }
+        Self { x: value.x(), y: value.y(), z: value.z() }
     }
 }
 

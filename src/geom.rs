@@ -1,6 +1,6 @@
 ///! Standard geometry primitive implementation module
 
-use crate::math::{Vec2f, Vec3f};
+use crate::math::{Vec2f, Vec3f, Vec4f};
 
 /// Geometric epsilon (1 cm)
 pub const GEOM_EPSILON: f32 = 0.01;
@@ -15,9 +15,9 @@ pub fn f32_geom_equal(lhs: f32, rhs: f32) -> bool {
 /// Vector equality
 pub fn f32_vec_equal(lhs: &Vec3f, rhs: &Vec3f) -> bool {
     true
-        && f32_geom_equal(lhs.x, rhs.x)
-        && f32_geom_equal(lhs.y, rhs.y)
-        && f32_geom_equal(lhs.z, rhs.z)
+        && f32_geom_equal(lhs.x(), rhs.x())
+        && f32_geom_equal(lhs.y(), rhs.y())
+        && f32_geom_equal(lhs.z(), rhs.z())
 }
 
 /// Float-point comparison
@@ -33,7 +33,7 @@ pub fn f32_relative_equal(lhs: f32, rhs: f32) -> bool {
 
 /// Plane represetnation structure
 /// 
-/// ## Equation
+/// # Plane equation
 /// Standard plane equation is Ax + By + Cz + D = 0. In this case,
 /// * A = point.x
 /// * B = point.y
@@ -45,151 +45,8 @@ pub struct Plane {
     /// plane normal
     pub normal: Vec3f,
 
-    /// number to multiply normal to to get basic point
+    /// number to multiply normal to to get base point
     pub distance: f32,
-}
-
-/// Bounding box
-#[derive(Copy, Clone)]
-pub struct BoundBox {
-    /// minimal vector
-    min: Vec3f,
-
-    /// maximal vector
-    max: Vec3f,
-}
-
-impl BoundBox {
-    /// 'Empty' bounding box
-    pub fn zero() -> Self {
-        Self {
-            min: Vec3f::new(f32::INFINITY, f32::INFINITY, f32::INFINITY),
-            max: Vec3f::new(f32::NEG_INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY),
-        }
-    }
-
-    /// Get conservative bounding box of **any** rotation
-    pub fn rotate(&self) -> Self {
-        let center = (self.min + self.max) / 2.0;
-        let extent = (self.min - self.max).length() / 2.0;
-
-        Self {
-            min: center - extent,
-            max: center + extent,
-        }
-    }
-
-    /// Build minimal boundbox that contains this pair of points
-    pub fn new(p1: Vec3f, p2: Vec3f) -> Self {
-        Self {
-            min: Vec3f::new(
-                f32::min(p1.x, p2.x),
-                f32::min(p1.y, p2.y),
-                f32::min(p1.z, p2.z),
-            ),
-            max: Vec3f::new(
-                f32::max(p1.x, p2.x),
-                f32::max(p1.y, p2.y),
-                f32::max(p1.z, p2.z),
-            ),
-        }
-    }
-
-    /// Get boundbox maximal fitting coordinates
-    pub fn max(self) -> Vec3f {
-        self.max
-    }
-
-    /// Get boundbox minimal fitting coordinates
-    pub fn min(self) -> Vec3f {
-        self.min
-    }
-
-    /// Get boundbox dimensions
-    pub fn size(self) -> Vec3f {
-        self.max - self.min
-    }
-
-    /// Translate boundbox to some extent
-    pub fn translate(self, distance: Vec3f) -> Self {
-        Self {
-            min: self.min + distance,
-            max: self.max + distance,
-        }
-    }
-
-    /// Scale boundbox
-    pub fn scale(self, scale: Vec3f) -> Self {
-        Self {
-            min: self.min * scale,
-            max: self.max * scale,
-        }
-    }
-
-    /// Extend boundbox by some (positive) vector.
-    /// In case if delta is negative,
-    pub fn extend(self, delta: Vec3f) -> Self {
-        if delta.x < 0.0 || delta.y < 0.0 || delta.z < 0.0 {
-            self
-        } else {
-            Self {
-                min: self.min - delta,
-                max: self.max + delta,
-            }
-        }
-
-    }
-
-    /// Get minimal boundbox that contains all points from both of `self` and `rhs`
-    pub fn total(&self, rhs: &BoundBox) -> Self {
-        Self {
-            min: Vec3f::new(
-                f32::min(self.min.x, rhs.min.x),
-                f32::min(self.min.y, rhs.min.y),
-                f32::min(self.min.z, rhs.min.z),
-            ),
-            max: Vec3f::new(
-                f32::max(self.max.x, rhs.max.x),
-                f32::max(self.max.y, rhs.max.y),
-                f32::max(self.max.z, rhs.max.z),
-            ),
-        }
-    }
-
-    /// Calculate common boundbox for some point sef.
-    /// Note: Point set must be finite (if you want to get result, of course).
-    pub fn for_points(iter: impl Iterator<Item = Vec3f>) -> Self {
-        let mut min = Vec3f::new(f32::INFINITY, f32::INFINITY, f32::INFINITY);
-        let mut max = Vec3f::new(f32::NEG_INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY);
-
-        for point in iter {
-            min.x = f32::min(min.x, point.x);
-            min.y = f32::min(min.y, point.y);
-            min.z = f32::min(min.z, point.z);
-
-            max.x = f32::max(max.x, point.x);
-            max.y = f32::max(max.y, point.y);
-            max.z = f32::max(max.z, point.z);
-        }
-
-        Self { min, max }
-    }
-
-    /// Check if boundbox intersection isn't empty
-    pub fn is_intersecting(&self, another: &BoundBox) -> bool {
-        true
-            && self.max.x >= another.min.x && self.min.x <= another.max.x
-            && self.max.y >= another.min.y && self.min.y <= another.max.y
-            && self.max.z >= another.min.z && self.min.z <= another.max.z
-    } // is_intersecting
-
-    /// Check if boundbox contains point
-    pub fn contains_point(&self, point: &Vec3f) -> bool {
-        true
-            && point.x >= self.min.x && point.x <= self.max.x
-            && point.y >= self.min.y && point.y <= self.max.y
-            && point.z >= self.min.z && point.z <= self.max.z
-    }
 }
 
 /// Line in space
@@ -198,7 +55,7 @@ pub struct Line {
     /// Line direction vector, assumed to be normalized
     pub direction: Vec3f,
 
-    /// Line base point
+    /// Line origin
     pub base: Vec3f,
 }
 
@@ -283,12 +140,12 @@ impl PartialEq for Plane {
 
         true
             && f32_geom_equal((self.normal % other.normal).length(), 0.0)
-            && f32_vec_equal(&(self.normal * self.distance), &(other.normal * other.distance))
+            && f32_vec_equal(&(self.normal * self.distance.into()), &(other.normal * other.distance.into()))
     }
 }
 
 impl Plane {
-    /// Build plane for point triple (normal is calculated as if triple will be CCW-oriented)
+    /// Build plane for point triple (normal is calculated as if triple is CCW-oriented)
     pub fn from_points(p1: Vec3f, p2: Vec3f, p3: Vec3f) -> Self {
         let normal = Vec3f::cross(
             (p3 - p2).normalized(),
@@ -302,9 +159,7 @@ impl Plane {
 
     /// Build plane from it's point and normal
     pub fn from_point_normal(point: Vec3f, mut normal: Vec3f) -> Self {
-        // just for safety)
         normal.normalize();
-
         Self { distance: point ^ normal, normal }
     }
 
@@ -312,12 +167,10 @@ impl Plane {
     pub fn intersect_plane(&self, rhs: Plane) -> Line {
         let direction = (self.normal % rhs.normal).normalized();
         let dot = self.normal ^ rhs.normal;
-        let base = 
-        (
-            (self.normal * self.distance + rhs.normal *  rhs.distance) -
-            (self.normal *  rhs.distance + rhs.normal * self.distance) * dot
-        ) /
-        (1.0 - dot * dot);
+        let base = (
+            (self.normal * self.distance.into() + rhs.normal *  rhs.distance.into()) -
+            (self.normal *  rhs.distance.into() + rhs.normal * self.distance.into()) * dot.into()
+        ) / (1.0 - dot * dot).into();
 
         Line { base, direction }
     }
@@ -406,7 +259,7 @@ impl Plane {
 
     // Get intersection of the plane and line
     pub fn intersect_line(&self, line: Line) -> Vec3f {
-        line.base + line.direction * (self.distance - (line.base ^ self.normal)) / (line.direction ^ self.normal)
+        line.base + line.direction * ((self.distance - (line.base ^ self.normal)) / (line.direction ^ self.normal)).into()
     }
 
     /// Split polygon by the plane
@@ -505,8 +358,7 @@ pub fn sort_points_by_angle(mut points: Vec<Vec3f>, normal: Vec3f) -> Vec<Vec3f>
     let center = points
         .iter()
         .copied()
-        .fold(Vec3f::zero(), std::ops::Add::add)
-        / (points.len() as f32)
+        .fold(Vec3f::zero(), std::ops::Add::add) / (points.len() as f32).into()
     ;
 
     let mut sorted = vec![points.pop().unwrap()];
@@ -595,129 +447,197 @@ impl Polygon {
     }
 }
 
+// Implement common bound volume functions
+macro_rules! impl_bb {
+    ($BoundBox: ident, $Vec: ty, $Pt: ty, $pt2v: expr) => {
+        impl $BoundBox {
+            /// Construct new boundbox
+            pub fn new(p0: $Pt, p1: $Pt) -> Self {
+                let v0 = $pt2v(p0);
+                let v1 = $pt2v(p1);
+
+                Self {
+                    min: <$Vec>::zip(v0, v1, f32::min),
+                    max: <$Vec>::zip(v0, v1, f32::max),
+                }
+            }
+
+            /// Create bound box containing single point
+            pub fn unit(p: $Pt) -> Self {
+                let v = $pt2v(p);
+                Self { min: v, max: v }
+            }
+
+            /// Construct bound box without volume (and location)
+            pub fn empty() -> Self {
+                Self {
+                    min: <$Vec>::broadcast(f32::MAX),
+                    max: <$Vec>::broadcast(f32::MIN),
+                }
+            }
+
+            /// Build bounding volume for points set
+            pub fn for_points(points: impl Iterator<Item = $Pt>) -> Self {
+                let mut min = <$Vec>::broadcast(f32::MAX);
+                let mut max = <$Vec>::broadcast(f32::MIN);
+
+                for pt in points {
+                    let v = $pt2v(pt);
+
+                    min = min.zip(v, f32::min);
+                    max = max.zip(v, f32::max);
+                }
+
+                Self { min, max }
+            }
+
+            /// Get clipping octahedron intersection
+            pub fn intersection(&self, othr: &Self) -> Option<Self> {
+                let max = <$Vec>::zip(self.max, othr.max, f32::min);
+                let min = <$Vec>::zip(self.min, othr.min, f32::max);
+
+                <$Vec>::zip(min, max, |l, r| l <= r)
+                    .fold1(|x, y| x && y)
+                    .then_some(Self { min, max })
+            }
+
+            /// Calculate union of bound volumes
+            pub fn union(&self, othr: &Self) -> Self {
+                Self {
+                    min: <$Vec>::zip(self.min, othr.min, f32::min),
+                    max: <$Vec>::zip(self.max, othr.max, f32::max),
+                }
+            }
+
+            /// Check if boundbox intersection isn't empty
+            pub fn is_intersecting(&self, another: &$BoundBox) -> bool {
+                true
+                    && <$Vec>::zip(self.max, another.min, |l, r| l >= r).fold1(|x, y| x && y)
+                    && <$Vec>::zip(self.min, another.max, |l, r| l <= r).fold1(|x, y| x && y)
+            }
+
+            /// Check if boundbox contains point
+            pub fn contains_point(&self, point: &$Pt) -> bool {
+                let v = $pt2v(*point);
+                true
+                    && <$Vec>::zip(self.max, v, |l, r| l >= r).fold1(|x, y| x && y)
+                    && <$Vec>::zip(self.min, v, |l, r| l <= r).fold1(|x, y| x && y)
+            }
+        }
+    };
+}
+
+/// Bounding box
+#[derive(Copy, Clone)]
+pub struct BoundBox {
+    /// minimal vector
+    min: Vec3f,
+
+    /// maximal vector
+    max: Vec3f,
+}
+
+impl_bb!(BoundBox, Vec3f, Vec3f, std::convert::identity);
+
+impl BoundBox {
+    /// Get conservative bounding box of **any** rotation
+    pub fn rotate(&self) -> Self {
+        let center = (self.min + self.max) / 2.0.into();
+        let extent = Vec3f::broadcast((self.min - self.max).length() as f32) / 2.0.into();
+
+        Self {
+            min: center - extent,
+            max: center + extent,
+        }
+    }
+
+    /// Get boundbox maximal fitting coordinates
+    pub fn max(self) -> Vec3f {
+        self.max
+    }
+
+    /// Get boundbox minimal fitting coordinates
+    pub fn min(self) -> Vec3f {
+        self.min
+    }
+
+    /// Get boundbox dimensions
+    pub fn size(self) -> Vec3f {
+        self.max - self.min
+    }
+
+    /// Translate boundbox to some extent
+    pub fn translate(self, distance: Vec3f) -> Self {
+        Self {
+            min: self.min + distance,
+            max: self.max + distance,
+        }
+    }
+
+    /// Scale boundbox
+    pub fn scale(self, scale: Vec3f) -> Self {
+        Self {
+            min: self.min * scale,
+            max: self.max * scale,
+        }
+    }
+
+    /// Extend boundbox by some (positive) vector.
+    /// In case if delta is negative,
+    pub fn extend(self, delta: Vec3f) -> Self {
+        if delta.x() < 0.0 || delta.y() < 0.0 || delta.z() < 0.0 {
+            self
+        } else {
+            Self {
+                min: self.min - delta,
+                max: self.max + delta,
+            }
+        }
+
+    }
+}
+
 /// Clipping octagon
 #[derive(Copy, Clone, Debug)]
 pub struct ClipOct {
-    pub min_y_s_x: f32,
-    pub max_y_s_x: f32,
+    /// Octagonal minimum. `z` and `w` fields are implemented as `y - x` and `y + x` respectively.
+    pub min: Vec4f,
 
-    pub min_y: f32,
-    pub max_y: f32,
-
-    pub min_y_a_x: f32,
-    pub max_y_a_x: f32,
-
-    pub min_x: f32,
-    pub max_x: f32,
+    /// Octagonal maximum
+    pub max: Vec4f,
 }
 
+impl_bb!(ClipOct, Vec4f, Vec2f, Self::vec2to4);
+
 impl ClipOct {
-    /// Build empty clipping octagon
-    pub fn empty() -> Self {
-        Self {
-            max_x: 0.0, max_y: 0.0, max_y_a_x: 0.0, max_y_s_x: 0.0,
-            min_x: 0.0, min_y: 0.0, min_y_a_x: 0.0, min_y_s_x: 0.0,
-        }
+    fn vec2to4(v: Vec2f) -> Vec4f {
+        Vec4f::new(v.x(), v.y(), v.y() - v.x(), v.y() + v.x())
     }
 
     /// Calculate conservative clipping octagon of clipping rectangle
     pub fn from_clip_rect(clip_rect: ClipRect) -> Self {
         Self {
-            max_x: clip_rect.max.x,
-            max_y: clip_rect.max.y,
-            min_x: clip_rect.min.x,
-            min_y: clip_rect.min.y,
-
-            max_y_a_x: clip_rect.max.y + clip_rect.max.x,
-            min_y_a_x: clip_rect.min.y + clip_rect.min.x,
-            max_y_s_x: clip_rect.max.y - clip_rect.min.x,
-            min_y_s_x: clip_rect.min.y - clip_rect.max.x,
+            max: Vec4f::new(
+                clip_rect.max.x(),
+                clip_rect.max.y(),
+                clip_rect.max.y() - clip_rect.min.x(),
+                clip_rect.max.y() + clip_rect.max.x(),
+            ),
+            min: Vec4f::new(
+                clip_rect.min.x(),
+                clip_rect.min.y(),
+                clip_rect.min.y() - clip_rect.max.x(),
+                clip_rect.min.y() + clip_rect.min.x(),
+            ),
         }
-    }
-    
-    /// Build clipping oct from point XY plane projection coordinates
-    pub fn from_points_xy(points: impl Iterator<Item = Vec3f>) -> Self {
-        let mut min_y_s_x = f32::MAX;
-        let mut max_y_s_x = f32::MIN;
-        let mut min_y = f32::MAX;
-        let mut max_y = f32::MIN;
-        let mut min_y_a_x = f32::MAX;
-        let mut max_y_a_x = f32::MIN;
-        let mut min_x = f32::MAX;
-        let mut max_x = f32::MIN;
-
-        for pt in points {
-            let y_s_x = pt.y - pt.x;
-            let y = pt.y;
-            let y_a_x = pt.y + pt.x;
-            let x = pt.x;
-
-            min_y_s_x = f32::min(min_y_s_x, y_s_x);
-            max_y_s_x = f32::max(max_y_s_x, y_s_x);
-            min_y = f32::min(min_y, y);
-            max_y = f32::max(max_y, y);
-            min_y_a_x = f32::min(min_y_a_x, y_a_x);
-            max_y_a_x = f32::max(max_y_a_x, y_a_x);
-            min_x = f32::min(min_x, x);
-            max_x = f32::max(max_x, x);
-    
-        }
-
-        Self {
-            min_y_s_x, min_y, min_y_a_x: min_y_a_x, min_x,
-            max_y_s_x, max_y, max_y_a_x: max_y_a_x, max_x,
-        }
-    }
-
-    /// Get clipping octahedron union
-    pub fn union(&self, rhs: &Self) -> Self {
-        Self {
-            min_y_s_x: f32::min(self.min_y_s_x, rhs.min_y_s_x),
-            max_y_s_x: f32::max(self.max_y_s_x, rhs.max_y_s_x),
-            min_y: f32::min(self.min_y, rhs.min_y),
-            max_y: f32::max(self.max_y, rhs.max_y),
-            min_y_a_x: f32::min(self.min_y_a_x, rhs.min_y_a_x),
-            max_y_a_x: f32::max(self.max_y_a_x, rhs.max_y_a_x),
-            min_x: f32::min(self.min_x, rhs.min_x),
-            max_x: f32::max(self.max_x, rhs.max_x),
-        }
-    }
-
-    /// Get clipping octahedron intersection
-    pub fn intersection(&self, rhs: &Self) -> Option<Self> {
-        let min_y_s_x = f32::max(self.min_y_s_x, rhs.min_y_s_x);
-        let max_y_s_x = f32::min(self.max_y_s_x, rhs.max_y_s_x);
-        if min_y_s_x > max_y_s_x { return None; }
-
-        let min_y_a_x = f32::max(self.min_y_a_x, rhs.min_y_a_x);
-        let max_y_a_x = f32::min(self.max_y_a_x, rhs.max_y_a_x);
-        if min_y_a_x > max_y_a_x { return None; }
-
-        let min_x = f32::max(self.min_x, rhs.min_x);
-        let max_x = f32::min(self.max_x, rhs.max_x);
-        if min_x > max_x { return None; }
-
-        let min_y = f32::max(self.min_y, rhs.min_y);
-        let max_y = f32::min(self.max_y, rhs.max_y);
-        if min_y > max_y { return None; }
-
-        Some(Self {
-            min_y_s_x, min_y, min_y_a_x, min_x,
-            max_y_s_x, max_y, max_y_a_x, max_x,
-        })
     }
 
     /// Extend clipping octahedron
-    pub fn extend(&self, y_s_x: f32, y: f32, y_a_x: f32, x: f32) -> Self {
+    pub fn extend(&self, x: f32, y: f32, y_s_x: f32, y_a_x: f32) -> Self {
+        let v = Vec4f::new(x, y, y_s_x, y_a_x);
         Self {
-            min_y_s_x: self.min_y_s_x - y_s_x,
-            max_y_s_x: self.max_y_s_x + y_s_x,
-            min_y: self.min_y - y,
-            max_y: self.max_y + y,
-            min_y_a_x: self.min_y_a_x - y_a_x,
-            max_y_a_x: self.max_y_a_x + y_a_x,
-            min_x: self.min_x - x,
-            max_x: self.max_x + x,
+            min: self.min - v, // Vec4f::zip(self.min, v, f32::min),
+            max: self.max + v, // Vec4f::zip(self.max, v, f32::max),
         }
     }
 }
@@ -732,66 +652,14 @@ pub struct ClipRect {
     pub max: Vec2f,
 }
 
+impl_bb!(ClipRect, Vec2f, Vec2f, std::convert::identity);
+
 impl ClipRect {
-    /// Create clipping rectangle from 3D point set XY coordinates.
-    pub fn from_points_xy(points: impl Iterator<Item = Vec3f>) -> Self {
-        let mut min = Vec2f::new(f32::MAX, f32::MAX);
-        let mut max = Vec2f::new(f32::MIN, f32::MIN);
-
-        for point in points {
-            min.x = f32::min(point.x, min.x);
-            min.y = f32::min(point.y, min.y);
-
-            max.x = f32::max(point.x, max.x);
-            max.y = f32::max(point.y, max.y);
-        }
-
-        Self { min, max }
-    }
-
     /// Extend boundbox to contain the point
     pub fn extend_to_contain(self, pt: Vec2f) -> Self {
         Self {
-            min: Vec2f::new(
-                f32::min(self.min.x, pt.x),
-                f32::min(self.min.y, pt.y),
-            ),
-            max: Vec2f::new(
-                f32::max(self.max.x, pt.x),
-                f32::max(self.max.y, pt.y),
-            ),
-        }
-    }
-
-    /// Construct intersection clip rectangle
-    pub fn intersection(self, rhs: Self) -> Option<Self> {
-        let min = Vec2f::new(
-            f32::max(self.min.x, rhs.min.x),
-            f32::max(self.min.y, rhs.min.y),
-        );
-        let max = Vec2f::new(
-            f32::min(self.max.x, rhs.max.x),
-            f32::min(self.max.y, rhs.max.y),
-        );
-
-        if max.x >= min.x && max.y >= min.y {
-            Some(Self { min, max })
-        } else {
-            None
-        }
-    }
-
-    /// Get clip rectangle union
-    pub fn union(self, rhs: Self) -> Self {
-        Self {
-            min: Vec2f::new(
-                f32::min(self.min.x, rhs.min.x),
-                f32::min(self.min.y, rhs.min.y),
-            ),
-            max: Vec2f::new(
-                f32::max(self.max.x, rhs.max.x),
-                f32::max(self.max.y, rhs.max.y),
-            )
+            min: Vec2f::zip(self.min, pt, f32::min),
+            max: Vec2f::zip(self.max, pt, f32::max),
         }
     }
 

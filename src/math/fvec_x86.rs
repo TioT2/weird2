@@ -15,29 +15,31 @@ impl Default for FVec4 {
     }
 }
 
+impl From<f32> for FVec4 {
+    fn from(v: f32) -> Self {
+        Self::broadcast(v)
+    }
+}
+
 impl FVec4 {
-    /// Construct vector from X, Y and Z. W is zeroed
-    pub fn from_xyz(x: f32, y: f32, z: f32) -> Self {
-        Self(unsafe {
-            arch::_mm_set_ps(0.0, z, y, x)
-        })
+    /// Construct vector from components
+    pub fn new(x: f32, y: f32, z: f32, w: f32) -> Self {
+        Self(unsafe { arch::_mm_set_ps(w, z, y, x) })
     }
 
-    /// Construct vector from X, Y, Z, and W.
-    pub fn from_xyzw(x: f32, y: f32, z: f32, w: f32) -> Self {
-        Self(unsafe {
-            arch::_mm_set_ps(w, z, y, x)
-        })
+    /// Construct 4-component vector from first 3 components, last component is zeroed
+    pub fn new3(x: f32, y: f32, z: f32) -> Self {
+        Self(unsafe { arch::_mm_set_ps(0.0, z, y, x) })
+    }
+
+    /// Broadcast single number to all vector components
+    pub fn broadcast(v: f32) -> Self {
+        Self(unsafe { arch::_mm_set1_ps(v) })
     }
 
     /// Produce constant zero vector
     pub fn zero() -> Self {
         Self(unsafe { arch::_mm_setzero_ps() })
-    }
-
-    /// Construct vector from single number
-    pub fn from_single(v: f32) -> Self {
-        Self(unsafe { arch::_mm_set1_ps(v) })
     }
 
     /// Get field by (compile-time) index
@@ -169,15 +171,6 @@ macro_rules! impl_binary_operator {
 
             fn $op_func_name(self, rhs: $type) -> Self::Output {
                 Self(unsafe { arch::$arch_func_name(self.0, rhs.0) })
-            }
-        }
-
-        // vector-number product
-        impl std::ops::$op_trait_name<f32> for $type {
-            type Output = $type;
-
-            fn $op_func_name(self, rhs: f32) -> Self::Output {
-                Self(unsafe { arch::$arch_func_name(self.0, arch::$set1_func_name(rhs)) })
             }
         }
     };

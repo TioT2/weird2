@@ -489,10 +489,10 @@ impl Mul<Mat4<f32>> for Mat4<f32> {
         macro_rules! mul {
             ($i: expr, $j: expr) => {
                 data[$i][$j] = 0.0
-                    + self.data[0][$j] * othr.data[$i][0]
-                    + self.data[1][$j] * othr.data[$i][1]
-                    + self.data[2][$j] * othr.data[$i][2]
-                    + self.data[3][$j] * othr.data[$i][3]
+                    + othr.data[0][$j] * self.data[$i][0]
+                    + othr.data[1][$j] * self.data[$i][1]
+                    + othr.data[2][$j] * self.data[$i][2]
+                    + othr.data[3][$j] * self.data[$i][3]
                 ;
             }
         }

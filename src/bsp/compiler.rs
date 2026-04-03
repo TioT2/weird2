@@ -233,7 +233,7 @@ impl HullVolume {
             })
     }
 
-    // Get intersection polygon of current volume and plane
+    /// Get intersection polygon of current volume and plane
     fn get_intersection_polygon(&self, plane: geom::Plane) -> Option<geom::Polygon> {
         // Get ALL splitter plane intersection points
 
@@ -306,20 +306,20 @@ impl HullVolume {
                     back_hull_polygons.push(hull_polygon);
                 }
                 geom::PolygonSplitResult::Intersects { front: front_hull_polygon, back: back_hull_polygon } => {
-                    // split physical polygons
-                    let mut front_physical_polygons = Vec::new();
-                    let mut back_physical_polygons = Vec::new();
+                    // split display polygons
+                    let mut front_display_polygons = Vec::new();
+                    let mut back_display_polygons = Vec::new();
 
                     for physical_polygon in hull_polygon.display_polygons {
                         match plane.split_polygon(&physical_polygon.polygon) {
                             geom::PolygonSplitResult::Front => {
-                                front_physical_polygons.push(physical_polygon);
+                                front_display_polygons.push(physical_polygon);
                             }
                             geom::PolygonSplitResult::Back => {
-                                back_physical_polygons.push(physical_polygon);
+                                back_display_polygons.push(physical_polygon);
                             }
                             geom::PolygonSplitResult::Intersects { front, back } => {
-                                front_physical_polygons.push(DisplayPolygon {
+                                front_display_polygons.push(DisplayPolygon {
                                     polygon: front,
                                     material_index: physical_polygon.material_index,
                                     material_u: physical_polygon.material_u,
@@ -327,7 +327,7 @@ impl HullVolume {
                                     material_kind: physical_polygon.material_kind,
                                 });
 
-                                back_physical_polygons.push(DisplayPolygon {
+                                back_display_polygons.push(DisplayPolygon {
                                     polygon: back,
                                     material_index: physical_polygon.material_index,
                                     material_u: physical_polygon.material_u,
@@ -344,7 +344,7 @@ impl HullVolume {
 
                     front_hull_polygons.push(HullFace {
                         is_external: hull_polygon.is_external,
-                        display_polygons: front_physical_polygons,
+                        display_polygons: front_display_polygons,
                         portal_polygons: Vec::new(),
                         polygon: front_hull_polygon,
                         split_reference: hull_polygon.split_reference,
@@ -352,7 +352,7 @@ impl HullVolume {
 
                     back_hull_polygons.push(HullFace {
                         is_external: hull_polygon.is_external,
-                        display_polygons: back_physical_polygons,
+                        display_polygons: back_display_polygons,
                         portal_polygons: Vec::new(),
                         polygon: back_hull_polygon,
                         split_reference: hull_polygon.split_reference,
@@ -515,7 +515,7 @@ impl BspModelCompileContext {
 
             // -- kind of heuristics
             let splitter_rate = 0.0
-                + current_back.abs_diff(current_front) as f32 * 1.0
+                + current_back.abs_diff(current_front) as f32 * 2.0
                 + current_split as f32 * 4.0
                 - current_on as f32 * 4.0
                 + volume_polygon_rate * 0.125

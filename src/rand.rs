@@ -26,8 +26,8 @@ impl Xorshift128p {
         let seed = seed.get();
 
         Self {
-            low:  ((seed >>  0) & 0xFFFF_FFFF_FFFF_FFFF) as u64,
-            high: ((seed >> 64) & 0xFFFF_FFFF_FFFF_FFFF) as u64,
+            low:  ((seed >>  0) & u64::MAX as u128) as u64,
+            high: ((seed >> 64) & u64::MAX as u128) as u64,
         }
     }
 
@@ -48,7 +48,7 @@ impl Xorshift128p {
 
     /// Generate unit float64 number
     pub fn next_unit_f64(&mut self) -> f64 {
-        return self.next() as f64 / 0xFFFF_FFFF_FFFF_FFFFu64 as f64
+        return self.next() as f64 / u64::MAX as f64
     }
 }
 

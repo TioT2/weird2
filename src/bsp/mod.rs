@@ -86,7 +86,7 @@ pub struct Surface {
     /// True if sky, false if not
     pub is_sky: bool,
 
-    /// True if is lightmapped, false if not
+    /// Lightmap (if present)
     pub lightmap: Option<Lightmap>,
 }
 

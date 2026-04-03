@@ -1342,6 +1342,7 @@ fn build_surface_texture_impl<'t, const ENABLE_LIGHTING: bool>(
     }
 }
 
+/// Build surface texture with constant lighting
 fn build_surface_texture<'t>(
     data: &'t mut Vec<u64>,
     src: res::ImageRef,
@@ -1641,9 +1642,58 @@ fn main() {
             compile_map(&map_path)
         }
     };
+
     let mut map = map;
     map.bake_lightmaps();
     let map = Arc::new(map);
+
+    // Display some BSP statistics
+    {
+        pub struct BspStat {
+            pub nodes: u64,
+            pub leafs: u64,
+            pub leaf_depth_sum: u64,
+            pub depth_max: u64,
+            pub total_disbalance: u64,
+        }
+
+        fn mk_bsp_stat(bsp: &bsp::Bsp, curr_depth: u64) -> BspStat {
+            match bsp {
+                bsp::Bsp::Partition { front, back, .. } => {
+                    let fstat = mk_bsp_stat(front, curr_depth + 1);
+                    let bstat = mk_bsp_stat(back, curr_depth + 1);
+
+                    BspStat {
+                        nodes: fstat.nodes + bstat.nodes + 1,
+                        leafs: fstat.leafs + bstat.leafs,
+                        leaf_depth_sum: fstat.leaf_depth_sum + bstat.leaf_depth_sum,
+                        depth_max: u64::max(fstat.depth_max, bstat.depth_max),
+                        total_disbalance: fstat.total_disbalance + bstat.total_disbalance
+                            + u64::abs_diff(fstat.nodes, bstat.nodes)
+                    }
+                }
+                bsp::Bsp::Volume(_) | bsp::Bsp::Void => {
+                    BspStat {
+                        nodes: 1,
+                        leafs: 1,
+                        leaf_depth_sum: curr_depth,
+                        depth_max: curr_depth,
+                        total_disbalance: 0,
+                    }
+                }
+            }
+        }
+
+        let bsp = map.get_world_model().get_bsp();
+        let stat = mk_bsp_stat(bsp, 0);
+
+        println!("nodes           : {}", stat.nodes);
+        println!("leafs           : {}", stat.leafs);
+        println!("avg. leaf depth : {}", stat.leaf_depth_sum as f64 / stat.leafs as f64);
+        println!("depth           : {}", stat.depth_max);
+        println!("disbalance      : {}", stat.total_disbalance);
+        println!("avg. disbalance : {}", stat.total_disbalance as f64 / (stat.nodes - stat.leafs) as f64);
+    }
 
     let material_table = {
         let mut wad_file = std::fs::File::open(".local/quake/gfx/base.wad").unwrap();

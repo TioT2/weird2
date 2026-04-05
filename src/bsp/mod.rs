@@ -1,7 +1,6 @@
 ///! Main project BSP structure declaration module
 
 pub use compiler::Error as MapCompilationError;
-use zerocopy::{FromBytes, Immutable, IntoBytes};
 use std::num::NonZeroU32;
 use crate::{geom, map, math::Vec3f};
 
@@ -85,13 +84,13 @@ pub struct Surface {
 
 /// Directional lightmap
 pub struct Lightmap {
-    /// Image pixels
+    /// Light color array
     pub data: Box<[u64]>,
 
-    /// Image width
+    /// Width
     pub width: usize,
 
-    /// Image height
+    /// Height
     pub height: usize,
 }
 
@@ -120,7 +119,7 @@ pub struct Volume {
     pub bound_box: geom::BoundBox,
 }
 
-/// Binary Space Partition
+/// Binary Space Partition structure
 pub enum Bsp {
     /// Space partition
     Partition {
@@ -134,7 +133,7 @@ pub enum Bsp {
         back: Box<Bsp>,
     },
 
-    /// Final volume
+    /// BSP tree leaf
     Volume(VolumeId),
 
     /// Nothing there
@@ -173,10 +172,8 @@ impl Bsp {
     /// Count of BSP elements
     pub fn size(&self) -> usize {
         match self {
-            Bsp::Partition { splitter_plane: _, front, back }
-                => front.size() + back.size() + 1,
-            _
-                => 1,
+            Bsp::Partition { splitter_plane: _, front, back } => front.size() + back.size() + 1,
+            _ => 1,
         }
     }
 }
@@ -186,7 +183,7 @@ pub struct BspModel {
     /// Model BSP
     bsp: Box<Bsp>,
 
-    /// (Simple) Bounding volume, used during splitting process
+    /// (Simple) Bounding volume, used during split process
     bound_box: geom::BoundBox,
 }
 
@@ -315,65 +312,6 @@ impl Map {
     }
 }
 
-/// Map from file loading error
-#[derive(Debug)]
-pub enum MapLoadingError {
-    /// Input/Output error
-    IoError(std::io::Error),
-
-    /// Error during building string from UTF-8 byte array
-    Utf8Error(std::str::Utf8Error),
-
-    /// Invalid magic value
-    InvalidMagic(u32),
-
-    /// Invalid BSP type
-    InvalidBspType(u8),
-
-    /// Invalid span occured
-    InvalidSpan {
-        span_kind: &'static str,
-        invalid_reason: &'static str,
-        buffer_size: usize,
-        span: wbsp::Span,
-    },
-
-    /// Invalid index
-    InvalidIndex {
-        kind: &'static str,
-        count: usize,
-        index: u32,
-    },
-}
-
-impl From<std::io::Error> for MapLoadingError {
-    fn from(value: std::io::Error) -> Self {
-        Self::IoError(value)
-    }
-}
-
-impl From<std::str::Utf8Error> for MapLoadingError {
-    fn from(value: std::str::Utf8Error) -> Self {
-        Self::Utf8Error(value)
-    }
-}
-
-/// Map isn't saved
-#[derive(Debug)]
-pub enum MapSavingError {
-    /// IO error occured
-    IoError(std::io::Error),
-
-    /// Incomplete map write
-    IncompleteWrite,
-}
-
-impl From<std::io::Error> for MapSavingError {
-    fn from(value: std::io::Error) -> Self {
-        Self::IoError(value)
-    }
-}
-
 impl Map {
     /// Compile map to WBSP
     pub fn compile(map: &map::Map) -> Result<Self, MapCompilationError> {
@@ -383,461 +321,5 @@ impl Map {
     /// Bake map lightmaps
     pub fn bake_lightmaps(&mut self) {
         lightmap_baker::bake(self);
-    }
-}
-
-impl Map {
-    /// Load map from bytes
-    pub fn load(data: &[u8]) -> Result<Self, MapLoadingError> {
-        // Read typed span
-        pub fn load_read_tspan<'t, T: Copy + Clone + FromBytes + Immutable>(
-            data: &'t [u8],
-            span: wbsp::Span
-        ) -> Result<&'t [T], MapLoadingError> {
-            if std::mem::size_of::<T>() == 0 {
-                // Empty slice of nothing
-                return Ok(&[]);
-            }
-
-            let elem_count = span.size as usize / std::mem::size_of::<T>();
-            let offset = span.offset as usize;
-
-            let slice = data
-                .get(offset..offset + elem_count * std::mem::size_of::<T>())
-                .ok_or(MapLoadingError::InvalidSpan {
-                    span_kind: "main",
-                    invalid_reason: "span overflow",
-                    buffer_size: data.len(),
-                    span
-                })?;
-
-            <[T]>::ref_from_prefix_with_elems(slice, elem_count)
-                .map(|v| v.0)
-                .map_err(|e| {
-                    eprint!("Zerocopy error: {}", e);
-                    
-                    MapLoadingError::InvalidSpan {
-                        span_kind: "header",
-                        invalid_reason: "zerocopy ref_from_prefix error",
-                        buffer_size: data.len(),
-                        span,
-                    }
-                })
-        }
-
-        fn get_id<T: Id, E>(index: u32, arr: &[E], kind: &'static str) -> Result<T, MapLoadingError> {
-            if index as usize >= arr.len() {
-                return Err(MapLoadingError::InvalidIndex {
-                    kind,
-                    count: arr.len(),
-                    index
-                });
-            }
-
-            Ok(T::from_index(index as usize))
-        }
-
-        /// Build BSP starting from kind of array
-        fn bsp_from(elems: &[wbsp::BspElement], volumes: &[wbsp::Volume], start: u32) -> Result<(Box<Bsp>, u32), MapLoadingError> {
-            let elem = elems
-                .get(start as usize)
-                .ok_or(MapLoadingError::InvalidIndex {
-                    kind: "bsp element",
-                    count: elems.len(),
-                    index: start,
-                })?;
-
-            let ty = match wbsp::BspType::try_from(elem.ty) {
-                Ok(ty) => ty,
-                Err(err) => {
-                    return Err(MapLoadingError::InvalidBspType(err));
-                }
-            };
-
-            Ok(match ty {
-                wbsp::BspType::Partition => {
-                    let partition = unsafe { &elem.data.partition };
-                    let splitter_plane: geom::Plane = partition.plane.into();
-
-                    let (front, front_end) = bsp_from(elems, volumes, start + 1)?;
-                    let (back, back_end) = bsp_from(elems, volumes, front_end)?;
-
-                    (Box::new(Bsp::Partition { splitter_plane, front, back }), back_end)
-                }
-                wbsp::BspType::Volume => {
-                    let volume = unsafe { &elem.data.volume };
-                    let id: VolumeId = get_id(volume.volume.volume_index, volumes, "volume")?;
-
-                    (Box::new(Bsp::Volume(id)), start + 1)
-                }
-                wbsp::BspType::Void => {
-                    (Box::new(Bsp::Void), start + 1)
-                }
-            })
-        }
-
-        fn get_slice<'t, E>(
-            span: wbsp::Span,
-            arr: &'t [E],
-            kind: &'static str,
-        ) -> Result<&'t [E], MapLoadingError> {
-            arr
-                .get(span.range())
-                .ok_or(MapLoadingError::InvalidSpan {
-                    span_kind: kind,
-                    invalid_reason: "span overflow",
-                    buffer_size: arr.len(),
-                    span,
-                })
-        }
-
-        let header = load_read_tspan::<wbsp::Header>(
-            &data,
-            wbsp::Span { offset: 0, size: std::mem::size_of::<wbsp::Header>() as u32 }
-        )?.get(0).unwrap();
-
-        // Check file magic
-        if header.magic != wbsp::MAGIC {
-            return Err(MapLoadingError::InvalidMagic(header.magic));
-        }
-
-        macro_rules! load_head_span {
-            ($name: ident, $type: ty) => {
-                let $name = load_read_tspan::<$type>(&data, header.$name)?;
-            };
-        }
-
-        // Load spans stored in header
-        load_head_span!(chars,           u8                 );
-        load_head_span!(points,          wbsp::Vec3         );
-        load_head_span!(polygons,        wbsp::Span         );
-        load_head_span!(material_names,  wbsp::Span         );
-        load_head_span!(volume_surfaces, wbsp::Surface      );
-        load_head_span!(volume_portals,  wbsp::Portal       );
-        load_head_span!(volumes,         wbsp::Volume       );
-        load_head_span!(bsp_elements,    wbsp::BspElement   );
-        load_head_span!(bsp_models,      wbsp::BspModel     );
-        load_head_span!(dynamic_models,  wbsp::DynamicModel );
-
-        let map_polygon_set = polygons
-            .iter()
-            .map(|span| {
-                let point_span = get_slice(*span, points, "point")?;
-
-                Ok(geom::Polygon::from_ccw(point_span
-                    .into_iter()
-                    .map(|v| Into::<Vec3f>::into(*v))
-                    .collect()
-                ))
-            })
-            .collect::<Result<Vec<_>, MapLoadingError>>()?;
-
-        let map_material_name_set = material_names
-            .iter()
-            .map(|span| {
-                let chars = get_slice(*span, chars, "material name")?;
-                let str = std::str::from_utf8(chars)?;
-
-                Ok(str.to_string())
-            })
-            .collect::<Result<Vec<_>, MapLoadingError>>()?;
-
-        let map_volume_set = volumes
-            .iter()
-            .map(|volume| {
-                let portal_span = get_slice(volume.portals, volume_portals, "volume portal")?;
-                let surface_span = get_slice(volume.surfaces, volume_surfaces, "volume surface")?;
-
-                Ok(Volume {
-                    portals: portal_span
-                        .iter()
-                        .map(|portal| {
-                            // validate volume index
-                            Ok(Portal {
-                                dst_volume_id: get_id(portal.dst_volume_index, volumes, "volume")?,
-                                is_facing_front: portal.is_facing_front != 0,
-                                polygon_id: get_id(portal.polygon_index, polygons, "polygon")?,
-                            })
-                        })
-                        .collect::<Result<Vec<_>, MapLoadingError>>()?,
-                    surfaces: surface_span
-                        .iter()
-                        .map(|surface| {
-                            // Calculate volume set
-                            let u = surface.u.into();
-                            let v = surface.v.into();
-                            let polygon_id: PolygonId = get_id(surface.polygon_index, polygons, "polygon")?;
-
-                            // Calculate UV bounds
-                            let (u_min, u_max, v_min, v_max) = util::calculate_uv_ranges(
-                                &map_polygon_set[polygon_id.into_index()].points,
-                                u,
-                                v
-                            );
-
-                            Ok(Surface {
-                                material_id: get_id(surface.material_index, material_names, "material")?,
-                                polygon_id,
-                                is_sky: surface.flags.0 & wbsp::SurfaceFlags::SKY != 0,
-                                is_transparent: surface.flags.0 & wbsp::SurfaceFlags::TRANSPARENT != 0,
-                                lightmap: None,
-                                u,
-                                v,
-                                u_min,
-                                u_max,
-                                v_min,
-                                v_max,
-                            })
-                        })
-                        .collect::<Result<Vec<_>, MapLoadingError>>()?,
-                    bound_box: geom::BoundBox::new(
-                        volume.bound_box_min.into(),
-                        volume.bound_box_max.into(),
-                    ),
-                })
-            })
-            .collect::<Result<Vec<_>, MapLoadingError>>()?;
-
-        let map = Map {
-            polygon_set: map_polygon_set,
-            material_name_set: map_material_name_set,
-            volume_set: map_volume_set,
-
-            bsp_models: {
-                let bsp_models = bsp_models
-                    .iter()
-                    .map(|model| {
-                        Ok(BspModel {
-                            bound_box: geom::BoundBox::new(
-                                model.bound_box_min.into(),
-                                model.bound_box_max.into(),
-                            ),
-                            bsp: bsp_from(bsp_elements, volumes, model.bsp_root_index)?.0,
-                        })
-                    })
-                    .collect::<Result<Vec<_>, MapLoadingError>>()?;
-
-                bsp_models
-            },
-            world_model_id: get_id(header.world_bsp_model_index, bsp_models, "bsp model")?,
-            dynamic_models: {
-                let models = dynamic_models
-                    .iter()
-                    .map(|model| {
-                        Ok(DynamicModel {
-                            model_id: get_id(model.bsp_model_index, bsp_models, "bsp model")?,
-                            origin: model.origin.into(),
-                            rotation: model.rotation
-                        })
-                    })
-                    .collect::<Result<Vec<_>, MapLoadingError>>()?;
-
-                models
-            },
-        };
-
-        Ok(map)
-    }
-
-    /// Save map
-    pub fn save(&self, dst: &mut dyn std::io::Write) -> Result<(), MapSavingError> {
-        fn write_bsp(dst: &mut Vec<wbsp::BspElement>, bsp: &Bsp) {
-            match bsp {
-                Bsp::Partition {
-                    splitter_plane,
-                    front,
-                    back
-                } => {
-                    dst.push(wbsp::BspElement {
-                        ty: wbsp::BspType::Partition as u8,
-                        _pad: [0; _],
-                        data: wbsp::BspElementData {
-                            partition: wbsp::BspPartition {
-                                plane: (*splitter_plane).into(),
-                            },
-                        }
-                    });
-                    write_bsp(dst, front);
-                    write_bsp(dst, back);
-                }
-                Bsp::Volume(id) => {
-                    dst.push(wbsp::BspElement {
-                        ty: wbsp::BspType::Volume as u8,
-                        _pad: [0; _],
-                        data: wbsp::BspElementData {
-                            volume: wbsp::BspElementVolume {
-                                volume: wbsp::BspVolume {
-                                    volume_index: id.into_index() as u32,
-                                },
-                                _pad: [0; _],
-                            }
-                        },
-                    });
-                }
-                Bsp::Void => {
-                    dst.push(wbsp::BspElement {
-                        ty: wbsp::BspType::Void as u8,
-                        _pad: [0; _],
-                        data: wbsp::BspElementData {
-                            void: wbsp::BspElementVoid {
-                                _pad: [0; _],
-                            }
-                        },
-                    });
-                }
-            }
-        }
-
-        // Precalculate chunks
-        let mut chars = Vec::<u8>::new();
-        let mut points = Vec::<wbsp::Vec3>::new();
-        let mut polygons = Vec::<wbsp::Span>::new();
-        let mut material_names = Vec::<wbsp::Span>::new();
-        let mut volume_surfaces = Vec::<wbsp::Surface>::new();
-        let mut volume_portals = Vec::<wbsp::Portal>::new();
-        let mut volumes = Vec::<wbsp::Volume>::new();
-        let mut bsp_elements = Vec::<wbsp::BspElement>::new();
-        let mut bsp_models = Vec::<wbsp::BspModel>::new();
-        let mut dynamic_models = Vec::<wbsp::DynamicModel>::new();
-
-        for name in &self.material_name_set {
-            material_names.push(wbsp::Span {
-                offset: chars.len() as u32,
-                size: name.len() as u32,
-            });
-
-            chars.extend_from_slice(name.as_bytes());
-        }
-
-        for polygon in &self.polygon_set {
-            polygons.push(wbsp::Span {
-                offset: points.len() as u32,
-                size: polygon.points.len() as u32,
-            });
-
-            for pt in &polygon.points {
-                points.push((*pt).into());
-            }
-        }
-
-        for volume in &self.volume_set {
-            volumes.push(wbsp::Volume {
-                portals: wbsp::Span {
-                    offset: volume_portals.len() as u32,
-                    size: volume.portals.len() as u32,
-                },
-                surfaces: wbsp::Span {
-                    offset: volume_surfaces.len() as u32,
-                    size: volume.surfaces.len() as u32,
-                },
-                bound_box_min: volume.bound_box.min().into(),
-                bound_box_max: volume.bound_box.max().into(),
-            });
-
-            for surface in &volume.surfaces {
-                volume_surfaces.push(wbsp::Surface {
-                    material_index: surface.material_id.into_index() as u32,
-                    polygon_index: surface.polygon_id.into_index() as u32,
-                    u: surface.u.into(),
-                    v: surface.v.into(),
-                    flags: wbsp::SurfaceFlags(0
-                        | if surface.is_transparent { wbsp::SurfaceFlags::TRANSPARENT } else { 0 }
-                        | if surface.is_sky         { wbsp::SurfaceFlags::SKY         } else { 0 }
-                    ),
-                });
-            }
-
-            for portal in &volume.portals {
-                volume_portals.push(wbsp::Portal {
-                    polygon_index: portal.polygon_id.into_index() as u32,
-                    dst_volume_index: portal.dst_volume_id.into_index() as u32,
-                    is_facing_front: portal.is_facing_front as u8,
-                    _pad: [0; _],
-                });
-            }
-        }
-
-        for model in &self.bsp_models {
-            let bsp_root_index = bsp_elements.len() as u32;
-
-            write_bsp(&mut bsp_elements, &model.bsp);
-
-            bsp_models.push(wbsp::BspModel {
-                bsp_root_index,
-                bound_box_min: model.bound_box.min().into(),
-                bound_box_max: model.bound_box.max().into(),
-            });
-        }
-
-        for dynamic_model in &self.dynamic_models {
-            dynamic_models.push(wbsp::DynamicModel {
-                bsp_model_index: dynamic_model.model_id.into_index() as u32,
-                origin: dynamic_model.origin.into(),
-                rotation: dynamic_model.rotation,
-            });
-        }
-
-        let mut header = wbsp::Header {
-            magic: wbsp::MAGIC,
-            world_bsp_model_index: self.world_model_id.into_index() as u32,
-
-            chars: wbsp::Span::zero(),
-            points: wbsp::Span::zero(),
-            polygons: wbsp::Span::zero(),
-            material_names: wbsp::Span::zero(),
-            volume_surfaces: wbsp::Span::zero(),
-            volume_portals: wbsp::Span::zero(),
-            volumes: wbsp::Span::zero(),
-            bsp_elements: wbsp::Span::zero(),
-            bsp_models: wbsp::Span::zero(),
-            dynamic_models: wbsp::Span::zero(),
-        };
-
-        let mut infos: [(&mut wbsp::Span, &[u8]); 10] = [
-            (&mut header.chars,           chars.as_bytes()),
-            (&mut header.points,          points.as_bytes()),
-            (&mut header.polygons,        polygons.as_bytes()),
-            (&mut header.material_names,  material_names.as_bytes()),
-            (&mut header.volume_surfaces, volume_surfaces.as_bytes()),
-            (&mut header.volume_portals,  volume_portals.as_bytes()),
-            (&mut header.volumes,         volumes.as_bytes()),
-            (&mut header.bsp_elements,    bsp_elements.as_bytes()),
-            (&mut header.bsp_models,      bsp_models.as_bytes()),
-            (&mut header.dynamic_models,  dynamic_models.as_bytes()),
-        ];
-
-        // Bytes used for padding writes
-        let pad_bytes = [0u8; 16];
-
-        fn align16(n: usize) -> usize { (n / 16 + (n % 16 != 0) as usize) * 16 }
-        let pad_for = |n| &pad_bytes[..align16(n) - n];
-
-        let mut write_infos = Vec::with_capacity(2 + infos.len() * 2);
-
-        // Insert two dummy write infos
-        write_infos.push(std::io::IoSlice::new(&[]));
-        write_infos.push(std::io::IoSlice::new(&[]));
-
-        // Calculate sizes and paddings
-        let mut offset = align16(std::mem::size_of::<wbsp::Header>());
-        for (span, vec) in &mut infos {
-            span.offset = offset as u32;
-            span.size = vec.len() as u32;
-            offset += align16(vec.len());
-
-            write_infos.push(std::io::IoSlice::new(vec));
-            write_infos.push(std::io::IoSlice::new(pad_for(vec.len())));
-        }
-
-        // Update header and header padding slices
-        write_infos[0] = std::io::IoSlice::new(header.as_bytes());
-        write_infos[1] = std::io::IoSlice::new(pad_for(std::mem::size_of::<wbsp::Header>()));
-
-        // Perform write!
-        if dst.write_vectored(&write_infos)? != offset {
-            return Err(MapSavingError::IncompleteWrite);
-        }
-
-        Ok(())
     }
 }

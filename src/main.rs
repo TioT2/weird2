@@ -1486,7 +1486,7 @@ fn main() {
 
                     let mut bsp_file_data = Vec::new();
                     bsp_file.read_to_end(&mut bsp_file_data).unwrap();
-                    bsp::Map::load(&bsp_file_data).unwrap()
+                    bsp::wbsp::load(&bsp_file_data).unwrap()
                 }
                 Err(_) => {
                     // Compile map
@@ -1498,7 +1498,7 @@ fn main() {
 
                     // Save map to map cache
                     if let Ok(mut file) = std::fs::File::create(&wbsp_path) {
-                        compiled_map.save(&mut file).unwrap();
+                        bsp::wbsp::save(&compiled_map, &mut file).unwrap()
                     }
 
                     compiled_map

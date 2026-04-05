@@ -1289,7 +1289,7 @@ impl CompileContext {
             .volumes
             .into_iter()
             .map(|hull_volume| {
-                let bound_box = geom::BoundBox::for_points(hull_volume.faces.iter().map(|f| f.polygon.points.iter().copied()).flatten());
+                let bound_box = geom::BoundBox::for_points(hull_volume.faces.iter().flat_map(|f| f.polygon.points.iter().copied()));
 
                 let mut surfaces = Vec::new();
                 let mut portals = Vec::new();
@@ -1366,7 +1366,7 @@ impl CompileContext {
     }
 }
 
-/// World building error
+/// BSP compilation error
 #[derive(Debug)]
 pub enum Error {
     /// No worldspawn entity
@@ -1395,11 +1395,10 @@ pub fn compile(map: &map::Map) -> Result<super::Map, Error> {
             continue 'entity_compilation_loop;
         }
 
-        let classname = entity.properties.get("classname")
-            .map(|name| name.as_str())
-            .unwrap_or("");
-
-        let is_worldspawn = classname == "worldspawn";
+        let is_worldspawn = entity.properties
+            .get("classname")
+            .map(|n| n == "worldspawn")
+            .unwrap_or(false);
 
         let mut model_compile_context = BspModelCompileContext {
             bound_box: geom::BoundBox::empty(),
@@ -1427,29 +1426,16 @@ pub fn compile(map: &map::Map) -> Result<super::Map, Error> {
             worldspawn_entity_index_opt = Some(index);
         }
 
-        let mut origin: Option<Vec3f> = None;
-        let mut angle: Option<f32> = None;
+        let origin = entity.properties
+            .get("origin")
+            .and_then(|v| v.split_whitespace().map(|v| v.parse::<f32>()).collect::<Result<Vec<_>, _>>().ok())
+            .map(|mut vs| { vs.truncate(3); vs })
+            .and_then(|va| TryInto::<[f32; 3]>::try_into(va).ok())
+            .map(|xyz| Vec3f::from_array(xyz));
 
-        'parse_origin: {
-            if let Some(origin_str) = entity.properties.get("origin") {
-                let vs = origin_str.split_whitespace()
-                    .map(|v| v.parse::<f32>()).collect::<Result<Vec<_>, _>>().ok();
-    
-                let Some(vs) = vs else {
-                    break 'parse_origin;
-                };
-
-                let Some([x, y, z]) = vs.get(..) else {
-                    break 'parse_origin;
-                };
-
-                origin = Some(Vec3f::new(*x, *y, *z));
-            }
-        }
-
-        if let Some(angle_str) = entity.properties.get("angle") {
-            angle = angle_str.parse::<f32>().ok();
-        }
+        let angle = entity.properties
+            .get("angle")
+            .and_then(|s| s.parse::<f32>().ok());
 
         if origin.is_some() || angle.is_some() {
             let origin = origin.unwrap_or(Vec3f::zero());

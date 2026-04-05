@@ -955,5 +955,3 @@ pub struct Quat<T> {
     pub y: T,
     pub z: T,
 }
-
-// mod.rs

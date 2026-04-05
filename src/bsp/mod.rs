@@ -5,16 +5,9 @@ use zerocopy::{FromBytes, Immutable, IntoBytes};
 use std::num::NonZeroU32;
 use crate::{geom, map, math::Vec3f};
 
-/// Declare actual map builder module
 pub mod compiler;
-
-/// WBSP description module
 pub mod wbsp;
-
-/// Lightmap structure
 pub mod lightmap_baker;
-
-/// BSP internal utilities
 mod util;
 
 /// Id type
@@ -848,5 +841,3 @@ impl Map {
         Ok(())
     }
 }
-
-// mod.rs

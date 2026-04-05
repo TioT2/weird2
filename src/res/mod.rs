@@ -1,4 +1,4 @@
-///! Resource format
+//! Resource format
 
 /// Quake 1 WAD2 file format
 pub mod q1_wad2;

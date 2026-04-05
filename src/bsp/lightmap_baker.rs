@@ -1,3 +1,5 @@
+//! BSP lightmap baker implementation
+
 use crate::{bsp::{Id, Lightmap}, math::Vec3f, u64_from_u16};
 
 /// Bake the most primitive lightmap possible

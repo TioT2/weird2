@@ -1,4 +1,4 @@
-// Main project module
+//! Project root module
 
 // Resources:
 // [WMAP -> WBSP], WRES -> WDAT/WRES
@@ -8,40 +8,22 @@
 // WRES - Resource format, contains textures/sounds/models/etc.
 // WDAT - Data format, contains 'final' project with BSP's.
 
-use std::{collections::{HashMap, HashSet}, io::Read, marker::PhantomData, sync::Arc};
+use std::{collections::{HashMap, HashSet}, io::Read, sync::Arc};
 use math::{Mat4f, Vec2f, Vec3f};
 use sdl2::keyboard::Scancode;
 
-use crate::math::FVec4;
+use crate::{math::FVec4, frame_slice::FrameSliceMut};
 
-/// Basic math utility
 pub mod math;
-
-/// System font
 pub mod system_font;
-
-/// Random number generator
+pub mod frame_slice;
 pub mod rand;
-
-/// Basic geometry
 pub mod geom;
-
-/// Compiled map implementation
 pub mod bsp;
-
-/// Map format implementation
 pub mod map;
-
-/// Resource pack
 pub mod res;
-
-/// Camera
 pub mod camera;
-
-/// Timer
 pub mod timer;
-
-/// Input controller
 pub mod input;
 
 /// Different rasterization modes
@@ -103,6 +85,7 @@ pub const fn u64_into_u16(value: u64) -> [u16; 4] {
     ]
 }
 
+/// Render vertex structure
 #[derive(Copy, Clone)]
 pub struct Vertex {
     /// Vertex position
@@ -381,123 +364,6 @@ impl RenderCamera {
                 tex_coord: pt.tex_coord * inv_z.into()
             };
         }
-    }
-}
-
-/// Structure that allows safe mutable access to disjoint framebuffer subsets
-pub struct FrameSliceMut<'t, T> {
-    /// Width of region allowed to write
-    width: usize,
-
-    /// Height of region allowed to write
-    height: usize,
-
-    /// Region stride (e.g. number of pixels to jump to next line, **must be** greater than width)
-    stride: usize,
-
-    /// Pointer to top-left part of frame
-    data: *mut T,
-
-    /// `data` contents lifetime holder
-    _phantom: PhantomData<&'t mut ()>,
-}
-
-impl<'t, T> FrameSliceMut<'t, T> {
-    /// Construct new RenderFrame from w, h, s parameters
-    pub const fn new(width: usize, height: usize, stride: usize, data: &'t mut [T]) -> Self {
-        assert!(height * stride <= data.len(), "Data array width must be equal to content width");
-        assert!(width <= stride, "Slice width must be less or equal to frame stride");
-
-        Self {
-            width,
-            height,
-            stride,
-            data: data.as_mut_ptr(),
-            _phantom: PhantomData,
-        }
-    }
-
-    /// Create empty frame slice
-    pub const fn empty() -> Self {
-        Self {
-            width: 0,
-            height: 0,
-            stride: 0,
-            data: std::ptr::dangling_mut(),
-            _phantom: PhantomData,
-        }
-    }
-
-    /// Get frame width
-    #[inline]
-    pub fn width(&self) -> usize {
-        self.width
-    }
-
-    /// Get frame height
-    #[inline]
-    pub fn height(&self) -> usize {
-        self.height
-    }
-
-    /// Get frame stride (in size_of::<T>())
-    #[inline]
-    pub fn stride(&self) -> usize {
-        self.stride
-    }
-
-    /// Get data mutable pointer
-    #[inline]
-    pub fn as_mut_ptr(&self) -> *mut T {
-        self.data
-    }
-
-    /// Split framebuffer by vertical line at `x` into two disjoint subsets.
-    /// `x` is truncated to buffer width.
-    pub fn split_vertical(self, x: usize) -> (Self, Self) {
-        let x = usize::min(x, self.width);
-
-        (
-            Self {
-                width: x,
-                data: self.data,
-                ..self
-            },
-            Self {
-                width: self.width - x,
-                data: unsafe { self.data.add(x) },
-                ..self
-            }
-        )
-    }
-
-    /// Split framebuffer by horizontal line at `y` into two disjoint subsets.
-    /// `y` is truncated to buffer height.
-    pub fn split_horizontal(self, y: usize) -> (Self, Self) {
-        let y = usize::min(y, self.height);
-
-        (
-            Self {
-                height: y,
-                data: self.data,
-                ..self
-            },
-            Self {
-                height: self.height - y,
-                data: unsafe { self.data.add(y * self.stride) },
-                ..self
-            }
-        )
-    }
-
-    /// Get horizontal line by it's y coordinate
-    pub fn getline<'l>(&'l mut self, y: usize) -> Option<&'l mut [T]> {
-        (y < self.height).then(|| unsafe {
-            std::slice::from_raw_parts_mut(
-                self.data.add(y * self.stride),
-                self.width
-            )
-        })
     }
 }
 
@@ -1863,13 +1729,9 @@ fn main() {
                         || hdr_to_ldr(&rendered_hdr_buffer, &mut ldr_frame_buffer, true)
                     ).1;
 
-                    // Render system text
-                    system_font::frame(
-                        width as usize,
-                        height as usize,
-                        stride as usize,
-                        ldr_frame_buffer.as_mut_ptr()
-                    )
+                    // Render utility text by system font
+                    let ldr_fb_fs = FrameSliceMut::new(width as usize, height as usize, stride as usize, &mut ldr_frame_buffer);
+                    system_font::write(ldr_fb_fs)
                         .str(16, 8, &format!("FPS: {} ({}ms)", timer.get_fps(), 1000.0 / timer.get_fps()))
                         .str(16, 16, &format!("SC={}, RM={}",
                             shadow_camera.is_some() as u32,
@@ -1901,5 +1763,3 @@ fn main() {
         hdr_frame_buffer = prev_hdr_frame_buffer.unwrap_or(Vec::new());
     }
 }
-
-// main.rs

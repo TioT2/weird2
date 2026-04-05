@@ -1,4 +1,4 @@
-///! BSP utility set
+///! BSP utilities
 
 use crate::{geom, math::{Vec2f, Vec3f}};
 
@@ -66,5 +66,3 @@ pub fn calculate_uv_ranges(points: &[Vec3f], u: geom::Plane, v: geom::Plane) -> 
         uv_bounds.max.y().ceil() as i32,
     )
 }
-
-// util.rs

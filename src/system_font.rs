@@ -1,3 +1,7 @@
+//! Primitive 8x8 pixel font (for debug output) implementation file
+
+use crate::frame_slice::FrameSliceMut;
+
 /// System font data (256 8x8 1bit images)
 const FONT: [u64; 256] = [
     0x0000000000000000, 0x7E81A581BD99817E, 0x7EFFDBFFC3E7FF7E, 0x6CFEFEFE7C381000,
@@ -68,55 +72,49 @@ const FONT: [u64; 256] = [
 const FONT_WIDTH: usize = 8;
 const FONT_HEIGHT: usize = 8;
 
-pub struct Frame {
-    width: usize,
-    height: usize,
-    stride: usize,
-    ptr: *mut u32,
-}
+/// Frame structure
+pub struct Frame<'t>(FrameSliceMut<'t, u32>);
 
-impl Frame {
+impl<'t> Frame<'t> {
     /// Write character
-    fn write_ch(&self, x: usize, y: usize, utf_ch: char) {
-        let img = FONT[utf_ch as u8 as usize];
+    fn write_ch(&mut self, x: usize, y: usize, utf_ch: char) {
+        let img = FONT.get(utf_ch as usize).copied().unwrap_or(FONT[1]);
 
         let x_start = x;
         let y_start = y;
-        let y_end = usize::min(y + FONT_HEIGHT, self.height);
-        let x_end = usize::min(x + FONT_WIDTH, self.width);
+        let y_end = usize::min(y + FONT_HEIGHT, self.0.height());
+        let x_end = usize::min(x + FONT_WIDTH, self.0.width());
 
         for y in y_start..y_end {
             for x in x_start..x_end {
                 if (img >> ((7 + y_start - y) * FONT_WIDTH + (7 + x_start - x))) & 1 == 1 {
-                    unsafe {
-                        let ptr = self.ptr.add(y * self.stride + x);
-                        *ptr = !*ptr;
-                    };
+                    let ptr = &mut self.0.getline(y).unwrap()[x];
+                    *ptr = !*ptr;
                 }
             }
         }
     }
 
-    fn write_str(&self, x: usize, y: usize, str: &str) {
+    fn write_str(&mut self, x: usize, y: usize, str: &str) {
         for (index, ch) in str.chars().enumerate() {
             self.write_ch(x + index * FONT_WIDTH, y, ch);
         }
     }
 
     /// Write string (note: non-ASCII characters are replaced with '*')
-    pub fn str(&self, x: usize, y: usize, str: &str) -> &Self {
+    pub fn str(&mut self, x: usize, y: usize, str: &str) -> &mut Self {
         self.write_str(x, y, str);
         self
     }
 
     /// Write single character
-    pub fn char(&self, x: usize, y: usize, ch: char) -> &Self {
+    pub fn char(&mut self, x: usize, y: usize, ch: char) -> &mut Self {
         self.write_ch(x, y, ch);
         self
     }
 }
 
-/// Build frame used for font rendering
-pub fn frame(width: usize, height: usize, stride: usize, ptr: *mut u32) -> Frame {
-    Frame { width, height, stride, ptr }
+/// Write with system font to `fs` frame slice
+pub fn write<'t>(fs: FrameSliceMut<'t, u32>) -> Frame<'t> {
+    Frame(fs)
 }

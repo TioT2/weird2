@@ -8,11 +8,12 @@
 // WRES - Resource format, contains textures/sounds/models/etc.
 // WDAT - Data format, contains 'final' project with BSP's.
 
-use std::{collections::{HashMap, HashSet}, io::Read, sync::Arc};
+use std::{collections::{HashMap, HashSet}, io::Read, sync::{Arc, mpsc}};
 use math::{Mat4f, Vec2f, Vec3f};
 use sdl2::keyboard::Scancode;
+use zerocopy::IntoBytes;
 
-use crate::{math::FVec4, frame_slice::FrameSliceMut};
+use crate::{frame_slice::FrameSliceMut, math::FVec4};
 
 pub mod math;
 pub mod system_font;
@@ -244,15 +245,6 @@ fn clip_polygon_oct(
         && clip_polygon(vertices, temp, clip_oct.max.z(), le, norm_y_s_x)
         && clip_polygon(vertices, temp, clip_oct.min.w(), ge, norm_y_a_x)
         && clip_polygon(vertices, temp, clip_oct.max.w(), le, norm_y_a_x)
-    // true
-    //     && clip_polygon(vertices, temp, clip_oct.min_x, ge, norm_x)
-    //     && clip_polygon(vertices, temp, clip_oct.max_x, le, norm_x)
-    //     && clip_polygon(vertices, temp, clip_oct.min_y, ge, norm_y)
-    //     && clip_polygon(vertices, temp, clip_oct.max_y, le, norm_y)
-    //     && clip_polygon(vertices, temp, clip_oct.min_y_s_x, ge, norm_y_s_x)
-    //     && clip_polygon(vertices, temp, clip_oct.max_y_s_x, le, norm_y_s_x)
-    //     && clip_polygon(vertices, temp, clip_oct.min_y_a_x, ge, norm_y_a_x)
-    //     && clip_polygon(vertices, temp, clip_oct.max_y_a_x, le, norm_y_a_x)
 }
 
 /// Camera that (additionally) holds info about projection and frame size
@@ -920,7 +912,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
         let mut inv_render_set_value = Vec::new();
         let inv_render_set = &mut inv_render_set_value;
 
-        // Set of Potentially visible volumes with their clip octagons
+        // Potentially Visible volume (with corresponding clip octagon) Set
         let mut pvs = HashMap::<bsp::VolumeId, geom::ClipOct>::new();
 
         // Initialize PVS
@@ -947,13 +939,12 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                     .unwrap();
 
                 // Perform modified backface culling
-                let backface_cull_result =
-                    portal_polygon.plane.get_signed_distance(camera.location) >= 0.0;
+                let backface_cull_result = portal_polygon.plane.get_signed_distance(camera.location) >= 0.0;
                 if backface_cull_result != portal.is_facing_front {
                     continue 'portal_rendering;
                 }
 
-                let clip_rect = 'portal_validation: {
+                let clip_oct = 'portal_validation: {
                     /*
                     I think, that projection is main source of the 'black bug'
                     is (kinda) infinite points during polygon projection process.
@@ -1014,17 +1005,14 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                     clip_oct
                 };
 
-                // Insert clipping rectangle in PVS
-                let pvs_entry = pvs
-                    .entry(portal.dst_volume_id);
-
-                match pvs_entry {
+                // Insert clipping octagon in PVS
+                match pvs.entry(portal.dst_volume_id) {
                     std::collections::hash_map::Entry::Occupied(mut occupied) => {
                         let existing_rect: &mut geom::ClipOct = occupied.get_mut();
-                        *existing_rect = existing_rect.union(&clip_rect);
+                        *existing_rect = existing_rect.union(&clip_oct);
                     }
                     std::collections::hash_map::Entry::Vacant(vacant) => {
-                        vacant.insert(clip_rect);
+                        vacant.insert(clip_oct);
                     }
                 }
             }
@@ -1157,7 +1145,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
 pub enum RenderInputMessage {
     /// Request for frame rendering
     NewFrame {
-        /// Frame buffer used for rendering
+        /// Frame target buffer
         frame_buffer: Vec<u64>,
         width: u32,
         height: u32,
@@ -1287,22 +1275,19 @@ pub fn hdr_to_ldr(hdr: &[u64], ldr: &mut[u32], enable_tonemapping: bool) {
 }
 
 fn present_frame(
-    frame_buffer: *mut u32,
-    frame_width: usize,
-    frame_height: usize,
-    frame_stride: usize,
+    mut frame: FrameSliceMut<'_, u32>,
     window_surface: &mut sdl2::video::WindowSurfaceRef,
 ) {
+    let width = frame.width() as u32;
+    let height = frame.height() as u32;
+    let stride = frame.stride() as u32 * 4;
+    let surface_bytes = frame.as_flat().unwrap().as_mut_bytes();
+
     let mut render_surface = match sdl2::surface::Surface::from_data(
-        unsafe {
-            std::slice::from_raw_parts_mut(
-                frame_buffer as *mut u8,
-                frame_stride * frame_height * 4
-            )
-        },
-        frame_width as u32,
-        frame_height as u32,
-        frame_stride as u32 * 4,
+        surface_bytes,
+        width,
+        height,
+        stride,
         sdl2::pixels::PixelFormatEnum::ABGR8888
     ) {
         Ok(surface) => surface,
@@ -1319,7 +1304,7 @@ fn present_frame(
 
     // Perform render surface blit
     let (window_w, window_h) = window_surface.size();
-    let src_rect = sdl2::rect::Rect::new(0, 0, frame_width as u32, frame_height as u32);
+    let src_rect = sdl2::rect::Rect::new(0, 0, width, height);
     let dst_rect = sdl2::rect::Rect::new(0, 0, window_w, window_h);
 
     if let Err(err) = render_surface.blit_scaled(src_rect, window_surface, dst_rect) {
@@ -1343,11 +1328,9 @@ fn with_time_ms<T>(f: impl FnOnce() -> T) -> (T, f64) {
 fn init_render_thread(
     map: Arc<bsp::Map>,
     material_table: Arc<res::MaterialTable>
-) -> (std::sync::mpsc::Sender<RenderInputMessage>, std::sync::mpsc::Receiver<RenderOutputMessage>) {
-    let (render_in_sender, render_in_reciever) =
-        std::sync::mpsc::channel::<RenderInputMessage>();
-    let (render_out_sender, render_out_reciever) =
-        std::sync::mpsc::channel::<RenderOutputMessage>();
+) -> (mpsc::Sender<RenderInputMessage>, mpsc::Receiver<RenderOutputMessage>) {
+    let (render_in_sender, render_in_reciever) = mpsc::channel::<RenderInputMessage>();
+    let (render_out_sender, render_out_reciever) = mpsc::channel::<RenderOutputMessage>();
 
     // Spawn render thread
     _ = std::thread::spawn(move || {
@@ -1578,8 +1561,7 @@ fn main() {
     let window = video
         .window("WEIRD-2", 1280, 800)
         .build()
-        .unwrap()
-    ;
+        .unwrap();
 
     // Setup systems
     let mut timer = timer::Timer::new();
@@ -1604,7 +1586,7 @@ fn main() {
 
     // Camera used for visible set building
 
-    // Buffer that contains software-rendered pixels
+    // Buffer that contains rendered pixels
     let mut hdr_frame_buffer = Vec::<u64>::new();
 
     // LDR framebuffer
@@ -1701,7 +1683,8 @@ fn main() {
             rasterization_mode,
         });
 
-        if let Err(_) = send_res {
+        if let Err(e) = send_res {
+            println!("Sending error: {}", e);
             break 'main_loop;
         }
 
@@ -1730,25 +1713,19 @@ fn main() {
                     ).1;
 
                     // Render utility text by system font
-                    let ldr_fb_fs = FrameSliceMut::new(width as usize, height as usize, stride as usize, &mut ldr_frame_buffer);
-                    system_font::write(ldr_fb_fs)
+                    let mut ldr_frame = FrameSliceMut::new(width as usize, height as usize, stride as usize, &mut ldr_frame_buffer);
+                    system_font::write(ldr_frame.reborrow())
                         .str(16, 8, &format!("FPS: {} ({}ms)", timer.get_fps(), 1000.0 / timer.get_fps()))
                         .str(16, 16, &format!("SC={}, RM={}",
                             shadow_camera.is_some() as u32,
                             rasterization_mode as u32
                         ))
                         .str(16, 24, &format!("TM: {}ms", tm_time))
-                    ;
+                        ;
 
-                    // Present frame
+                    // Present rendered frame
                     match window.surface(&event_pump) {
-                        Ok(mut window_surface) => present_frame(
-                            ldr_frame_buffer.as_mut_ptr(),
-                            width as usize,
-                            height as usize,
-                            stride as usize,
-                            &mut window_surface
-                        ),
+                        Ok(mut window_surface) => present_frame(ldr_frame.reborrow(), &mut window_surface),
                         Err(err) => eprintln!("Cannot get window surface: {}", err),
                     };
 

@@ -10,10 +10,9 @@
 
 use std::{collections::{HashMap, HashSet}, io::Read, sync::{Arc, mpsc}};
 use math::{Mat4f, Vec2f, Vec3f};
-use sdl2::keyboard::Scancode;
 use zerocopy::IntoBytes;
 
-use crate::{frame_slice::FrameSliceMut, math::FVec4};
+use crate::{frame_slice::{FrameSlice, FrameSliceMut}, math::FVec4};
 
 pub mod math;
 pub mod system_font;
@@ -433,7 +432,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
             curr_xzuv: math::FVec4,
             prev_y: f32,
             curr_y: f32,
-            slope_xzuv: math::FVec4,
+            d_xzuv: math::FVec4,
         }
 
         impl LineContext {
@@ -452,7 +451,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                 let dy = self.curr_y - self.prev_y;
 
                 // Check if edge is flat
-                self.slope_xzuv = if dy <= DY_EPSILON {
+                self.d_xzuv = if dy <= DY_EPSILON {
                     math::FVec4::zero()
                 } else {
                     (self.curr_xzuv - self.prev_xzuv) / dy.into()
@@ -491,13 +490,13 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
             }
 
             let left_xzuv = math::FVec4::mul_add(
-                left.slope_xzuv,
+                left.d_xzuv,
                 math::FVec4::broadcast(y - left.prev_y),
                 left.prev_xzuv,
             );
 
             let right_xzuv = math::FVec4::mul_add(
-                right.slope_xzuv,
+                right.d_xzuv,
                 math::FVec4::broadcast(y - right.prev_y),
                 right.prev_xzuv,
             );
@@ -507,7 +506,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
 
             let dx = right_x - left_x;
 
-            let slope_xzuv = if dx <= DY_EPSILON {
+            let d_xzuv = if dx <= DY_EPSILON {
                 math::FVec4::zero()
             } else {
                 (right_xzuv - left_xzuv) / dx.into()
@@ -518,7 +517,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                 let end = usize::min(right_x.floor() as usize, self.frame.width());
                 let start = usize::min(left_x.floor() as usize, end);
 
-                &mut self.frame
+                self.frame
                     .getline(pixel_y)
                     .unwrap()
                     .get_mut(start..end)
@@ -530,7 +529,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
 
             for (x, p) in pixel_row_slice.into_iter().enumerate() {
                 pixel_fn(p, math::FVec4::mul_add(
-                    slope_xzuv,
+                    d_xzuv,
                     math::FVec4::broadcast(x as f32 - pixel_off),
                     left_xzuv
                 ));
@@ -807,7 +806,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                 ((min_dist_2 / res).log2() / 2.0 + 1.3) as usize
             };
 
-            let (image, image_uv_scale) = texture.get_mipmap(mip_index);
+            let (image, image_uv_scale) = texture.get_mip_level(mip_index.min(texture.mip_levels() - 1)).unwrap();
 
             // Calculate simple per-face diffuse light
             let light_diffuse = Vec3f::new(0.30, 0.47, 0.80)
@@ -1170,28 +1169,34 @@ pub enum RenderOutputMessage {
 /// Build surface texture
 fn build_surface_texture_impl<'t, const ENABLE_LIGHTING: bool>(
     data: &'t mut [u64],
-    src: res::ImageRef,
+    src: FrameSlice<u32>,
     light: f32
 ) -> SurfaceTexture<'t> {
-    for (src, dst) in Iterator::zip(src.data.iter(), data.iter_mut()) {
-        let [r, g, b, _] = src.to_le_bytes();
+    for y in 0..src.height() {
+        let off = y * src.width();
+        let src_line = src.getline(y).unwrap();
+        let dst_line = &mut data[off..off + src.width()];
 
-        *dst = u64_from_u16(if ENABLE_LIGHTING {
-            [
-                unsafe { (r as f32 * light).to_int_unchecked::<u16>() },
-                unsafe { (g as f32 * light).to_int_unchecked::<u16>() },
-                unsafe { (b as f32 * light).to_int_unchecked::<u16>() },
-                0
-            ]
-        } else {
-            [r as u16, g as u16, b as u16, 0]
-        });
+        for (src, dst) in Iterator::zip(src_line.iter(), dst_line.iter_mut()) {
+            let [r, g, b, _] = src.to_le_bytes();
+
+            *dst = u64_from_u16(if ENABLE_LIGHTING {
+                [
+                    unsafe { (r as f32 * light).to_int_unchecked::<u16>() },
+                    unsafe { (g as f32 * light).to_int_unchecked::<u16>() },
+                    unsafe { (b as f32 * light).to_int_unchecked::<u16>() },
+                    0
+                ]
+            } else {
+                [r as u16, g as u16, b as u16, 0]
+            });
+        }
     }
 
     SurfaceTexture {
-        width: src.width,
-        height: src.height,
-        stride: src.width,
+        width: src.width(),
+        height: src.height(),
+        stride: src.width(),
         data: data,
     }
 }
@@ -1199,11 +1204,11 @@ fn build_surface_texture_impl<'t, const ENABLE_LIGHTING: bool>(
 /// Build surface texture with constant lighting
 fn build_surface_texture<'t>(
     data: &'t mut Vec<u64>,
-    src: res::ImageRef,
+    src: FrameSlice<u32>,
     light: f32,
     enable_lighting: bool
 ) -> SurfaceTexture<'t> {
-    data.resize(src.width * src.height, 0);
+    data.resize(src.width() * src.height(), 0);
 
     if enable_lighting {
         build_surface_texture_impl::<true>(data, src, light)
@@ -1619,17 +1624,9 @@ fn main() {
 
         timer.response();
         camera.response(&timer, &input);
-        // println!("<{}, {}, {}> <{}, {}, {}>",
-        //     camera.location.x(),
-        //     camera.location.y(),
-        //     camera.location.z(),
-        //     camera.direction.x(),
-        //     camera.direction.y(),
-        //     camera.direction.z(),
-        // );
 
         // Toggle shadow camera
-        if input.is_key_clicked(Scancode::Num9) {
+        if input.is_key_clicked(input::Key::Num9) {
             shadow_camera = if shadow_camera.is_none() {
                 Some(camera)
             } else {
@@ -1637,7 +1634,7 @@ fn main() {
             };
         }
 
-        if input.is_key_clicked(Scancode::Num0) {
+        if input.is_key_clicked(input::Key::Num0) {
             rasterization_mode = rasterization_mode.next();
         }
 

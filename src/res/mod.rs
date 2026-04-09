@@ -4,27 +4,10 @@
 pub mod q1_wad2;
 
 use std::{collections::BTreeMap, ffi::CStr};
+use thiserror::Error;
 use zerocopy::FromBytes;
 
-use crate::{bsp::{self, Id}, rand};
-
-/// Image reference
-/// # Note
-/// Image data should have exactly stride * height elements
-#[derive(Copy, Clone)]
-pub struct ImageRef<'t> {
-    /// Width (in pixels)
-    pub width: usize,
-
-    /// Height (in pixels)
-    pub height: usize,
-
-    /// Image line stride, in dwords
-    pub stride: usize,
-
-    /// RGBX Data
-    pub data: &'t [u32],
-}
+use crate::{bsp::{self, Id}, frame_slice::FrameSlice, rand};
 
 /// Mipmapped texture
 pub struct Texture {
@@ -44,44 +27,49 @@ pub struct Texture {
     data: Vec<u32>,
 }
 
+impl Default for Texture {
+    fn default() -> Self {
+        Self::new_checker(0, 0xFF00FF)
+    }
+}
+
 impl Texture {
-    /// Get default 'not found' texture
-    pub fn default() -> Self {
+    /// Get 2x2 checker texture ([`even`] is color at even corodinate sum)
+    pub fn new_checker(even: u32, odd: u32) -> Self {
         Self {
             uv_scale: 32.0,
             width: 2,
             height: 2,
             offsets: vec![0],
-            data: vec![0x000000, 0xFF00FF, 0xFF00FF, 0x000000],
+            data: vec![even, odd, odd, even],
         }
     }
 
-    /// Get texture mipmap count
-    pub fn get_mipmap_count(&self) -> usize {
+    /// Get base texture width
+    pub fn width(&self) -> usize {
+        self.width
+    }
+
+    /// Get base texture height
+    pub fn height(&self) -> usize {
+        self.height
+    }
+
+    /// Get number of texture mip levels
+    pub fn mip_levels(&self) -> usize {
         self.offsets.len()
     }
 
-    /// Mip image reference
-    /// Returns (image, uv_scale) pair with UV account
-    pub fn get_mipmap<'t>(&'t self, index: usize) -> (ImageRef<'t>, f32) {
-        // Clamp mipmap index
-        let index = usize::min(index, self.offsets.len() - 1);
+    /// Access mip level contents (0 corresponds to **largest** image).
+    pub fn get_mip_level<'t>(&'t self, level: usize) -> Option<(FrameSlice<'t, u32>, f32)> {
+        let offset = self.offsets.get(level).copied()?;
+        let width = self.width >> level;
+        let height = self.height >> level;
 
-        let width = self.width >> index;
-        let height = self.height >> index;
-        let offset = self.offsets[index];
-
-        (
-            ImageRef {
-                data: &self.data[offset..offset + width * height],
-                stride: width,
-                width,
-                height,
-            },
-
-            // Calculate texture UV scale
-            (1 << index) as f32 * self.uv_scale
-        )
+        Some((
+            FrameSlice::new(width, height, width, &self.data[offset..offset + width * height]),
+            (1 << level) as f32 * self.uv_scale
+        ))
     }
 }
 
@@ -95,58 +83,43 @@ pub struct MaterialTable {
 }
 
 /// WAD2 file loading error
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub enum Wad2LoadingError {
     /// Invali WAD file magic
+    #[error("Invalid WAD2 file magic: 0x{a:08X}, 0x{t:08X}", a = u32::from_ne_bytes(*.0), t = u32::from_ne_bytes(q1_wad2::MAGIC))]
     InvalidWadMagic([u8; 4]),
 
     /// Unexpected WAD file end
+    #[error("Unexpected end of file contents")]
     UnexpectedFileEnd,
 
     /// Unexpected WAD entry end
+    #[error("Unexpected end of entry contents")]
     UnexpectedEntryEnd,
 
     /// File interaction error
-    IoError(std::io::Error),
+    #[error("IO Error: {0}")]
+    IoError(#[from] std::io::Error),
 
     /// Error of building UTF-8 from bytes that (technically) should be string
-    Utf8Error(std::str::Utf8Error),
+    #[error("UTF8 reading error")]
+    Utf8Error(#[from] std::str::Utf8Error),
 
     /// Invalid CStr
-    CStrReadingError(std::ffi::FromBytesUntilNulError),
+    #[error("C string reading error")]
+    CStrReadingError(#[from] std::ffi::FromBytesUntilNulError),
 
     /// Slice is smaller, than required
-    TooSmallSlice(std::array::TryFromSliceError),
+    #[error("Slice is smaller, than required")]
+    TooSmallSlice(#[from] std::array::TryFromSliceError),
 
     /// Compressed data occured
+    #[error("Compressed WAD2 data is not supported")]
     CompressedData,
 
     /// Entry type isn't documented.
+    #[error("Entry type 0x{0:02X} is not known.")]
     UnknownEntryType(i8),
-}
-
-impl From<std::io::Error> for Wad2LoadingError {
-    fn from(value: std::io::Error) -> Self {
-        Self::IoError(value)
-    }
-}
-
-impl From<std::str::Utf8Error> for Wad2LoadingError {
-    fn from(value: std::str::Utf8Error) -> Self {
-        Self::Utf8Error(value)
-    }
-}
-
-impl From<std::array::TryFromSliceError> for Wad2LoadingError {
-    fn from(value: std::array::TryFromSliceError) -> Self {
-        Self::TooSmallSlice(value)
-    }
-}
-
-impl From<std::ffi::FromBytesUntilNulError> for Wad2LoadingError {
-    fn from(value: std::ffi::FromBytesUntilNulError) -> Self {
-        Self::CStrReadingError(value)
-    }
 }
 
 /// Table of references to certain WAD
@@ -161,6 +134,7 @@ impl<'t> MaterialReferenceTable<'t> {
         self.ref_table.get(id.into_index()).map(|(t, _)| t).copied()
     }
 
+    /// Get some default material color
     pub fn get_color(&self, id: bsp::MaterialId) -> Option<u32> {
         self.ref_table.get(id.into_index()).map(|(_, c)| c).copied()
     }

@@ -93,20 +93,14 @@ impl Map {
             .filter_map(|entity| entity.properties.get("origin"))
 
             // Parse origin property values into vectors
-            .filter_map(|origin| {
-                let flt_arr = origin
-                    .split_whitespace()
-                    .map(|str| str.parse::<f32>())
-                    .collect::<Result<Vec<_>, _>>()
-                    .ok()
-                    ?;
-
-                Some(Vec3f::new(
-                    *flt_arr.get(0)?,
-                    *flt_arr.get(1)?,
-                    *flt_arr.get(2)?,
-                ))
-            })
+            .filter_map(|origin| origin
+                .split_whitespace()
+                .map(|str| str.parse::<f32>())
+                .collect::<Result<Vec<_>, _>>()
+                .ok()?
+                .try_into()
+                .ok()
+                .map(Vec3f::from_array))
             .collect::<Vec<_>>()
     }
 }

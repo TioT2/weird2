@@ -1,6 +1,5 @@
-///! Main project BSP structure declaration module
+///! BSP implementation module
 
-pub use compiler::Error as MapCompilationError;
 use std::num::NonZeroU32;
 use crate::{geom, map, math::Vec3f};
 
@@ -271,10 +270,12 @@ impl Map {
         self.polygon_set.get(id.into_index())
     }
 
+    /// Get ID of the world BSP model
     pub fn get_world_model_id(&self) -> BspModelId {
         self.world_model_id
     }
 
+    /// Get root BSP model
     pub fn get_world_model(&self) -> &BspModel {
         self.bsp_models.get(self.world_model_id.into_index()).unwrap()
     }
@@ -314,7 +315,7 @@ impl Map {
 
 impl Map {
     /// Compile map to WBSP
-    pub fn compile(map: &map::Map) -> Result<Self, MapCompilationError> {
+    pub fn compile(map: &map::Map) -> Result<Self, compiler::Error> {
         compiler::compile(map)
     }
 

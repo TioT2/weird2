@@ -1,4 +1,4 @@
-///! Quake 1 map format support
+///! Quake 1 map parser implementattion
 
 use std::collections::HashMap;
 use crate::{geom, math::Vec3f};
@@ -425,5 +425,3 @@ impl Map {
         super::Map { entities }
     }
 }
-
-// q1.rs

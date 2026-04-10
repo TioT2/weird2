@@ -383,10 +383,13 @@ impl Map {
 
             for brush in &entity.brushes {
                 let mut faces = Vec::<super::BrushFace>::new();
-                let mut is_invisible = false;
+                let mut flags = super::BrushFlags::empty();
 
                 for face in &brush.faces {
-                    is_invisible |= face.texture_name == "CLIP";
+                    flags = flags.set(super::BrushFlags::empty()
+                        .set_if(super::BrushFlags::INVISIBLE, face.texture_name == "CLIP")
+                        .set_if(super::BrushFlags::WATER, face.texture_name.starts_with('*'))
+                    );
 
                     let normal = ((face.p0 - face.p1) % (face.p2 - face.p1)).normalized();
 
@@ -407,12 +410,13 @@ impl Map {
                             distance: -face.texture_offset_y,
                         },
                         mtl_name: face.texture_name.clone(),
-                        is_transparent: face.texture_name.starts_with('*'),
-                        is_sky: face.texture_name.starts_with("SKY"),
+                        flags: super::BrushFaceFlags::empty()
+                            .set_if(super::BrushFaceFlags::TRANSPARENT, face.texture_name.starts_with('*'))
+                            .set_if(super::BrushFaceFlags::SKY, face.texture_name.starts_with("SKY")),
                     });
                 }
 
-                brushes.push(super::Brush { faces, is_invisible });
+                brushes.push(super::Brush { faces, flags });
             }
 
             entities.push(super::Entity { brushes, properties });

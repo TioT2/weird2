@@ -161,7 +161,7 @@ impl MaterialTable {
             <[q1_wad2::Entry]>::ref_from_prefix(edata)
                 .map_err(|_| Wad2LoadingError::UnexpectedFileEnd)?.0
         };
-        let mut color_palette: [u32; 256] = q1_wad2::DEFAULT_COLOR_PALETTE;
+        let mut color_palette: [u32; 256] = *q1_wad2::DEFAULT_COLOR_PALETTE;
 
         // Find palette entry and parse it
 

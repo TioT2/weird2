@@ -85,38 +85,8 @@ pub struct Header {
 #[repr(C)]
 #[derive(Copy, Clone, FromBytes, IntoBytes)]
 pub struct Material {
-    /// In 'chars' span
+    /// Span of name in chars section
     pub name: Span,
-}
-
-/// Flags of surface properties
-#[repr(C)]
-#[derive(Copy, Clone, FromBytes, IntoBytes, Immutable)]
-pub struct SurfaceFlags(pub u32);
-
-impl SurfaceFlags {
-    /// Transparency bit
-    pub const TRANSPARENT : u32 = 0b01;
-
-    /// Sky bit
-    pub const SKY         : u32 = 0b10;
-}
-
-impl SurfaceFlags {
-    /// Get flags without set bits
-    pub const fn zero() -> Self {
-        Self(0)
-    }
-
-    /// Check if flag is enabled
-    pub const fn check(self, f: u32) -> bool {
-        self.0 & f == f
-    }
-
-    /// Set/unset flag bit
-    pub const fn set(self, f: u32, val: bool) -> Self {
-        if val { Self(self.0 | f) } else { Self(self.0 & !f) }
-    }
 }
 
 /// Visible volume face piece
@@ -141,8 +111,8 @@ pub struct Surface {
     /// Material UV scale
     pub material_uv_scale: Vec2,
 
-    /// Surface flags
-    pub flags: SurfaceFlags,
+    /// Surface flags (matches [`SurfaceFlags`][super::SurfaceFlags] data)
+    pub flags: u32,
 }
 
 #[repr(C)]
@@ -549,8 +519,7 @@ pub fn load(data: &[u8]) -> Result<super::Map, LoadError> {
                         Ok(super::Surface {
                             material_id: get_id(surface.material_index, material_names, "material")?,
                             polygon_id,
-                            is_sky: surface.flags.check(SurfaceFlags::SKY),
-                            is_transparent: surface.flags.check(SurfaceFlags::TRANSPARENT),
+                            flags: super::SurfaceFlags(surface.flags as u8),
                             lightmap: None,
                             u,
                             v,
@@ -723,9 +692,7 @@ pub fn save(map: &super::Map, dst: &mut dyn std::io::Write) -> Result<(), SaveEr
                 v: surface.v.into(),
                 material_uv_offset: surface.material_uv_offset.into(),
                 material_uv_scale: surface.material_uv_scale.into(),
-                flags: SurfaceFlags::zero()
-                    .set(SurfaceFlags::TRANSPARENT, surface.is_transparent)
-                    .set(SurfaceFlags::SKY, surface.is_sky),
+                flags: surface.flags.0 as u32,
             });
         }
 

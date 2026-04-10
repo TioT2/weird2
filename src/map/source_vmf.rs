@@ -219,12 +219,11 @@ impl Entry {
                     u,
                     v,
                     mtl_name: material.to_string(),
-                    is_transparent: false,
-                    is_sky: false,
+                    flags: super::BrushFaceFlags::empty(),
                 });
             }
 
-            brushes.push(super::Brush { faces, is_invisible: false });
+            brushes.push(super::Brush { faces, flags: super::BrushFlags::empty() });
         }
 
         Some(super::Map {
@@ -236,7 +235,4 @@ impl Entry {
             }],
         })
     }
-
-
 }
-

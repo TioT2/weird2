@@ -15,6 +15,33 @@ pub struct Material {
     pub color: u32,
 }
 
+crate::flags! {
+    /// Properties of brush face
+    #[derive(Copy, Clone, PartialEq, Eq)]
+    pub struct BrushFaceFlags: u8 {
+        /// Transparency bit
+        const TRANSPARENT = 0b0000_0001;
+
+        /// Sky bit
+        const SKY         = 0b0000_0010;
+
+        /// Bursh texture should vary with time.
+        const LIQUID      = 0b0000_0100;
+    }
+}
+
+crate::flags! {
+    /// Flags denoting properties of the certain brush.
+    #[derive(Copy, Clone, PartialEq, Eq)]
+    pub struct BrushFlags: u8 {
+        /// Brush should not be used during graphical BSP compilation
+        const INVISIBLE = 0b0000_0001;
+
+        /// Brush volume is filled with water
+        const WATER     = 0b0000_0010;
+    }
+}
+
 /// Single brush face
 pub struct BrushFace {
     /// Brush face plane
@@ -29,11 +56,8 @@ pub struct BrushFace {
     /// Index of material in map material table
     pub mtl_name: String,
 
-    /// True if face is transparent, false if not
-    pub is_transparent: bool,
-
-    /// True if this is sky
-    pub is_sky: bool,
+    /// Property flags
+    pub flags: BrushFaceFlags,
 }
 
 /// Map brush
@@ -41,8 +65,8 @@ pub struct Brush {
     /// Brush face set
     pub faces: Vec<BrushFace>,
 
-    /// Is this brush should not be rendered
-    pub is_invisible: bool,
+    /// Brush flags
+    pub flags: BrushFlags,
 }
 
 /// Map entity
@@ -104,5 +128,3 @@ impl Map {
             .collect::<Vec<_>>()
     }
 }
-
-// mod.rs

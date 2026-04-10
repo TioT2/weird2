@@ -25,6 +25,7 @@ pub mod res;
 pub mod camera;
 pub mod timer;
 pub mod input;
+pub mod flags;
 
 /// Different rasterization modes
 #[derive(Copy, Clone, PartialEq, Eq)]
@@ -782,13 +783,13 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                 continue 'polygon_rendering;
             }
 
-
+            // Get material texture
             let texture = self.material_table
                 .get_texture(surface.material_id)
                 .unwrap();
 
             // Find mip index (sky uses 0 by default)
-            let mip_index = if surface.is_sky {
+            let mip_index = if surface.is_sky() {
                 0
             } else {
                 let mut min_dist_2 = f32::MAX;
@@ -809,16 +810,29 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
 
             let (image, image_uv_scale) = texture.get_mip_level(mip_index.min(texture.mip_levels() - 1)).unwrap();
 
-            // Calculate simple per-face diffuse light
-            let light_diffuse = Vec3f::new(0.30, 0.47, 0.80)
-                .normalized()
-                .dot(polygon.plane.normal)
-                .abs()
-                .min(0.99);
+            // Calculate simple per-face lighting used for during monochrome rendering
+            let light = {
+                let diffuse = Vec3f::new(0.30, 0.47, 0.80)
+                    .normalized()
+                    .dot(polygon.plane.normal)
+                    .abs()
+                    .min(0.99);
 
-            // Add ambiance)
-            let light = light_diffuse * 0.9 + 0.09;
+                diffuse * 0.9 + 0.09
+            };
 
+            // Calculate monorhrome color from light and material color
+            let color = {
+                let color = self.material_table.get_color(surface.material_id).unwrap().to_le_bytes();
+                u64_from_u16([
+                    (color[0] as f32 * light) as u16,
+                    (color[1] as f32 * light) as u16,
+                    (color[2] as f32 * light) as u16,
+                    0
+                ])
+            };
+
+            // Build surface texture
             let surface_texture = match self.rasterization_mode {
                 RasterizationMode::Depth | RasterizationMode::Overdraw | RasterizationMode::UV | RasterizationMode::Monochrome => {
                     SurfaceTexture::empty()
@@ -828,25 +842,10 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                         surface_texture_data,
                         image,
                         light,
-                        !surface.is_sky
+                        !surface.is_sky()
                     )
                 }
             };
-
-            // Get surface color
-            let color: [u8; 4] = self
-                .material_table
-                .get_color(surface.material_id)
-                .unwrap()
-                .to_le_bytes();
-
-            // Calculate color, based on material and light
-            let color = u64_from_u16([
-                (color[0] as f32 * light) as u16,
-                (color[1] as f32 * light) as u16,
-                (color[2] as f32 * light) as u16,
-                0
-            ]);
 
             self.render_polygon(
                 &polygon,
@@ -856,8 +855,8 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                 surface.material_uv_scale / image_uv_scale.into(),
                 color,
                 surface_texture,
-                surface.is_transparent,
-                surface.is_sky,
+                surface.is_transparent(),
+                surface.is_sky(),
                 clip_oct,
                 points,
                 point_dst,
@@ -1114,8 +1113,9 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                 render_set
             });
 
-        let mut points = Vec::new();
-        let mut point_dst = Vec::new();
+        // Pre-allocated memory to reduce allocation amount.
+        let mut points = Vec::with_capacity(32);
+        let mut point_dst = Vec::with_capacity(32);
         let mut surface_texture = Vec::new();
 
         for (volume_id, volume_clip_oct) in inv_render_set
@@ -1686,7 +1686,7 @@ fn main() {
             (1.0, window_height as f32 / window_width as f32)
         };
 
-        // Calculate projection matrix
+        // Calculate projection
         let projection_matrix = Mat4f::projection_frustum_inf_far(
             -0.5 * aspect_x, 0.5 * aspect_x,
             -0.5 * aspect_y, 0.5 * aspect_y,

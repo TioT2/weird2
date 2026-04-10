@@ -1,4 +1,4 @@
-///! WBSP compiler implementation file
+//! WBSP compiler implementation file
 
 /*
 Compilation: 
@@ -7,8 +7,8 @@ Compilation:
 3. Build 'render polyhedra' and corresponding rendering BSP
 4. Resolve render polyhedra portals
 5. Remove invisible sections (all volumes that contains external
-    polygons or portal to such are considered invisible.
-    That's the exact reason why levels must not have 'holes' in their structure)
+   polygons or portal to such are considered invisible.
+   That's the exact reason why levels must not have 'holes' in their structure)
 */
 
 use std::{collections::{BTreeMap, BTreeSet, HashMap}, num::NonZeroU32};
@@ -50,8 +50,8 @@ pub struct DisplayPolygon {
     /// See [`material_uv_offset`]
     pub material_uv_offset: Vec2f,
 
-    /// Kind of the material
-    pub material_kind: MaterialKind,
+    /// Flags of map material
+    pub flags: super::SurfaceFlags,
 }
 
 /// Reference to another volume
@@ -110,8 +110,8 @@ pub struct HullVolume {
 }
 
 /// Volume BSP
-/// Note: option is used, because some volumes can be destroyed
-/// during invisible surface removal pass
+/// # Note
+/// Child notes are optional because some volumes can be destroyed during invisible surface removal pass.
 pub enum VolumeBsp {
     /// Volume BSP node, corresponds to some split
     Node {
@@ -146,6 +146,15 @@ pub struct VolumeSplitStat {
     // are located IN volume user is getting statistics for.
 
     // pub indicent: u32,
+}
+
+/// Map brush face flags into surface flags
+pub fn map_brush_face_flags(bff: map::BrushFaceFlags) -> super::SurfaceFlags {
+    bff.map([
+        (map::BrushFaceFlags::TRANSPARENT, super::SurfaceFlags::TRANSPARENT),
+        (map::BrushFaceFlags::LIQUID     , super::SurfaceFlags::LIQUID     ),
+        (map::BrushFaceFlags::SKY        , super::SurfaceFlags::SKY        ),
+    ].iter().copied())
 }
 
 impl HullVolume {
@@ -292,7 +301,6 @@ impl HullVolume {
     ) -> Result<(Self, Self, geom::Polygon), Self> {
   
         // intersection polygon MUST exist
-
         let mut intersection_polygon = match self.get_intersection_polygon(plane) {
             Some(polygon) => polygon,
             None => return Err(self),
@@ -697,7 +705,7 @@ impl BspModelCompileContext {
             })
             .filter_map(|physical_polygon| {
                 // Do not cut portals by transparent polygons
-                if physical_polygon.material_kind == MaterialKind::Transparent {
+                if physical_polygon.flags.check(super::SurfaceFlags::TRANSPARENT) {
                     None
                 } else {
                     Some(CutInfo {
@@ -1116,7 +1124,7 @@ impl CompileContext {
 
         'brush_polygon_building: for brush in &entity.brushes {
             // Don't merge clip brushes into render BSP
-            if brush.is_invisible {
+            if brush.flags.check(map::BrushFlags::INVISIBLE) {
                 continue 'brush_polygon_building;
             }
     
@@ -1189,15 +1197,6 @@ impl CompileContext {
 
                 let points = geom::sort_points_by_angle(points, f1.plane.normal);
 
-                // Find material kind
-                let material_kind = if f1.is_sky {
-                    MaterialKind::Sky
-                } else if f1.is_transparent {
-                    MaterialKind::Transparent
-                } else {
-                    MaterialKind::Default
-                };
-
                 // Calculate point set UV ranges (to calculate resolution-independend UVs and per-material scale.)
                 let (uv_min, uv_max) = {
                     let to_uv = |pt: &Vec3f| Vec2f::new(f1.u.get_signed_distance(*pt), f1.v.get_signed_distance(*pt));
@@ -1223,11 +1222,11 @@ impl CompileContext {
                     },
                     material_uv_offset: uv_min,
                     material_uv_scale: uv_delta,
-                    material_kind,
+                    flags: map_brush_face_flags(f1.flags),
                 };
 
                 // Insert reversed polygon for transparent surfaces
-                if material_kind == MaterialKind::Transparent {
+                if f1.flags.check(map::BrushFaceFlags::TRANSPARENT) {
                     display_polygons.push(DisplayPolygon {
                         polygon: {
                             let mut p = display_polygon.polygon.clone();
@@ -1317,12 +1316,12 @@ impl CompileContext {
                                 v: physical_polygon.v,
                                 material_uv_scale: physical_polygon.material_uv_scale,
                                 material_uv_offset: physical_polygon.material_uv_offset,
-                                is_transparent: physical_polygon.material_kind == MaterialKind::Transparent,
-                                is_sky: physical_polygon.material_kind == MaterialKind::Sky,
+                                flags: physical_polygon.flags,
                                 lightmap: None,
                             }
                         })
                     );
+
 
                     portals.extend(face
                         .portal_polygons

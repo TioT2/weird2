@@ -1,6 +1,7 @@
 ///! BSP implementation module
 
 use std::num::NonZeroU32;
+
 use crate::{geom, map, math::{Vec2f, Vec3f}};
 
 pub mod compiler;
@@ -44,6 +45,21 @@ impl_id!(BspModelId);
 impl_id!(DynamicModelId);
 impl_id!(SurfaceId);
 
+crate::flags! {
+    /// Surface property bits
+    #[derive(Copy, Clone, PartialEq, Eq)]
+    pub struct SurfaceFlags: u8 {
+        /// Transparency (e.g. should surface be not)
+        const TRANSPARENT = 0b0000_0001;
+
+        /// Sky (should render apply inf-far reprojection)
+        const SKY         = 0b0000_0010;
+
+        /// Should render apply time-dependend variation
+        const LIQUID      = 0b0000_0100;
+    }
+}
+
 /// Volume face convex visible part.
 /// # UVs
 /// Surface have two sets of UVs - UVsurface and UVmaterial. UVsurface is resolution-independend 0..1 UV that will be further
@@ -68,14 +84,28 @@ pub struct Surface {
     /// UVmaterial offset
     pub material_uv_offset: Vec2f,
 
-    /// Surface transparency flag
-    pub is_transparent: bool,
-
-    /// True if sky, false if not
-    pub is_sky: bool,
+    /// Flags denoting surface properties
+    pub flags: SurfaceFlags,
 
     /// Lightmap (if present)
     pub lightmap: Option<Lightmap>,
+}
+
+impl Surface {
+    /// Check if surface is sky
+    pub const fn is_sky(&self) -> bool {
+        self.flags.check(SurfaceFlags::SKY)
+    }
+
+    /// Check if surface is transparent
+    pub const fn is_transparent(&self) -> bool {
+        self.flags.check(SurfaceFlags::TRANSPARENT)
+    }
+
+    /// Check if surface is liquid
+    pub const fn is_liquid(&self) -> bool {
+        self.flags.check(SurfaceFlags::LIQUID)
+    }
 }
 
 /// Directional lightmap
@@ -90,7 +120,7 @@ pub struct Lightmap {
     pub height: usize,
 }
 
-/// Portal (volume-volume connection)
+/// Portal (volume-volume connection descriptor)
 pub struct Portal {
     /// Portal polygon identifier
     pub polygon_id: PolygonId,
@@ -103,7 +133,7 @@ pub struct Portal {
     pub is_facing_front: bool,
 }
 
-/// Convex collection of polygons and portals
+/// BSP leaf, convex polyhedron containing sets of drawable surfaces and infos about neighbours.
 pub struct Volume {
     /// Set of visible volume elements
     pub surfaces: Vec<Surface>,

@@ -1,12 +1,11 @@
 ///! BSP implementation module
 
 use std::num::NonZeroU32;
-use crate::{geom, map, math::Vec3f};
+use crate::{geom, map, math::{Vec2f, Vec3f}};
 
 pub mod compiler;
 pub mod wbsp;
 pub mod lightmap_baker;
-mod util;
 
 /// Id type
 pub trait Id: Copy + Clone + Eq + PartialEq + std::hash::Hash + std::fmt::Debug + Ord + PartialOrd {
@@ -45,7 +44,11 @@ impl_id!(BspModelId);
 impl_id!(DynamicModelId);
 impl_id!(SurfaceId);
 
-/// Visible volume face piece
+/// Volume face convex visible part.
+/// # UVs
+/// Surface have two sets of UVs - UVsurface and UVmaterial. UVsurface is resolution-independend 0..1 UV that will be further
+/// transformed to match surface texture resolution. UVmaterial is UV used for accessing material textures during surface texture building.
+/// UVmaterial is calculated by `UVmateiral = UVsurface * material_uv_scale + material_uv_offset` formula.
 pub struct Surface {
     /// Polygon material identifier
     pub material_id: MaterialId,
@@ -53,23 +56,17 @@ pub struct Surface {
     /// Surface polygon identifier
     pub polygon_id: PolygonId,
 
-    /// U texture mapping axis
+    /// Surface U axis
     pub u: geom::Plane,
 
-    /// V texture mapping axis
+    /// Surface V axis
     pub v: geom::Plane,
 
-    /// Surface U axis minimal value
-    pub u_min: i32,
+    /// UVmaterial scale
+    pub material_uv_scale: Vec2f,
 
-    /// Surface U axis maximal value
-    pub u_max: i32,
-
-    /// Surface V axis minimal value
-    pub v_min: i32,
-
-    /// Surface v axis maximal value
-    pub v_max: i32,
+    /// UVmaterial offset
+    pub material_uv_offset: Vec2f,
 
     /// Surface transparency flag
     pub is_transparent: bool,

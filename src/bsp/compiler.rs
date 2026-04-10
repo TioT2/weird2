@@ -1,6 +1,7 @@
 ///! WBSP compiler implementation file
 
 /*
+Compilation: 
 1. Build BSP polyhedra from plane sets
 2. Calculate hull volume
 3. Build 'render polyhedra' and corresponding rendering BSP
@@ -11,7 +12,7 @@
 */
 
 use std::{collections::{BTreeMap, BTreeSet, HashMap}, num::NonZeroU32};
-use crate::{bsp::util, geom, map, math::{Mat3f, Vec3f}};
+use crate::{geom, map, math::{Mat3f, Vec2f, Vec3f}};
 
 use super::Id;
 
@@ -31,18 +32,23 @@ pub enum MaterialKind {
 /// Polygon that should be displayed
 #[derive(Debug)]
 pub struct DisplayPolygon {
-
     /// Actual polygon
     pub polygon: geom::Polygon,
 
     /// All material info (just for debug)
     pub material_index: usize,
 
-    /// Material mapping U axis
-    pub material_u: geom::Plane,
+    /// Polygon U axis.
+    pub u: geom::Plane,
 
-    /// Material mapping V axis
-    pub material_v: geom::Plane,
+    /// Polygon V axis.
+    pub v: geom::Plane,
+
+    /// UVmaterial = UVpolygon * material_uv_scale + material_uv_offset
+    pub material_uv_scale: Vec2f,
+
+    /// See [`material_uv_offset`]
+    pub material_uv_offset: Vec2f,
 
     /// Kind of the material
     pub material_kind: MaterialKind,
@@ -321,18 +327,12 @@ impl HullVolume {
                             geom::PolygonSplitResult::Intersects { front, back } => {
                                 front_display_polygons.push(DisplayPolygon {
                                     polygon: front,
-                                    material_index: physical_polygon.material_index,
-                                    material_u: physical_polygon.material_u,
-                                    material_v: physical_polygon.material_v,
-                                    material_kind: physical_polygon.material_kind,
+                                    ..physical_polygon
                                 });
 
                                 back_display_polygons.push(DisplayPolygon {
                                     polygon: back,
-                                    material_index: physical_polygon.material_index,
-                                    material_u: physical_polygon.material_u,
-                                    material_v: physical_polygon.material_v,
-                                    material_kind: physical_polygon.material_kind,
+                                    ..physical_polygon
                                 });
                             }
                             geom::PolygonSplitResult::Coplanar => {
@@ -569,18 +569,12 @@ impl BspModelCompileContext {
                     // it's not good to split polygon
                     front_polygons.push(DisplayPolygon {
                         polygon: front,
-                        material_index: physical_polygon.material_index,
-                        material_u: physical_polygon.material_u,
-                        material_v: physical_polygon.material_v,
-                        material_kind: physical_polygon.material_kind,
+                        ..physical_polygon
                     });
 
                     back_polygons.push(DisplayPolygon {
                         polygon: back,
-                        material_index: physical_polygon.material_index,
-                        material_u: physical_polygon.material_u,
-                        material_v: physical_polygon.material_v,
-                        material_kind: physical_polygon.material_kind,
+                        ..physical_polygon
                     });
                 }
             }
@@ -1118,7 +1112,7 @@ impl CompileContext {
     // Build entity physical polygon set
     pub fn build_entity_physical_polygons(&mut self, entity: &map::Entity) -> Vec<DisplayPolygon> {
 
-        let mut physical_polygons = Vec::<DisplayPolygon>::new();
+        let mut display_polygons = Vec::<DisplayPolygon>::new();
 
         'brush_polygon_building: for brush in &entity.brushes {
             // Don't merge clip brushes into render BSP
@@ -1204,39 +1198,52 @@ impl CompileContext {
                     MaterialKind::Default
                 };
 
+                // Calculate point set UV ranges (to calculate resolution-independend UVs and per-material scale.)
+                let (uv_min, uv_max) = {
+                    let to_uv = |pt: &Vec3f| Vec2f::new(f1.u.get_signed_distance(*pt), f1.v.get_signed_distance(*pt));
+                    let bb = geom::BoundRect::for_points(points.iter().map(to_uv));
+                    (bb.min, bb.max)
+                };
+                let uv_delta = uv_max - uv_min;
+
+                // Add display polygon
+                let display_polygon = DisplayPolygon {
+                    polygon: geom::Polygon {
+                        points,
+                        plane: f1.plane,
+                    },
+                    material_index: *mtlid,
+                    u: geom::Plane {
+                        normal: f1.u.normal / uv_delta.x().into(),
+                        distance: (uv_min.x() + f1.u.distance) / uv_delta.x(),
+                    },
+                    v: geom::Plane {
+                        normal: f1.v.normal / uv_delta.y().into(),
+                        distance: (uv_min.y() + f1.v.distance) / uv_delta.y(),
+                    },
+                    material_uv_offset: uv_min,
+                    material_uv_scale: uv_delta,
+                    material_kind,
+                };
+
                 // Insert reversed polygon for transparent surfaces
                 if material_kind == MaterialKind::Transparent {
-                    physical_polygons.push(DisplayPolygon {
-                        polygon: geom::Polygon {
-                            points: {
-                                let mut pts = points.clone();
-                                pts.reverse();
-                                pts
-                            },
-                            plane: f1.plane.negate_direction(),
+                    display_polygons.push(DisplayPolygon {
+                        polygon: {
+                            let mut p = display_polygon.polygon.clone();
+                            p.negate_orientation();
+                            p
                         },
-                        material_index: *mtlid,
-                        material_u: f1.u,
-                        material_v: f1.v,
-                        material_kind,
+                        ..display_polygon
                     });
                 }
 
                 // Build polygon
-                physical_polygons.push(DisplayPolygon {
-                    polygon: geom::Polygon {
-                        points: points,
-                        plane: f1.plane,
-                    },
-                    material_index: *mtlid,
-                    material_u: f1.u,
-                    material_v: f1.v,
-                    material_kind,
-                });
+                display_polygons.push(display_polygon);
             }
         }
     
-        physical_polygons
+        display_polygons
     }
 
     /// Add dynamic model to BSP
@@ -1299,13 +1306,6 @@ impl CompileContext {
                         .display_polygons
                         .into_iter()
                         .map(|physical_polygon| {
-
-                            let (u_min, u_max, v_min, v_max) = util::calculate_uv_ranges(
-                                &physical_polygon.polygon.points,
-                                physical_polygon.material_u,
-                                physical_polygon.material_v
-                            );
-
                             let polygon_index = self.polygon_set.len();
 
                             self.polygon_set.push(physical_polygon.polygon);
@@ -1313,14 +1313,12 @@ impl CompileContext {
                             super::Surface {
                                 material_id: super::MaterialId::from_index(physical_polygon.material_index),
                                 polygon_id: super::PolygonId::from_index(polygon_index),
-                                u: physical_polygon.material_u,
-                                v: physical_polygon.material_v,
+                                u: physical_polygon.u,
+                                v: physical_polygon.v,
+                                material_uv_scale: physical_polygon.material_uv_scale,
+                                material_uv_offset: physical_polygon.material_uv_offset,
                                 is_transparent: physical_polygon.material_kind == MaterialKind::Transparent,
                                 is_sky: physical_polygon.material_kind == MaterialKind::Sky,
-                                u_min,
-                                u_max,
-                                v_min,
-                                v_max,
                                 lightmap: None,
                             }
                         })

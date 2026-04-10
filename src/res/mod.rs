@@ -7,7 +7,7 @@ use std::{collections::BTreeMap, ffi::CStr};
 use thiserror::Error;
 use zerocopy::FromBytes;
 
-use crate::{bsp::{self, Id}, frame_slice::FrameSlice, rand};
+use crate::{bsp::{self, Id}, frame_slice::FrameSlice};
 
 /// Mipmapped texture
 pub struct Texture {
@@ -73,7 +73,7 @@ impl Texture {
     }
 }
 
-/// Material table imported from WAD files
+/// Material table structure
 pub struct MaterialTable {
     /// Index table
     pub texture_index_map: BTreeMap<String, usize>,
@@ -266,17 +266,27 @@ impl MaterialTable {
         })
     }
 
-    /// Build WAD reference table
-    pub fn build_reference_table<'t>(&'t self, bsp: &bsp::Map) -> MaterialReferenceTable<'t> {
-        // Quite bad solution, though...
+    /// Get default material
+    pub fn get_default_material<'t>(&'t self) -> &'t Texture {
+        self.textures.first().unwrap()
+    }
+
+    /// Get material by name
+    pub fn get_material<'t>(&'t self, str: &str) -> Option<&'t Texture> {
+        Some(&self.textures[*self.texture_index_map.get(str)?])
+    }
+
+    /// Build reference table
+    pub fn build_reference_table<'t>(&'t self, map: &bsp::Map) -> MaterialReferenceTable<'t> {
         let mut ref_table = Vec::new();
-        let mut rand_device = rand::Xorshift128p::new(304780.try_into().unwrap());
 
         let default_texture = self.textures.get(0).unwrap();
 
-        for (mtl_id, mtl_name) in bsp.all_material_names() {
+        for (mtl_id, mtl_name) in map.all_material_names() {
             let index = mtl_id.into_index();
-            let color = (rand_device.next() & 0xFFFF_FFFF) as u32;
+
+            // Use name DJB2 hash as color
+            let color = mtl_name.as_bytes().iter().fold(5381u32, |h, b| h.wrapping_mul(33) ^ (*b as u32));
 
             ref_table.resize(index + 1, (default_texture, 0xFF00FF));
 

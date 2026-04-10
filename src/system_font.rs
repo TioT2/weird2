@@ -101,7 +101,7 @@ impl<'t> Frame<'t> {
         }
     }
 
-    /// Write string (note: non-ASCII characters are replaced with '*')
+    /// Write string (note: non-ASCII characters are replaced with special character)
     pub fn str(&mut self, x: usize, y: usize, str: &str) -> &mut Self {
         self.write_str(x, y, str);
         self

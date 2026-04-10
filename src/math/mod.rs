@@ -117,6 +117,12 @@ macro_rules! impl_vecn {
                 Self { $($x),* }
             }
 
+            /// Convert vector into array
+            pub fn into_array(self) -> [T; $DIM] {
+                let Self { $($x),* } = self;
+                [$($x),*]
+            }
+
             /// Convert vector from one type to another
             pub fn map<U, F: FnMut(T) -> U>(self, mut f: F) -> $Vec<U> {
                 $Vec::<U> { $($x: f(self.$x)),* }
@@ -144,6 +150,18 @@ macro_rules! impl_vecn {
                     self.$x
                 }
             )*
+        }
+
+        impl<T> From<[T; $DIM]> for $Vec<T> {
+            fn from(arr: [T; $DIM]) -> $Vec<T> {
+                $Vec::<T>::from_array(arr)
+            }
+        }
+
+        impl<T> Into<[T; $DIM]> for $Vec<T> {
+            fn into(self) -> [T; $DIM] {
+                self.into_array()
+            }
         }
 
         impl<T: Clone> $Vec<T> {

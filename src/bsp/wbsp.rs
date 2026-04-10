@@ -135,6 +135,12 @@ pub struct Surface {
     /// V axis
     pub v: Plane,
 
+    /// Material UV offset
+    pub material_uv_offset: Vec2,
+
+    /// Material UV scale
+    pub material_uv_scale: Vec2,
+
     /// Surface flags
     pub flags: SurfaceFlags,
 }
@@ -151,7 +157,7 @@ pub struct Plane {
 
 impl Into<geom::Plane> for Plane {
     fn into(self) -> geom::Plane {
-        geom::Plane { distance: self.distance, normal: self.normal.into() }
+        geom::Plane { distance: self.distance, normal: self.normal.into(), }
     }
 }
 
@@ -195,31 +201,11 @@ pub struct Volume {
     pub bound_box_max: Vec3,
 }
 
-/// 3-component f32 vector vector
-#[repr(C)]
-#[derive(Copy, Clone, FromBytes, IntoBytes, Immutable)]
-pub struct Vec3 {
-    /// X coordinate
-    pub x: f32,
+/// 3-component f32 vector
+pub type Vec3 = [f32; 3];
 
-    /// Y coordinate
-    pub y: f32,
-
-    /// Z coordinate
-    pub z: f32,
-}
-
-impl Into<super::Vec3f> for Vec3 {
-    fn into(self) -> super::Vec3f {
-        super::Vec3f::new(self.x, self.y, self.z)
-    }
-}
-
-impl From<super::Vec3f> for Vec3 {
-    fn from(value: super::Vec3f) -> Self {
-        Self { x: value.x(), y: value.y(), z: value.z() }
-    }
-}
+/// 2-component f32 vector
+pub type Vec2 = [f32; 2];
 
 /// BSP entry type
 #[repr(C)]
@@ -560,13 +546,6 @@ pub fn load(data: &[u8]) -> Result<super::Map, LoadError> {
                         let v = surface.v.into();
                         let polygon_id: super::PolygonId = get_id(surface.polygon_index, polygons, "polygon")?;
 
-                        // Calculate UV bounds
-                        let (u_min, u_max, v_min, v_max) = super::util::calculate_uv_ranges(
-                            &map_polygon_set[polygon_id.into_index()].points,
-                            u,
-                            v
-                        );
-
                         Ok(super::Surface {
                             material_id: get_id(surface.material_index, material_names, "material")?,
                             polygon_id,
@@ -575,10 +554,8 @@ pub fn load(data: &[u8]) -> Result<super::Map, LoadError> {
                             lightmap: None,
                             u,
                             v,
-                            u_min,
-                            u_max,
-                            v_min,
-                            v_max,
+                            material_uv_offset: surface.material_uv_offset.into(),
+                            material_uv_scale: surface.material_uv_scale.into(),
                         })
                     })
                     .collect::<Result<Vec<_>, LoadError>>()?,
@@ -744,6 +721,8 @@ pub fn save(map: &super::Map, dst: &mut dyn std::io::Write) -> Result<(), SaveEr
                 polygon_index: surface.polygon_id.into_index() as u32,
                 u: surface.u.into(),
                 v: surface.v.into(),
+                material_uv_offset: surface.material_uv_offset.into(),
+                material_uv_scale: surface.material_uv_scale.into(),
                 flags: SurfaceFlags::zero()
                     .set(SurfaceFlags::TRANSPARENT, surface.is_transparent)
                     .set(SurfaceFlags::SKY, surface.is_sky),

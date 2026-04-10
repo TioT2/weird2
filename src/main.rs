@@ -222,7 +222,7 @@ where
 fn clip_polygon_oct(
     vertices: &mut Vec<Vertex>,
     temp: &mut Vec<Vertex>,
-    clip_oct: &geom::ClipOct
+    clip_oct: &geom::BoundOct
 ) -> bool {
     // Norm functions
     fn norm_x     (vt: Vertex) -> f32 { vt.position.x() }
@@ -322,18 +322,17 @@ impl RenderCamera {
     pub fn project_polygon(
         &self,
         polygon: &geom::Polygon,
-        material_u: geom::Plane,
-        material_v: geom::Plane,
+        u: geom::Plane,
+        v: geom::Plane,
+        material_uv_offset: Vec2f,
+        material_uv_scale: Vec2f,
         point_dst: &mut Vec<Vertex>,
     ) {
         point_dst.clear();
         for point in polygon.points.iter() {
             point_dst.push(Vertex {
                 position: self.view_projection.transform_point(*point),
-                tex_coord: Vec2f::new(
-                    point.dot(material_u.normal) + material_u.distance,
-                    point.dot(material_v.normal) + material_v.distance,
-                )
+                tex_coord: Vec2f::new(u.get_signed_distance(*point), v.get_signed_distance(*point)) * material_uv_scale + material_uv_offset,
             });
         }
     }
@@ -703,13 +702,15 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
     fn render_polygon(
         &mut self,
         polygon: &geom::Polygon,
-        material_u: geom::Plane,
-        material_v: geom::Plane,
+        u: geom::Plane,
+        v: geom::Plane,
+        material_uv_offset: Vec2f,
+        material_uv_scale: Vec2f,
         color: u64,
         texture: SurfaceTexture,
         is_transparent: bool,
         is_sky: bool,
-        clip_oct: &geom::ClipOct,
+        clip_oct: &geom::BoundOct,
         vertices: &mut Vec<Vertex>,
         vertex_dst: &mut Vec<Vertex>,
     ) {
@@ -719,7 +720,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
         if is_sky {
             self.camera.project_sky_polygon(polygon, vertices, self.sky_uv_offset);
         } else {
-            self.camera.project_polygon(polygon, material_u, material_v, vertices);
+            self.camera.project_polygon(polygon, u, v, material_uv_offset, material_uv_scale, vertices);
         }
 
         // Clip polygon by Z=1
@@ -758,7 +759,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
     fn render_volume(
         &mut self,
         id: bsp::VolumeId,
-        clip_oct: &geom::ClipOct,
+        clip_oct: &geom::BoundOct,
         points: &mut Vec<Vertex>,
         point_dst: &mut Vec<Vertex>,
         surface_texture_data: &mut Vec<u64>,
@@ -849,14 +850,10 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
 
             self.render_polygon(
                 &polygon,
-                geom::Plane {
-                    normal: surface.u.normal / image_uv_scale.into(),
-                    distance: surface.u.distance / image_uv_scale - 0.5,
-                },
-                geom::Plane {
-                    normal: surface.v.normal / image_uv_scale.into(),
-                    distance: surface.v.distance / image_uv_scale - 0.5,
-                },
+                surface.u,
+                surface.v,
+                surface.material_uv_offset / image_uv_scale.into(),
+                surface.material_uv_scale / image_uv_scale.into(),
                 color,
                 surface_texture,
                 surface.is_transparent,
@@ -869,12 +866,12 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
     }
 
     /// Get main clipping rectangle
-    fn get_screen_clip_rect(&self) -> geom::ClipRect {
+    fn get_screen_clip_rect(&self) -> geom::BoundRect {
         /// Clipping offset
         const CLIP_OFFSET: f32 = 0.2;
 
         // Surface clipping rectangle
-        geom::ClipRect {
+        geom::BoundRect {
             min: Vec2f::new(
                 CLIP_OFFSET,
                 CLIP_OFFSET,
@@ -904,15 +901,15 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
         &self,
         bsp_root: &bsp::Bsp,
         start_volume_id: bsp::VolumeId,
-        start_clip_oct: &geom::ClipOct,
+        start_clip_oct: &geom::BoundOct,
         camera: &RenderCamera,
-    ) -> Vec<(bsp::VolumeId, geom::ClipOct)> {
+    ) -> Vec<(bsp::VolumeId, geom::BoundOct)> {
         // Render set itself
         let mut inv_render_set_value = Vec::new();
         let inv_render_set = &mut inv_render_set_value;
 
         // Potentially Visible volume (with corresponding clip octagon) Set
-        let mut pvs = HashMap::<bsp::VolumeId, geom::ClipOct>::new();
+        let mut pvs = HashMap::<bsp::VolumeId, geom::BoundOct>::new();
 
         // Initialize PVS
         pvs.insert(start_volume_id, *start_clip_oct);
@@ -992,9 +989,9 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                         continue 'portal_rendering;
                     }
 
-                    let proj_oct = geom::ClipOct::for_points(proj_polygon_points.iter().map(|v| Vec2f::new(v.x(), v.y())));
+                    let proj_oct = geom::BoundOct::for_points(proj_polygon_points.iter().map(|v| Vec2f::new(v.x(), v.y())));
 
-                    let Some(clip_oct) = geom::ClipOct::intersection(
+                    let Some(clip_oct) = geom::BoundOct::intersection(
                         &volume_clip_oct,
                         &proj_oct.extend(0.1, 0.1, 0.1, 0.1)
                     ) else {
@@ -1007,7 +1004,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                 // Insert clipping octagon in PVS
                 match pvs.entry(portal.dst_volume_id) {
                     std::collections::hash_map::Entry::Occupied(mut occupied) => {
-                        let existing_rect: &mut geom::ClipOct = occupied.get_mut();
+                        let existing_rect: &mut geom::BoundOct = occupied.get_mut();
                         *existing_rect = existing_rect.union(&clip_oct);
                     }
                     std::collections::hash_map::Entry::Vacant(vacant) => {
@@ -1059,7 +1056,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
         let world_bsp = self.map
             .get_world_model()
             .get_bsp();
-        let screen_clip_oct = geom::ClipOct::from_clip_rect(self.get_screen_clip_rect());
+        let screen_clip_oct = geom::BoundOct::from_clip_rect(self.get_screen_clip_rect());
 
         let partial_render_set_opt = if let Some(shadow_camera) = self.shadow_camera.as_ref() {
             world_bsp
@@ -1068,7 +1065,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                     let mut render_set = self.build_render_set(
                         world_bsp,
                         start_volume_id,
-                        &geom::ClipOct::from_clip_rect(self.get_screen_clip_rect()),
+                        &geom::BoundOct::from_clip_rect(self.get_screen_clip_rect()),
                         &shadow_camera
                     );
 

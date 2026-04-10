@@ -49,6 +49,28 @@ pub struct Plane {
     pub distance: f32,
 }
 
+impl std::ops::Mul<f32> for Plane {
+    type Output = Self;
+
+    fn mul(self, n: f32) -> Self {
+        Self {
+            normal: self.normal * n.into(),
+            distance: self.distance * n,
+        }
+    }
+}
+
+impl std::ops::Div<f32> for Plane {
+    type Output = Self;
+
+    fn div(self, n: f32) -> Self {
+        Self {
+            normal: self.normal / n.into(),
+            distance: self.distance / n,
+        }
+    }
+}
+
 /// Line in space
 #[derive(Debug, Copy, Clone)]
 pub struct Line {
@@ -597,9 +619,9 @@ impl BoundBox {
     }
 }
 
-/// Clipping octagon
+/// 2D bounding octagon
 #[derive(Copy, Clone, Debug)]
-pub struct ClipOct {
+pub struct BoundOct {
     /// Octagonal minimum. `z` and `w` fields are implemented as `y - x` and `y + x` respectively.
     pub min: Vec4f,
 
@@ -607,15 +629,15 @@ pub struct ClipOct {
     pub max: Vec4f,
 }
 
-impl_bb!(ClipOct, Vec4f, Vec2f, Self::vec2to4);
+impl_bb!(BoundOct, Vec4f, Vec2f, Self::vec2to4);
 
-impl ClipOct {
+impl BoundOct {
     fn vec2to4(v: Vec2f) -> Vec4f {
         Vec4f::new(v.x(), v.y(), v.y() - v.x(), v.y() + v.x())
     }
 
     /// Calculate conservative clipping octagon of clipping rectangle
-    pub fn from_clip_rect(clip_rect: ClipRect) -> Self {
+    pub fn from_clip_rect(clip_rect: BoundRect) -> Self {
         Self {
             max: Vec4f::new(
                 clip_rect.max.x(),
@@ -642,19 +664,19 @@ impl ClipOct {
     }
 }
 
-/// Polygon clipping rectangle
+/// 2D boundbox
 #[derive(Copy, Clone, Debug)]
-pub struct ClipRect {
-    /// Clipping rectangle start
+pub struct BoundRect {
+    /// Rectangle minimum
     pub min: Vec2f,
 
-    /// Clipping rectangle end
+    /// Rectangle maximum
     pub max: Vec2f,
 }
 
-impl_bb!(ClipRect, Vec2f, Vec2f, std::convert::identity);
+impl_bb!(BoundRect, Vec2f, Vec2f, std::convert::identity);
 
-impl ClipRect {
+impl BoundRect {
     /// Extend boundbox to contain the point
     pub fn extend_to_contain(self, pt: Vec2f) -> Self {
         Self {

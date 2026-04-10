@@ -968,9 +968,6 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                         break 'portal_validation volume_clip_oct;
                     }
 
-                    // let mut polygon_points = portal_polygon.points.clone();
-                    // let mut proj_polygon_points = Vec::new();
-
                     polygon_points.clear();
                     polygon_points.extend_from_slice(&portal_polygon.points);
 
@@ -1214,26 +1211,46 @@ fn build_surface_texture<'t>(
     }
 }
 
-fn hdr_to_ldr_clamp(hdr: &[u64], ldr: &mut [u32]) {
-    for (src, dst) in Iterator::zip(hdr.iter(), ldr.iter_mut()) {
-        let [r, g, b, _] = u64_into_u16(*src);
-        *dst = u32::from_le_bytes([
-            r as u8,
-            g as u8,
-            b as u8,
+/// Convert HDR frame buffer to LDR
+pub fn hdr_to_ldr(hdr: &[u64], ldr: &mut [u32], enable_tonemapping: bool) {
+
+    /// Primitive clamp tonemapping
+    fn clamp(hdr: &u64, ldr: &mut u32) {
+        let [r, g, b, _] = u64_into_u16(*hdr);
+        *ldr = u32::from_le_bytes([
+            u16::min(r, 0xFF) as u8,
+            u16::min(g, 0xFF) as u8,
+            u16::min(b, 0xFF) as u8,
             0
         ]);
     }
-}
 
-fn hdr_to_ldr_tonemap(hdr: &[u64], ldr: &mut [u32]) {
-    #[cfg(not(target_feature = "sse2"))]
-    {
-        hdr_to_ldr_clamp(hdr, ldr);
-        return;
+
+    /// Reinhard exposure parameter
+    const REINHARD_EXPOSURE: f32 = 0.5;
+
+    /// Default reinhard tonemapping
+    #[allow(unused)]
+    fn reinhard(src: &u64, dst: &mut u32) {
+        let [r, g, b, _] = u64_into_u16(*src);
+        let [r, g, b] = [r as f32, g as f32, b as f32];
+
+        /// 256 reciporal
+        const INV256: f32 = 256.0f32.recip();
+
+        *dst = u32::from_ne_bytes([
+            (r / (r * INV256 + REINHARD_EXPOSURE)) as u8,
+            (g / (g * INV256 + REINHARD_EXPOSURE)) as u8,
+            (b / (b * INV256 + REINHARD_EXPOSURE)) as u8,
+            0,
+        ]);
     }
 
-    for (src_ptr, dst_ptr) in Iterator::zip(hdr.iter(), ldr.iter_mut()) {
+    /// SSE2-based reinhard tonemapping
+    #[cfg(target_feature = "sse2")]
+    #[allow(unused)]
+    fn reinhard_sse2(src_ptr: &u64, dst_ptr: &mut u32) {
+
         use std::arch::x86_64 as arch;
 
         unsafe {
@@ -1249,7 +1266,7 @@ fn hdr_to_ldr_tonemap(hdr: &[u64], ldr: &mut [u32]) {
             let rgba_norm_aexp = arch::_mm_fmadd_ps(
                 src,
                 arch::_mm_set1_ps(1.0 / 256.0),
-                arch::_mm_set1_ps(0.5) // exposure
+                arch::_mm_set1_ps(REINHARD_EXPOSURE)
             );
 
             // rgba / (rgba / 256.0 + exposure)
@@ -1265,14 +1282,26 @@ fn hdr_to_ldr_tonemap(hdr: &[u64], ldr: &mut [u32]) {
             );
         }
     }
-}
 
-/// Convert HDR to LDR
-pub fn hdr_to_ldr(hdr: &[u64], ldr: &mut[u32], enable_tonemapping: bool) {
+    /// Tonemapping function implementation
+    fn impl_<const ENABLE: bool>(hdr: &[u64], ldr: &mut [u32]) {
+        for (src, dst) in Iterator::zip(hdr.iter(), ldr.iter_mut()) {
+            if ENABLE {
+                #[cfg(target_feature = "sse2")]
+                reinhard_sse2(src, dst);
+
+                #[cfg(not(target_feature = "sse2"))]
+                reinhard(src, dst);
+            } else {
+                clamp(src, dst);
+            }
+        }
+    }
+
     if enable_tonemapping {
-        hdr_to_ldr_tonemap(hdr, ldr);
+        impl_::<true>(hdr, ldr);
     } else {
-        hdr_to_ldr_clamp(hdr, ldr);
+        impl_::<false>(hdr, ldr);
     }
 }
 

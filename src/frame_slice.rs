@@ -128,14 +128,19 @@ impl<'t, T> FrameSlice<'t, T> {
         })
     }
 
-    /// Get horizontal line by it's y coordinate
-    pub fn getline(&self, y: usize) -> Option<&'t [T]> {
+    /// Get horizontal line by it's Y coordinate
+    pub fn get(&self, y: usize) -> Option<&'t [T]> {
         (y < self.height).then(|| unsafe {
             std::slice::from_raw_parts(
                 self.data.add(y * self.stride),
                 self.width
             )
         })
+    }
+
+    /// Get horizontal line by it's y coordinate
+    pub fn getline(&self, y: usize) -> Option<&'t [T]> {
+        self.get(y)
     }
 }
 
@@ -275,13 +280,29 @@ impl<'t, T> FrameSliceMut<'t, T> {
         )
     }
 
-    /// Get horizontal line by it's y coordinate
-    pub fn getline<'l>(&'l mut self, y: usize) -> Option<&'l mut [T]> {
+    /// Get mutable line reference
+    pub fn get_mut<'l>(&'l mut self, y: usize) -> Option<&'l mut [T]> {
         (y < self.height).then(|| unsafe {
             std::slice::from_raw_parts_mut(
                 self.data.add(y * self.stride),
                 self.width
             )
         })
+    }
+
+    /// Get constnat line reference
+    pub fn get<'l>(&'l self, y: usize) -> Option<&'l [T]> {
+        (y < self.height).then(|| unsafe {
+            std::slice::from_raw_parts(
+                self.data.add(y * self.stride),
+                self.width
+            )
+        })
+        
+    }
+
+    /// Get horizontal line by it's y coordinate
+    pub fn getline<'l>(&'l mut self, y: usize) -> Option<&'l mut [T]> {
+        self.get_mut(y)
     }
 }

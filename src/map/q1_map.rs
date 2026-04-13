@@ -1,4 +1,4 @@
-///! Quake 1 map parser implementattion
+//! Quake 1 map parser implementattion
 
 use std::collections::HashMap;
 use crate::{geom, math::Vec3f};

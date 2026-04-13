@@ -699,33 +699,72 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
         }
     }
 
-    /// Render polygon
-    fn render_polygon(
+    /// Render volume surface
+    fn render_surface(
         &mut self,
-        polygon: &geom::Polygon,
-        u: geom::Plane,
-        v: geom::Plane,
-        material_uv_offset: Vec2f,
-        material_uv_scale: Vec2f,
-        color: u64,
-        texture: SurfaceTexture,
-        is_transparent: bool,
-        is_sky: bool,
-        clip_oct: &geom::BoundOct,
+        surface: &bsp::Surface,
+        clip_oct: geom::BoundOct,
         vertices: &mut Vec<Vertex>,
-        vertex_dst: &mut Vec<Vertex>,
+        vertices_dst: &mut Vec<Vertex>,
+        surface_texture_data: &mut Vec<u64>,
     ) {
+        let polygon = self.map.get_polygon(surface.polygon_id).unwrap();
+
+        // Perform backface culling with shadow camera
+        if let Some(shadow_camera) = self.shadow_camera.as_ref() {
+            if polygon.plane.get_signed_distance(shadow_camera.location) <= 0.0 {
+                return;
+            }
+        }
+
+        // Backface cull with standard camera
+        if polygon.plane.get_signed_distance(self.camera.location) <= 0.0 {
+            return;
+        }
+
+        // Get material texture
+        let texture = self.material_table
+            .get_texture(surface.material_id)
+            .unwrap();
+
+        // Find mip index (sky uses 0 by default)
+        let mip_index = if surface.is_sky() {
+            0
+        } else {
+            let mut min_dist_2 = f32::MAX;
+
+            for point in &polygon.points {
+                let dist_2 = (*point - self.camera.location).length2();
+
+                if dist_2 <= min_dist_2 {
+                    min_dist_2 = dist_2;
+                }
+            }
+
+            let res = (self.frame.width() * self.frame.height()) as f32;
+
+            // Strange, but...
+            ((min_dist_2 / res).log2() / 2.0 + 1.3) as usize
+        };
+
+        let (image, image_uv_scale) = texture.get_mip_level(mip_index.min(texture.mip_levels() - 1)).unwrap();
+
         vertices.clear();
 
-        // Apply projection (and calculate UVs)
-        if is_sky {
+        // Projection and UVs
+        if surface.is_sky() {
             self.camera.project_sky_polygon(polygon, vertices, self.sky_uv_offset);
         } else {
-            self.camera.project_polygon(polygon, u, v, material_uv_offset, material_uv_scale, vertices);
+            self.camera.project_polygon(
+                polygon, surface.u, surface.v,
+                surface.material_uv_offset / image_uv_scale.into(),
+                surface.material_uv_scale / image_uv_scale.into(),
+                vertices
+            );
         }
 
         // Clip polygon by Z=1
-        if !clip_polygon(vertices, vertex_dst, 1.0, |l, r| l > r, |v| v.position.z()) {
+        if !clip_polygon(vertices, vertices_dst, 1.0, |l, r| l > r, |v| v.position.z()) {
             return;
         }
 
@@ -733,7 +772,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
         self.camera.get_screenspace_polygon(vertices);
 
         // Clip polygon by volume clipping octagon
-        if !clip_polygon_oct(vertices, vertex_dst, clip_oct) {
+        if !clip_polygon_oct(vertices, vertices_dst, &clip_oct) {
             return;
         }
 
@@ -744,72 +783,8 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
             }
         }
 
-        // Rasterize polygon
-        unsafe {
-            self.render_clipped_polygon(
-                is_transparent,
-                is_sky,
-                &vertices,
-                color,
-                texture
-            );
-        }
-    }
-
-    /// Render single volume
-    fn render_volume(
-        &mut self,
-        id: bsp::VolumeId,
-        clip_oct: &geom::BoundOct,
-        points: &mut Vec<Vertex>,
-        point_dst: &mut Vec<Vertex>,
-        surface_texture_data: &mut Vec<u64>,
-    ) {
-        let volume = self.map.get_volume(id).unwrap();
-
-        'polygon_rendering: for surface in &volume.surfaces {
-
-            let polygon = self.map.get_polygon(surface.polygon_id).unwrap();
-
-            // Backface cull with shadow camera
-            if let Some(shadow_camera) = self.shadow_camera.as_ref() {
-                if polygon.plane.get_signed_distance(shadow_camera.location) <= 0.0 {
-                    continue 'polygon_rendering;
-                }
-            }
-
-            // Backface cull with standard camera
-            if polygon.plane.get_signed_distance(self.camera.location) <= 0.0 {
-                continue 'polygon_rendering;
-            }
-
-            // Get material texture
-            let texture = self.material_table
-                .get_texture(surface.material_id)
-                .unwrap();
-
-            // Find mip index (sky uses 0 by default)
-            let mip_index = if surface.is_sky() {
-                0
-            } else {
-                let mut min_dist_2 = f32::MAX;
-    
-                for point in &polygon.points {
-                    let dist_2 = (*point - self.camera.location).length2();
-    
-                    if dist_2 <= min_dist_2 {
-                        min_dist_2 = dist_2;
-                    }
-                }
-
-                let res = (self.frame.width() * self.frame.height()) as f32;
-    
-                // Strange, but...
-                ((min_dist_2 / res).log2() / 2.0 + 1.3) as usize
-            };
-
-            let (image, image_uv_scale) = texture.get_mip_level(mip_index.min(texture.mip_levels() - 1)).unwrap();
-
+        // Build surface **AFTER** validating vertex buffer, surface compilation is one of the most expensive rendering operations.
+        let (color, surface_texture) = {
             // Calculate simple per-face lighting used for during monochrome rendering
             let light = {
                 let diffuse = Vec3f::new(0.30, 0.47, 0.80)
@@ -847,19 +822,18 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                 }
             };
 
-            self.render_polygon(
-                &polygon,
-                surface.u,
-                surface.v,
-                surface.material_uv_offset / image_uv_scale.into(),
-                surface.material_uv_scale / image_uv_scale.into(),
-                color,
-                surface_texture,
+            (color, surface_texture)
+        };
+
+
+        // Perform polygon rasterization
+        unsafe {
+            self.render_clipped_polygon(
                 surface.is_transparent(),
                 surface.is_sky(),
-                clip_oct,
-                points,
-                point_dst,
+                &vertices,
+                color,
+                surface_texture
             );
         }
     }
@@ -1113,23 +1087,27 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                 render_set
             });
 
-        // Pre-allocated memory to reduce allocation amount.
+        // Pre-allocate memory to reduce total transient allocation number.
         let mut points = Vec::with_capacity(32);
         let mut point_dst = Vec::with_capacity(32);
         let mut surface_texture = Vec::new();
 
+        // Render all volumes
         for (volume_id, volume_clip_oct) in inv_render_set
             .iter()
             .rev()
             .copied()
         {
-            self.render_volume(
-                volume_id,
-                &volume_clip_oct,
-                &mut points,
-                &mut point_dst,
-                &mut surface_texture
-            );
+            let volume = self.map.get_volume(volume_id).unwrap();
+            for surface in volume.surfaces.iter() {
+                self.render_surface(
+                    surface,
+                    volume_clip_oct,
+                    &mut points,
+                    &mut point_dst,
+                    &mut surface_texture
+                );
+            }
         }
     }
 }
@@ -1208,6 +1186,47 @@ fn build_surface_texture<'t>(
         build_surface_texture_impl::<true>(data, src, light)
     } else {
         build_surface_texture_impl::<false>(data, src, light)
+    }
+}
+
+/// New surface texture building function
+fn build_surface_texture_2<'t>(
+    mut target: FrameSliceMut<u64>,
+    texture: FrameSlice<u32>,
+    material_uv_offset: Vec2f,
+    material_uv_scale: Vec2f,
+    light: f32,
+) {
+    let u_coef = material_uv_scale.x() * texture.width() as f32 / target.width() as f32;
+    let v_coef = material_uv_scale.y() * texture.height() as f32 / target.height() as f32;
+    let u_off = material_uv_offset.x() * texture.width() as f32;
+    let v_off = material_uv_offset.y() * texture.height() as f32;
+
+    for y in 0..target.height() {
+        let tv = y as f32 * v_coef + v_off;
+        let iv = unsafe { tv.to_int_unchecked::<isize>() }
+            .rem_euclid(texture.height() as isize)
+            .cast_unsigned();
+
+        let tw = target.width();
+        let tex_row = texture.get(iv).unwrap();
+        let dst_row = target.get_mut(y).unwrap();
+
+        for x in 0..tw {
+            let tu = x as f32 * u_coef + u_off;
+            let iu = unsafe { tu.to_int_unchecked::<isize>() }
+                .rem_euclid(texture.width() as isize)
+                .cast_unsigned();
+
+            let [r, g, b, _] = tex_row[iu].to_le_bytes();
+
+            dst_row[x] = u64_from_u16([
+                unsafe { (r as f32 * light).to_int_unchecked::<u16>() },
+                unsafe { (g as f32 * light).to_int_unchecked::<u16>() },
+                unsafe { (b as f32 * light).to_int_unchecked::<u16>() },
+                0
+            ]);
+        }
     }
 }
 

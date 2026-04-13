@@ -1,4 +1,4 @@
-///! Weird Map implementation module
+//! Map (BSP collection) format implementation
 
 use std::collections::HashMap;
 use crate::{geom, math::Vec3f};
@@ -9,14 +9,8 @@ pub mod q1_map;
 /// Source map
 pub mod source_vmf;
 
-/// Map material
-pub struct Material {
-    /// Straight color
-    pub color: u32,
-}
-
 crate::flags! {
-    /// Properties of brush face
+    /// Brush face flags
     #[derive(Copy, Clone, PartialEq, Eq)]
     pub struct BrushFaceFlags: u8 {
         /// Transparency bit
@@ -53,10 +47,10 @@ pub struct BrushFace {
     /// V texture axis
     pub v: geom::Plane,
 
-    /// Index of material in map material table
+    /// Name of material applied to brush face
     pub mtl_name: String,
 
-    /// Property flags
+    /// Face property flag bits
     pub flags: BrushFaceFlags,
 }
 
@@ -74,7 +68,7 @@ pub struct Entity {
     /// Entity brushes
     pub brushes: Vec<Brush>,
 
-    /// Entity properties
+    /// Entity string property set
     pub properties: HashMap<String, String>,
 }
 

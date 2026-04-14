@@ -12,7 +12,7 @@ use std::{collections::{HashMap, HashSet}, io::Read, sync::{Arc, mpsc}};
 use math::{Mat4f, Vec2f, Vec3f};
 use zerocopy::IntoBytes;
 
-use crate::{frame_slice::{FrameSlice, FrameSliceMut}, math::FVec4};
+use crate::{frame_slice::{FrameSlice, FrameSliceMut}, math::{FVec4, Vec2}};
 
 pub mod math;
 pub mod system_font;
@@ -322,7 +322,7 @@ impl RenderCamera {
                     (1.0 - pt.position.y() * inv_z) * self.half_fh,
                     inv_z,
                 ),
-                tex_coord: pt.tex_coord * inv_z.into()
+                tex_coord: pt.tex_coord * inv_z.into(),
             };
         }
     }
@@ -608,10 +608,9 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                 *dst = color.wrapping_mul((((xi >> 5) ^ (yi >> 5)) & 1) as u64);
             }),
             RasterizationMode::Textured => {
-                let width = texture.width() as isize >> (is_sky as isize);
-                let height = texture.height() as isize;
-
                 if is_sky {
+                    let width = texture.width() as isize >> (is_sky as isize);
+                    let height = texture.height() as isize;
                     let uv_offset = self.sky_uv_offset;
                     let background_uv_offset = self.sky_background_uv_offset;
 
@@ -648,16 +647,17 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                         *dst = *unsafe { texture.get2_unchecked(bg_v, bg_u) };
                     })
                 } else {
+                    let max_u = texture.width() - 1;
+                    let max_v = texture.height() - 1;
+
                     run!(move |dst: &mut u64, xzuv: FVec4| {
                         let inv_z = xzuv.y().recip();
 
+                        // min just for get2_unchecked safety
                         let u = unsafe { (xzuv.z() * inv_z).to_int_unchecked::<isize>() }
-                            .rem_euclid(width)
-                            .cast_unsigned();
-
+                            .cast_unsigned().min(max_u);
                         let v = unsafe { (xzuv.w() * inv_z).to_int_unchecked::<isize>() }
-                            .rem_euclid(height)
-                            .cast_unsigned();
+                            .cast_unsigned().min(max_v);
 
                         *dst = *unsafe { texture.get2_unchecked(v, u) };
                     })
@@ -750,63 +750,90 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
             }
         }
 
-        // // Get UV bound rectangle and use it for surface used subrange recalculation
-        // let uv_bounds = geom::BoundRect::for_points(vertices.iter().map(|v| v.tex_coord));
+        // Calculate simple per-face lighting used for during monochrome rendering
+        let static_light = {
+            let diffuse = Vec3f::new(0.30, 0.47, 0.80)
+                .normalized()
+                .dot(polygon.plane.normal)
+                .abs()
+                .min(0.99);
 
-        // // Texture resolution and UVimage offset from UVtexture
-        // let (texture_res, image_uv_off) = {
-        //     // Integer UV bounds
-        //     let imin = uv_bounds.min.map(|v| v.floor() as isize);
-        //     let imax = uv_bounds.max.map(|v| v.ceil() as isize);
-        //     let res = (imax - imin).map(|v| v.cast_unsigned());
-        //     let ioff = Vec2::new(
-        //         imin.x().rem_euclid(image.width() as isize).cast_unsigned(),
-        //         imin.y().rem_euclid(image.height() as isize).cast_unsigned()
-        //     );
+            diffuse * 0.9 + 0.09
+        };
 
-        //     (res, ioff)
-        // };
+        // Calculate color from light and material color
+        let static_color = {
+            let color = self.material_table.get_color(surface.material_id).unwrap().to_le_bytes();
+            u64_from_u16([
+                (color[0] as f32 * static_light) as u16,
+                (color[1] as f32 * static_light) as u16,
+                (color[2] as f32 * static_light) as u16,
+                0
+            ])
+        };
 
-        // Build surface **AFTER** validating vertex buffer, surface compilation is one of the most expensive rendering operations.
-        let (color, surface_texture) = {
-            // Calculate simple per-face lighting used for during monochrome rendering
-            let light = {
-                let diffuse = Vec3f::new(0.30, 0.47, 0.80)
-                    .normalized()
-                    .dot(polygon.plane.normal)
-                    .abs()
-                    .min(0.99);
+        let needs_surface_texture = match self.rasterization_mode {
+            RasterizationMode::Depth | RasterizationMode::Overdraw | RasterizationMode::UV | RasterizationMode::Monochrome => {
+                false
+            }
+            RasterizationMode::Textured => {
+                true
+            }
+        };
 
-                diffuse * 0.9 + 0.09
-            };
+        let surface_texture = if needs_surface_texture && !surface.is_sky() {
+            // Map tex_coords into normal state
+            for vt in vertices.iter_mut() {
+                vt.tex_coord = vt.tex_coord * vt.position.z().recip().into();
+            }
 
-            // Calculate monorhrome color from light and material color
-            let color = {
-                let color = self.material_table.get_color(surface.material_id).unwrap().to_le_bytes();
-                u64_from_u16([
-                    (color[0] as f32 * light) as u16,
-                    (color[1] as f32 * light) as u16,
-                    (color[2] as f32 * light) as u16,
-                    0
-                ])
-            };
+            // Get UV bound rectangle and use it for surface used subrange recalculation
+            let uv_bounds = geom::BoundRect::for_points(vertices.iter().map(|v| v.tex_coord));
 
-            // Build surface texture
-            let surface_texture = match self.rasterization_mode {
-                RasterizationMode::Depth | RasterizationMode::Overdraw | RasterizationMode::UV | RasterizationMode::Monochrome => {
-                    FrameSlice::empty()
-                }
-                RasterizationMode::Textured => {
-                    build_surface_texture(
-                        surface_texture_data,
-                        image,
-                        light,
-                        !surface.is_sky()
-                    )
-                }
-            };
+            let uv_int_min = uv_bounds.min.map(|v| v.floor() as isize);
+            let uv_int_max = uv_bounds.max.map(|v| v.ceil() as isize);
+            let texture_res = (uv_int_max - uv_int_min).map(|v| v.cast_unsigned().max(1));
 
-            (color, surface_texture)
+            let image_uv_off = Vec2::new(
+                uv_int_min.x().rem_euclid(image.width() as isize).cast_unsigned(),
+                uv_int_min.y().rem_euclid(image.height() as isize).cast_unsigned()
+            );
+
+            // Replace UVimage with UVtexture * inv_z
+            for vt in vertices.iter_mut() {
+                vt.tex_coord = (vt.tex_coord - uv_int_min.map(|v| v as f32)) * vt.position.z().into();
+            }
+
+            surface_texture_data.resize(texture_res.x() * texture_res.y(), 0);
+            let mut texture = FrameSliceMut::new(
+                texture_res.x(),
+                texture_res.y(),
+                texture_res.x(),
+                surface_texture_data.as_mut_slice()
+            );
+
+            build_surface_texture(
+                texture.reborrow(),
+                image,
+                image_uv_off,
+                static_light,
+                !surface.is_sky()
+            );
+
+            texture.into()
+        } else if needs_surface_texture {
+            let width = image.width();
+            let height = image.height();
+
+            surface_texture_data.resize(width * height, 0);
+            let mut texture = FrameSliceMut::new(width, height, width, surface_texture_data.as_mut_slice());
+
+            // Build simple surface texture without UV remapping
+            build_surface_texture_plain(texture.reborrow(), image);
+
+            texture.into()
+        } else {
+            FrameSlice::empty()
         };
 
         // Rasterize polygon
@@ -815,7 +842,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                 surface.is_transparent(),
                 surface.is_sky(),
                 &vertices,
-                color,
+                static_color,
                 surface_texture
             );
         }
@@ -1119,18 +1146,18 @@ pub enum RenderOutputMessage {
     }
 }
 
-/// Build surface texture
-fn build_surface_texture_impl<'t, const ENABLE_LIGHTING: bool>(
-    data: &'t mut [u64],
-    src: FrameSlice<u32>,
-    light: f32
-) -> FrameSlice<'t, u64> {
-    for y in 0..src.height() {
-        let off = y * src.width();
-        let src_line = src.get(y).unwrap();
-        let dst_line = &mut data[off..off + src.width()];
+fn build_surface_texture_impl<const ENABLE_LIGHTING: bool>(
+    mut texture: FrameSliceMut<u64>,
+    image: FrameSlice<u32>,
+    image_uv_off: Vec2::<usize>,
+    light: f32,
+) {
+    for y in 0..texture.height() {
+        let src = image.get((y + image_uv_off.y()) % image.height()).unwrap();
+        let dst = texture.get_mut(y).unwrap();
 
-        for (src, dst) in Iterator::zip(src_line.iter(), dst_line.iter_mut()) {
+        let iter = dst.iter_mut().zip(src.iter().cycle().skip(image_uv_off.x()));
+        for (dst, src) in iter {
             let [r, g, b, _] = src.to_le_bytes();
 
             *dst = u64_from_u16(if ENABLE_LIGHTING {
@@ -1145,23 +1172,44 @@ fn build_surface_texture_impl<'t, const ENABLE_LIGHTING: bool>(
             });
         }
     }
-
-    FrameSlice::new(src.width(), src.height(), src.width(), data)
 }
 
-/// Build surface texture with constant lighting
-fn build_surface_texture<'t>(
-    data: &'t mut Vec<u64>,
-    src: FrameSlice<u32>,
+/// Build surface texture
+fn build_surface_texture(
+    texture: FrameSliceMut<u64>,
+    image: FrameSlice<u32>,
+    image_uv_off: Vec2::<usize>,
     light: f32,
-    enable_lighting: bool
-) -> FrameSlice<'t, u64> {
-    data.resize(src.width() * src.height(), 0);
-
-    if enable_lighting {
-        build_surface_texture_impl::<true>(data, src, light)
+    enable_lighting: bool,
+) {
+    let f = if enable_lighting {
+        build_surface_texture_impl::<true>
     } else {
-        build_surface_texture_impl::<false>(data, src, light)
+        build_surface_texture_impl::<false>
+    };
+    f(texture, image, image_uv_off, light);
+}
+
+/// Just cast high-res to low-res
+fn build_surface_texture_plain(
+    mut texture: FrameSliceMut<u64>,
+    image: FrameSlice<u32>,
+) {
+    let w = texture.width();
+    let h = texture.height();
+
+    assert!(w == image.width() && h == image.height());
+
+    for y in 0..texture.height() {
+        let dst = texture.get_mut(y).unwrap();
+        let src = image.get(y).unwrap();
+
+        let iter = dst.iter_mut().zip(src.iter());
+
+        for (dst, src) in iter {
+            let [r, g, b, _] = src.to_le_bytes();
+            *dst = u64_from_u16([r as u16, g as u16, b as u16, 0]);
+        }
     }
 }
 
@@ -1561,6 +1609,7 @@ fn main() {
     // camera.location = Vec3f::new(-174.0, 2114.6, -64.5); // -200, 2000, -50
     // camera.direction = Vec3f::new(-0.4, 0.9, 0.1);
 
+    // heavy scene
     camera.location = Vec3f::new(1402.4, 1913.7, -86.3);
     camera.direction = Vec3f::new(-0.74, 0.63, -0.24);
 
@@ -1569,6 +1618,7 @@ fn main() {
 
     // camera.direction = Vec3f::new(0.055, -0.946, 0.320); // (-0.048328593, -0.946524262, 0.318992347)
 
+    // // sky
     // camera.location = Vec3f::new(-72.9, 698.3, -118.8);
     // camera.direction = Vec3f::new(0.37, 0.68, 0.63);
 

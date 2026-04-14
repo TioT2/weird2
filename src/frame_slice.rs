@@ -315,3 +315,10 @@ impl<'t, T> FrameSliceMut<'t, T> {
         (y < self.height && x < self.width).then(|| unsafe { self.get2_unchecked(y, x) })
     }
 }
+
+// Implement conversion
+impl<'t, T> From<FrameSliceMut<'t, T>> for FrameSlice<'t, T> {
+    fn from(f: FrameSliceMut<'t, T>) -> FrameSlice<'t, T> {
+        unsafe { FrameSlice::from_raw_parts(f.width, f.height, f.stride, f.data.as_ptr()) }
+    }
+}

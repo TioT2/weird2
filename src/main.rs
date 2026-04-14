@@ -12,7 +12,7 @@ use std::{collections::{HashMap, HashSet}, io::Read, sync::{Arc, mpsc}};
 use math::{Mat4f, Vec2f, Vec3f};
 use zerocopy::IntoBytes;
 
-use crate::{frame_slice::{FrameSlice, FrameSliceMut}, math::{FVec4, Vec2}};
+use crate::{frame_slice::{FrameSlice, FrameSliceMut}, math::FVec4};
 
 pub mod math;
 pub mod system_font;
@@ -146,34 +146,6 @@ impl std::ops::Mul<Self> for Vertex {
         Self {
             position: self.position * rhs.position,
             tex_coord: self.tex_coord * rhs.tex_coord,
-        }
-    }
-}
-
-/// Texture that's used for final shading
-#[derive(Copy, Clone)]
-struct SurfaceTexture<'t> {
-    /// Texture width
-    width: usize,
-
-    /// Texture height
-    height: usize,
-
-    /// Texture stride
-    stride: usize,
-
-    /// Texture data slice
-    data: &'t [u64],
-}
-
-impl<'t> SurfaceTexture<'t> {
-    // Generate empty surface texture
-    pub fn empty() -> SurfaceTexture<'static> {
-        SurfaceTexture {
-            width: 0,
-            height: 0,
-            stride: 0,
-            data: &[],
         }
     }
 }
@@ -516,7 +488,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                 let start = usize::min(left_x.floor() as usize, end);
 
                 self.frame
-                    .getline(pixel_y)
+                    .get_mut(pixel_y)
                     .unwrap()
                     .get_mut(start..end)
                     .unwrap()
@@ -542,7 +514,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
         is_sky: bool,
         points: &[Vertex],
         color: u64,
-        texture: SurfaceTexture
+        texture: FrameSlice<u64>
     ) {
         /// Add transparency layer after fragment function
         fn wrap_transparent(mut f: impl FnMut(&mut u64, FVec4)) -> impl FnMut(&mut u64, FVec4) {
@@ -636,8 +608,8 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                 *dst = color.wrapping_mul((((xi >> 5) ^ (yi >> 5)) & 1) as u64);
             }),
             RasterizationMode::Textured => {
-                let width = texture.width as isize >> (is_sky as isize);
-                let height = texture.height as isize;
+                let width = texture.width() as isize >> (is_sky as isize);
+                let height = texture.height() as isize;
 
                 if is_sky {
                     let uv_offset = self.sky_uv_offset;
@@ -656,8 +628,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                             .rem_euclid(height)
                             .cast_unsigned();
 
-                        let fg_off = fg_v.wrapping_mul(texture.stride).wrapping_add(fg_u);
-                        let fg_color = *unsafe { texture.data.get_unchecked(fg_off) };
+                        let fg_color = *unsafe { texture.get2_unchecked(fg_v, fg_u) };
 
                         // Check foreground color and fetch backround if foreground is transparent
                         if fg_color != 0 {
@@ -674,8 +645,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                             .rem_euclid(height)
                             .cast_unsigned();
 
-                        let bg_off = bg_v.wrapping_mul(texture.stride).wrapping_add(bg_u);
-                        *dst = *unsafe { texture.data.get_unchecked(bg_off) };
+                        *dst = *unsafe { texture.get2_unchecked(bg_v, bg_u) };
                     })
                 } else {
                     run!(move |dst: &mut u64, xzuv: FVec4| {
@@ -689,8 +659,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                             .rem_euclid(height)
                             .cast_unsigned();
 
-                        let off = v.wrapping_mul(texture.stride).wrapping_add(u);
-                        *dst = *unsafe { texture.data.get_unchecked(off) };
+                        *dst = *unsafe { texture.get2_unchecked(v, u) };
                     })
                 }
             }
@@ -825,7 +794,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
             // Build surface texture
             let surface_texture = match self.rasterization_mode {
                 RasterizationMode::Depth | RasterizationMode::Overdraw | RasterizationMode::UV | RasterizationMode::Monochrome => {
-                    SurfaceTexture::empty()
+                    FrameSlice::empty()
                 }
                 RasterizationMode::Textured => {
                     build_surface_texture(
@@ -1155,10 +1124,10 @@ fn build_surface_texture_impl<'t, const ENABLE_LIGHTING: bool>(
     data: &'t mut [u64],
     src: FrameSlice<u32>,
     light: f32
-) -> SurfaceTexture<'t> {
+) -> FrameSlice<'t, u64> {
     for y in 0..src.height() {
         let off = y * src.width();
-        let src_line = src.getline(y).unwrap();
+        let src_line = src.get(y).unwrap();
         let dst_line = &mut data[off..off + src.width()];
 
         for (src, dst) in Iterator::zip(src_line.iter(), dst_line.iter_mut()) {
@@ -1177,12 +1146,7 @@ fn build_surface_texture_impl<'t, const ENABLE_LIGHTING: bool>(
         }
     }
 
-    SurfaceTexture {
-        width: src.width(),
-        height: src.height(),
-        stride: src.width(),
-        data: data,
-    }
+    FrameSlice::new(src.width(), src.height(), src.width(), data)
 }
 
 /// Build surface texture with constant lighting
@@ -1191,7 +1155,7 @@ fn build_surface_texture<'t>(
     src: FrameSlice<u32>,
     light: f32,
     enable_lighting: bool
-) -> SurfaceTexture<'t> {
+) -> FrameSlice<'t, u64> {
     data.resize(src.width() * src.height(), 0);
 
     if enable_lighting {
@@ -1467,34 +1431,39 @@ fn main() {
 
     // Load map
     let map = {
-        // yay, this code will not compile on non-local builds)))
+        // yay, this code will not work on non-local builds)))
         // --
         let map_name = "quake/e1m1";
+        let map_src_format = "map";
         let data_path = ".local/";
 
         let wbsp_path = format!("{}wbsp/{}.wbsp", data_path, map_name);
-        let map_path = format!("{}{}.map", data_path, map_name);
+        let map_src_path = format!("{}{}.{}", data_path, map_name, map_src_format);
 
-        fn compile_map(path: &str) -> bsp::Map {
+        /// Load map source from local storage and compile it
+        fn load_and_compile(path: &str, src_format: &str) -> bsp::Map {
             let source = std::fs::read_to_string(path).unwrap();
-            let q1_location_map = map::q1_map::Map::parse(&source).unwrap();
-            let location_map = q1_location_map.build_wmap();
 
-            bsp::Map::compile(&location_map).unwrap()
+            let map = match src_format {
+                "map" => map::q1_map::Map::parse(&source).unwrap().build_wmap(),
+                "vmf" => map::source_vmf::Entry::parse_vmf(&source).unwrap().build_wmap().unwrap(),
+                _ => panic!("'{}' map format is not implemented", src_format)
+            };
+
+            bsp::compiler::compile(&map).unwrap()
         }
 
         if do_enable_map_caching {
             match std::fs::File::open(&wbsp_path) {
                 Ok(mut bsp_file) => {
                     // Load map from map cache
-
                     let mut bsp_file_data = Vec::new();
                     bsp_file.read_to_end(&mut bsp_file_data).unwrap();
                     bsp::wbsp::load(&bsp_file_data).unwrap()
                 }
                 Err(_) => {
                     // Compile map
-                    let compiled_map = compile_map(&map_path);
+                    let map = load_and_compile(&map_src_path, map_src_format);
 
                     if let Some(directory) = std::path::Path::new(&wbsp_path).parent() {
                         _ = std::fs::create_dir(directory);
@@ -1502,14 +1471,14 @@ fn main() {
 
                     // Save map to map cache
                     if let Ok(mut file) = std::fs::File::create(&wbsp_path) {
-                        bsp::wbsp::save(&compiled_map, &mut file).unwrap()
+                        bsp::wbsp::save(&map, &mut file).unwrap()
                     }
 
-                    compiled_map
+                    map
                 }
             }
         } else {
-            compile_map(&map_path)
+            load_and_compile(&map_src_path, map_src_format)
         }
     };
 
@@ -1725,7 +1694,7 @@ fn main() {
                         || hdr_to_ldr(&rendered_hdr_buffer, &mut ldr_frame_buffer, true)
                     ).1;
 
-                    // Render utility text by system font
+                    // Render statistics
                     let mut ldr_frame = FrameSliceMut::new(width as usize, height as usize, stride as usize, &mut ldr_frame_buffer);
                     system_font::write(ldr_frame.reborrow())
                         .str(16, 8, &format!("FPS: {} ({}ms)", timer.get_fps(), 1000.0 / timer.get_fps()))

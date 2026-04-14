@@ -1,6 +1,6 @@
 //! 2D image slice common structure implementation module
 
-use std::marker::PhantomData;
+use std::{marker::PhantomData, ptr::NonNull};
 
 /// 2D image immutable slice
 #[derive(Copy, Clone)]
@@ -15,7 +15,7 @@ pub struct FrameSlice<'t, T> {
     stride: usize,
 
     /// Slice data
-    data: *const T,
+    data: NonNull<T>,
 
     /// Phantom data
     _phantom: PhantomData<&'t T>,
@@ -27,13 +27,7 @@ impl<'t, T> FrameSlice<'t, T> {
         assert!(height * stride <= data.len(), "Data array width must be equal to content width");
         assert!(width <= stride, "Slice width must be less or equal to frame stride");
 
-        Self {
-            width,
-            height,
-            stride,
-            data: data.as_ptr(),
-            _phantom: PhantomData,
-        }
+        unsafe { Self::from_raw_parts(width, height, stride, data.as_ptr()) }
     }
 
     /// Construct new for raw structures
@@ -43,20 +37,14 @@ impl<'t, T> FrameSlice<'t, T> {
             width,
             height,
             stride,
-            data: ptr,
+            data: NonNull::new(ptr.cast_mut()).unwrap(),
             _phantom: PhantomData,
         }
     }
 
     /// Create empty frame slice
     pub const fn empty() -> Self {
-        Self {
-            width: 0,
-            height: 0,
-            stride: 0,
-            data: std::ptr::dangling_mut(),
-            _phantom: PhantomData,
-        }
+        unsafe { Self::from_raw_parts(0, 0, 0, std::ptr::dangling()) }
     }
 
     /// Get frame width
@@ -80,7 +68,7 @@ impl<'t, T> FrameSlice<'t, T> {
     /// Get data mutable pointer
     #[inline]
     pub fn as_ptr(&self) -> *const T {
-        self.data
+        self.data.as_ptr()
     }
 
     /// Split framebuffer by vertical line at `x` to disjoint subsets.
@@ -124,23 +112,33 @@ impl<'t, T> FrameSlice<'t, T> {
     /// Try to interpret self as a flat slice
     pub fn as_flat(&self) -> Option<&'t [T]> {
         (self.width == self.stride).then(|| unsafe {
-            std::slice::from_raw_parts(self.data, self.width * self.stride)
+            std::slice::from_raw_parts(self.data.as_ptr(), self.width * self.stride)
         })
+    }
+
+    /// Unchecked get function
+    pub unsafe fn get_unchecked(&self, y: usize) -> &'t [T] {
+        unsafe {
+            std::slice::from_raw_parts(
+                self.data.add(y * self.stride).as_ptr(),
+                self.width
+            )
+        }
     }
 
     /// Get horizontal line by it's Y coordinate
     pub fn get(&self, y: usize) -> Option<&'t [T]> {
-        (y < self.height).then(|| unsafe {
-            std::slice::from_raw_parts(
-                self.data.add(y * self.stride),
-                self.width
-            )
-        })
+        (y < self.height).then(|| unsafe { self.get_unchecked(y) })
     }
 
-    /// Get horizontal line by it's y coordinate
-    pub fn getline(&self, y: usize) -> Option<&'t [T]> {
-        self.get(y)
+    /// 2-dimensional unchecked access
+    pub unsafe fn get2_unchecked(&self, y: usize, x: usize) -> &'t T {
+        unsafe { self.data.add(y * self.stride + x).as_ref() }
+    }
+
+    /// 2-dimensional access
+    pub unsafe fn get2(&self, y: usize, x: usize) -> Option<&'t T> {
+        (y < self.height && x < self.width).then(|| unsafe { self.get2_unchecked(y, x) })
     }
 }
 
@@ -156,7 +154,7 @@ pub struct FrameSliceMut<'t, T> {
     stride: usize,
 
     /// Pointer to top-left part of frame
-    data: *mut T,
+    data: NonNull<T>,
 
     /// `data` contents lifetime holder
     _phantom: PhantomData<&'t mut ()>,
@@ -166,15 +164,7 @@ impl<'t, T> FrameSliceMut<'t, T> {
     /// Construct new from w, h, s parameters
     pub const fn new(width: usize, height: usize, stride: usize, data: &'t mut [T]) -> Self {
         assert!(height * stride <= data.len(), "Data array width must be equal to content width");
-        assert!(width <= stride, "Slice width must be less or equal to frame stride");
-
-        Self {
-            width,
-            height,
-            stride,
-            data: data.as_mut_ptr(),
-            _phantom: PhantomData,
-        }
+        unsafe { Self::from_raw_parts(width, height, stride, data.as_mut_ptr()) }
     }
 
     /// Construct new for raw structures
@@ -184,20 +174,14 @@ impl<'t, T> FrameSliceMut<'t, T> {
             width,
             height,
             stride,
-            data: ptr,
+            data: NonNull::new(ptr).unwrap(),
             _phantom: PhantomData,
         }
     }
 
     /// Create empty frame slice
     pub const fn empty() -> Self {
-        Self {
-            width: 0,
-            height: 0,
-            stride: 0,
-            data: std::ptr::dangling_mut(),
-            _phantom: PhantomData,
-        }
+        unsafe { Self::from_raw_parts(0, 0, 0, std::ptr::dangling_mut()) }
     }
 
     /// Get frame width
@@ -221,7 +205,7 @@ impl<'t, T> FrameSliceMut<'t, T> {
     /// Get data mutable pointer
     #[inline]
     pub fn as_mut_ptr(&self) -> *mut T {
-        self.data
+        self.data.as_ptr()
     }
 
     /// Reborrow frame slice contents from some shorter lifetime
@@ -238,7 +222,7 @@ impl<'t, T> FrameSliceMut<'t, T> {
     /// Try to interpret self as a flat mutable slice
     pub fn as_flat<'f>(&'f mut self) -> Option<&'f mut [T]> {
         (self.width == self.stride).then(|| unsafe {
-            std::slice::from_raw_parts_mut(self.data, self.stride * self.height)
+            std::slice::from_raw_parts_mut(self.data.as_ptr(), self.stride * self.height)
         })
     }
 
@@ -280,29 +264,54 @@ impl<'t, T> FrameSliceMut<'t, T> {
         )
     }
 
-    /// Get mutable line reference
-    pub fn get_mut<'l>(&'l mut self, y: usize) -> Option<&'l mut [T]> {
-        (y < self.height).then(|| unsafe {
+    /// Get mutable line reference without check
+    pub unsafe fn get_unchecked_mut<'l>(&'l mut self, y: usize) -> &'l mut [T] {
+        unsafe {
             std::slice::from_raw_parts_mut(
-                self.data.add(y * self.stride),
+                self.data.add(y * self.stride).as_ptr(),
                 self.width
             )
-        })
+        }
+    }
+
+    /// Get mutable line reference
+    pub fn get_mut<'l>(&'l mut self, y: usize) -> Option<&'l mut [T]> {
+        (y < self.height).then(|| unsafe { self.get_unchecked_mut(y) })
+    }
+
+    /// Get constant line reference without check
+    pub unsafe fn get_unchecked<'l>(&'l self, y: usize) -> &'l [T] {
+        unsafe {
+            std::slice::from_raw_parts(
+                self.data.add(y * self.stride).as_ptr(),
+                self.width
+            )
+        }
     }
 
     /// Get constnat line reference
     pub fn get<'l>(&'l self, y: usize) -> Option<&'l [T]> {
-        (y < self.height).then(|| unsafe {
-            std::slice::from_raw_parts(
-                self.data.add(y * self.stride),
-                self.width
-            )
-        })
-        
+        (y < self.height).then(|| unsafe { self.get_unchecked(y) })
     }
 
-    /// Get horizontal line by it's y coordinate
-    pub fn getline<'l>(&'l mut self, y: usize) -> Option<&'l mut [T]> {
-        self.get_mut(y)
+
+    /// 2-dimensional unchecked mutable get
+    pub unsafe fn get2_unchecked_mut<'l>(&'l mut self, y: usize, x: usize) -> &'l mut T {
+        unsafe { self.data.add(y * self.stride + x).as_mut() }
+    }
+
+    /// 2-dimensional mutable get
+    pub fn get2_mut<'l>(&'l mut self, y: usize, x: usize) -> Option<&'l mut T> {
+        (y < self.height && x < self.width).then(|| unsafe { self.get2_unchecked_mut(y, x) })
+    }
+
+    /// 2-dimensional unchecked get
+    pub unsafe fn get2_unchecked<'l>(&'l self, y: usize, x: usize) -> &'l T {
+        unsafe { self.data.add(y * self.stride + x).as_ref() }
+    }
+
+    /// 2-dimensional get
+    pub fn get2<'l>(&'l self, y: usize, x: usize) -> Option<&'l T> {
+        (y < self.height && x < self.width).then(|| unsafe { self.get2_unchecked(y, x) })
     }
 }

@@ -77,19 +77,15 @@ pub struct Frame<'t>(FrameSliceMut<'t, u32>);
 
 impl<'t> Frame<'t> {
     /// Write character
-    fn write_ch(&mut self, x: usize, y: usize, utf_ch: char) {
+    fn write_ch(&mut self, x0: usize, y0: usize, utf_ch: char) {
         let img = FONT.get(utf_ch as usize).copied().unwrap_or(FONT[1]);
 
-        let x_start = x;
-        let y_start = y;
-        let y_end = usize::min(y + FONT_HEIGHT, self.0.height());
-        let x_end = usize::min(x + FONT_WIDTH, self.0.width());
-
-        for y in y_start..y_end {
-            for x in x_start..x_end {
-                if (img >> ((7 + y_start - y) * FONT_WIDTH + (7 + x_start - x))) & 1 == 1 {
-                    let ptr = &mut self.0.getline(y).unwrap()[x];
-                    *ptr = !*ptr;
+        for y in y0..y0 + FONT_HEIGHT {
+            for x in x0..x0 + FONT_WIDTH {
+                if (img >> ((7 + y0 - y) * FONT_WIDTH + (7 + x0 - x))) & 1 == 1 {
+                    if let Some(ptr) = self.0.get2_mut(y, x) {
+                        *ptr = !*ptr;
+                    }
                 }
             }
         }

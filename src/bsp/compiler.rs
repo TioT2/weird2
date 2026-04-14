@@ -12,7 +12,7 @@ Compilation:
 */
 
 use std::{collections::{BTreeMap, BTreeSet, HashMap}, num::NonZeroU32};
-use crate::{geom, map, math::{Mat3f, Vec2f, Vec3f}};
+use crate::{geom, map, math::{Mat3f, Vec3f}};
 
 use super::Id;
 
@@ -43,12 +43,6 @@ pub struct DisplayPolygon {
 
     /// Polygon V axis.
     pub v: geom::Plane,
-
-    /// UVmaterial = UVpolygon * material_uv_scale + material_uv_offset
-    pub material_uv_scale: Vec2f,
-
-    /// See [`material_uv_offset`]
-    pub material_uv_offset: Vec2f,
 
     /// Flags of map material
     pub flags: super::SurfaceFlags,
@@ -1197,14 +1191,6 @@ impl CompileContext {
 
                 let points = geom::sort_points_by_angle(points, f1.plane.normal);
 
-                // Calculate point set UV ranges (to calculate resolution-independend UVs and per-material scale.)
-                let (uv_min, uv_max) = {
-                    let to_uv = |pt: &Vec3f| Vec2f::new(f1.u.get_signed_distance(*pt), f1.v.get_signed_distance(*pt));
-                    let bb = geom::BoundRect::for_points(points.iter().map(to_uv));
-                    (bb.min, bb.max)
-                };
-                let uv_delta = uv_max - uv_min;
-
                 // Add display polygon
                 let display_polygon = DisplayPolygon {
                     polygon: geom::Polygon {
@@ -1212,17 +1198,9 @@ impl CompileContext {
                         plane: f1.plane,
                     },
                     material_index: *mtlid,
-                    u: geom::Plane {
-                        normal: f1.u.normal / uv_delta.x().into(),
-                        distance: (uv_min.x() + f1.u.distance) / uv_delta.x(),
-                    },
-                    v: geom::Plane {
-                        normal: f1.v.normal / uv_delta.y().into(),
-                        distance: (uv_min.y() + f1.v.distance) / uv_delta.y(),
-                    },
-                    material_uv_offset: uv_min,
-                    material_uv_scale: uv_delta,
                     flags: map_brush_face_flags(f1.flags),
+                    u: f1.u,
+                    v: f1.v,
                 };
 
                 // Insert reversed polygon for transparent surfaces
@@ -1314,8 +1292,6 @@ impl CompileContext {
                                 polygon_id: super::PolygonId::from_index(polygon_index),
                                 u: physical_polygon.u,
                                 v: physical_polygon.v,
-                                material_uv_scale: physical_polygon.material_uv_scale,
-                                material_uv_offset: physical_polygon.material_uv_offset,
                                 flags: physical_polygon.flags,
                                 lightmap: None,
                             }

@@ -105,12 +105,6 @@ pub struct Surface {
     /// V axis
     pub v: Plane,
 
-    /// Material UV offset
-    pub material_uv_offset: Vec2,
-
-    /// Material UV scale
-    pub material_uv_scale: Vec2,
-
     /// Surface flags (matches [`SurfaceFlags`][super::SurfaceFlags] data)
     pub flags: u32,
 }
@@ -173,9 +167,6 @@ pub struct Volume {
 
 /// 3-component f32 vector
 pub type Vec3 = [f32; 3];
-
-/// 2-component f32 vector
-pub type Vec2 = [f32; 2];
 
 /// BSP entry type
 #[repr(C)]
@@ -523,8 +514,6 @@ pub fn load(data: &[u8]) -> Result<super::Map, LoadError> {
                             lightmap: None,
                             u,
                             v,
-                            material_uv_offset: surface.material_uv_offset.into(),
-                            material_uv_scale: surface.material_uv_scale.into(),
                         })
                     })
                     .collect::<Result<Vec<_>, LoadError>>()?,
@@ -690,8 +679,6 @@ pub fn save(map: &super::Map, dst: &mut dyn std::io::Write) -> Result<(), SaveEr
                 polygon_index: surface.polygon_id.into_index() as u32,
                 u: surface.u.into(),
                 v: surface.v.into(),
-                material_uv_offset: surface.material_uv_offset.into(),
-                material_uv_scale: surface.material_uv_scale.into(),
                 flags: surface.flags.0 as u32,
             });
         }

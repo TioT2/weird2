@@ -11,7 +11,7 @@ use crate::{bsp::{self, Id}, frame_slice::FrameSlice};
 
 /// Mipmapped texture
 pub struct Texture {
-    /// Base UV scale
+    /// Texture additional scale
     uv_scale: f32,
 
     /// Texture width
@@ -20,7 +20,7 @@ pub struct Texture {
     /// Texture height
     height: usize,
 
-    /// Offsets (in u32s) to mipmap datas
+    /// Offsets (in u32s) to mipmap data
     offsets: Vec<usize>,
 
     /// Image data
@@ -55,7 +55,7 @@ impl Texture {
         self.height
     }
 
-    /// Get number of texture mip levels
+    /// Get number of texture mip levels (> 0)
     pub fn mip_levels(&self) -> usize {
         self.offsets.len()
     }

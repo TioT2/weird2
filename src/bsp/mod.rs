@@ -2,7 +2,7 @@
 
 use std::num::NonZeroU32;
 
-use crate::{geom, map, math::{Vec2f, Vec3f}};
+use crate::{geom, map, math::Vec3f};
 
 pub mod compiler;
 pub mod wbsp;
@@ -61,10 +61,6 @@ crate::flags! {
 }
 
 /// Volume face convex visible part.
-/// # UVs
-/// Surface have two sets of UVs - UVsurface and UVmaterial. UVsurface is resolution-independend 0..1 UV that will be further
-/// transformed to match surface texture resolution. UVmaterial is UV used for accessing material textures during surface texture building.
-/// UVmaterial is calculated by `UVmateiral = UVsurface * material_uv_scale + material_uv_offset` formula.
 pub struct Surface {
     /// Polygon material identifier
     pub material_id: MaterialId,
@@ -77,12 +73,6 @@ pub struct Surface {
 
     /// Surface V axis
     pub v: geom::Plane,
-
-    /// UVmaterial scale
-    pub material_uv_scale: Vec2f,
-
-    /// UVmaterial offset
-    pub material_uv_offset: Vec2f,
 
     /// Flags denoting surface properties
     pub flags: SurfaceFlags,

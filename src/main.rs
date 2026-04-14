@@ -12,7 +12,7 @@ use std::{collections::{HashMap, HashSet}, io::Read, sync::{Arc, mpsc}};
 use math::{Mat4f, Vec2f, Vec3f};
 use zerocopy::IntoBytes;
 
-use crate::{frame_slice::{FrameSlice, FrameSliceMut}, math::FVec4};
+use crate::{frame_slice::{FrameSlice, FrameSliceMut}, math::{FVec4, Vec2}};
 
 pub mod math;
 pub mod system_font;
@@ -325,15 +325,13 @@ impl RenderCamera {
         polygon: &geom::Polygon,
         u: geom::Plane,
         v: geom::Plane,
-        material_uv_offset: Vec2f,
-        material_uv_scale: Vec2f,
         point_dst: &mut Vec<Vertex>,
     ) {
         point_dst.clear();
         for point in polygon.points.iter() {
             point_dst.push(Vertex {
                 position: self.view_projection.transform_point(*point),
-                tex_coord: Vec2f::new(u.get_signed_distance(*point), v.get_signed_distance(*point)) * material_uv_scale + material_uv_offset,
+                tex_coord: Vec2f::new(u.get_signed_distance(*point), v.get_signed_distance(*point)),
             });
         }
     }
@@ -703,7 +701,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
     fn render_surface(
         &mut self,
         surface: &bsp::Surface,
-        clip_oct: geom::BoundOct,
+        clip_oct: &geom::BoundOct,
         vertices: &mut Vec<Vertex>,
         vertices_dst: &mut Vec<Vertex>,
         surface_texture_data: &mut Vec<u64>,
@@ -751,14 +749,14 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
 
         vertices.clear();
 
-        // Projection and UVs
+        // Projection and surface UVs
         if surface.is_sky() {
             self.camera.project_sky_polygon(polygon, vertices, self.sky_uv_offset);
         } else {
             self.camera.project_polygon(
-                polygon, surface.u, surface.v,
-                surface.material_uv_offset / image_uv_scale.into(),
-                surface.material_uv_scale / image_uv_scale.into(),
+                polygon,
+                surface.u / image_uv_scale.into(),
+                surface.v / image_uv_scale.into(),
                 vertices
             );
         }
@@ -772,7 +770,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
         self.camera.get_screenspace_polygon(vertices);
 
         // Clip polygon by volume clipping octagon
-        if !clip_polygon_oct(vertices, vertices_dst, &clip_oct) {
+        if !clip_polygon_oct(vertices, vertices_dst, clip_oct) {
             return;
         }
 
@@ -782,6 +780,23 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                 return;
             }
         }
+
+        // // Get UV bound rectangle and use it for surface used subrange recalculation
+        // let uv_bounds = geom::BoundRect::for_points(vertices.iter().map(|v| v.tex_coord));
+
+        // // Texture resolution and UVimage offset from UVtexture
+        // let (texture_res, image_uv_off) = {
+        //     // Integer UV bounds
+        //     let imin = uv_bounds.min.map(|v| v.floor() as isize);
+        //     let imax = uv_bounds.max.map(|v| v.ceil() as isize);
+        //     let res = (imax - imin).map(|v| v.cast_unsigned());
+        //     let ioff = Vec2::new(
+        //         imin.x().rem_euclid(image.width() as isize).cast_unsigned(),
+        //         imin.y().rem_euclid(image.height() as isize).cast_unsigned()
+        //     );
+
+        //     (res, ioff)
+        // };
 
         // Build surface **AFTER** validating vertex buffer, surface compilation is one of the most expensive rendering operations.
         let (color, surface_texture) = {
@@ -825,8 +840,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
             (color, surface_texture)
         };
 
-
-        // Perform polygon rasterization
+        // Rasterize polygon
         unsafe {
             self.render_clipped_polygon(
                 surface.is_transparent(),
@@ -1039,13 +1053,13 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                         &shadow_camera
                     );
 
-                    // Make render set unordered
+                    // Unorder render set
                     let mut unordered_render_set = render_set
                         .drain(..)
                         .map(|(id, _)| id)
                         .collect::<HashSet<bsp::VolumeId>>();
 
-                    // Order it
+                    // Reorder render set again
                     self.traverse_bsp(
                         world_bsp,
                         self.camera.location,
@@ -1074,11 +1088,12 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
         let inv_render_set = partial_render_set_opt
             .unwrap_or_else(|| {
                 let mut render_set = Vec::new();
-
                 let render_set_ref = &mut render_set;
+
                 self.traverse_bsp(
                     world_bsp,
                     self.camera.location,
+                    // Move is used to move screen_clip_oct here
                     move |volume_id| {
                         render_set_ref.push((volume_id, screen_clip_oct));
                     },
@@ -1092,13 +1107,10 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
         let mut point_dst = Vec::with_capacity(32);
         let mut surface_texture = Vec::new();
 
-        // Render all volumes
-        for (volume_id, volume_clip_oct) in inv_render_set
-            .iter()
-            .rev()
-            .copied()
-        {
-            let volume = self.map.get_volume(volume_id).unwrap();
+        // Render volumes
+        for (volume_id, volume_clip_oct) in inv_render_set.iter().rev() {
+            let volume = self.map.get_volume(*volume_id).unwrap();
+
             for surface in volume.surfaces.iter() {
                 self.render_surface(
                     surface,
@@ -1186,47 +1198,6 @@ fn build_surface_texture<'t>(
         build_surface_texture_impl::<true>(data, src, light)
     } else {
         build_surface_texture_impl::<false>(data, src, light)
-    }
-}
-
-/// New surface texture building function
-fn build_surface_texture_2<'t>(
-    mut target: FrameSliceMut<u64>,
-    texture: FrameSlice<u32>,
-    material_uv_offset: Vec2f,
-    material_uv_scale: Vec2f,
-    light: f32,
-) {
-    let u_coef = material_uv_scale.x() * texture.width() as f32 / target.width() as f32;
-    let v_coef = material_uv_scale.y() * texture.height() as f32 / target.height() as f32;
-    let u_off = material_uv_offset.x() * texture.width() as f32;
-    let v_off = material_uv_offset.y() * texture.height() as f32;
-
-    for y in 0..target.height() {
-        let tv = y as f32 * v_coef + v_off;
-        let iv = unsafe { tv.to_int_unchecked::<isize>() }
-            .rem_euclid(texture.height() as isize)
-            .cast_unsigned();
-
-        let tw = target.width();
-        let tex_row = texture.get(iv).unwrap();
-        let dst_row = target.get_mut(y).unwrap();
-
-        for x in 0..tw {
-            let tu = x as f32 * u_coef + u_off;
-            let iu = unsafe { tu.to_int_unchecked::<isize>() }
-                .rem_euclid(texture.width() as isize)
-                .cast_unsigned();
-
-            let [r, g, b, _] = tex_row[iu].to_le_bytes();
-
-            dst_row[x] = u64_from_u16([
-                unsafe { (r as f32 * light).to_int_unchecked::<u16>() },
-                unsafe { (g as f32 * light).to_int_unchecked::<u16>() },
-                unsafe { (b as f32 * light).to_int_unchecked::<u16>() },
-                0
-            ]);
-        }
     }
 }
 

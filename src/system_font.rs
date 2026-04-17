@@ -82,10 +82,9 @@ impl<'t> Frame<'t> {
 
         for y in y0..y0 + FONT_HEIGHT {
             for x in x0..x0 + FONT_WIDTH {
-                if (img >> ((7 + y0 - y) * FONT_WIDTH + (7 + x0 - x))) & 1 == 1 {
-                    if let Some(ptr) = self.0.get2_mut(y, x) {
-                        *ptr = !*ptr;
-                    }
+                if (img >> ((7 + y0 - y) * FONT_WIDTH + (7 + x0 - x))) & 1 == 1
+                    && let Some(ptr) = self.0.get2_mut(y, x) {
+                    *ptr = !*ptr;
                 }
             }
         }

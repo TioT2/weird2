@@ -6,14 +6,22 @@ pub struct Camera {
     pub direction: Vec3f,
 }
 
-impl Camera {
-    pub fn new() -> Self {
+impl Default for Camera {
+    fn default() -> Self {
         Self {
             location: Vec3f::new(10.0, 10.0, 10.0),
             direction: Vec3f::new(-0.544, -0.544, -0.544).normalized(),
         }
     }
+}
 
+impl Camera {
+    /// Create new camera
+    pub fn new(location: Vec3f, direction: Vec3f) -> Self {
+        Self { location, direction: direction.normalized() }
+    }
+
+    /// Response for input and delta time
     pub fn response(&mut self, timer: &timer::Timer, input: &input::Input) {
         let mut movement = Vec3f::new(
             (input.is_key_pressed(input::Key::W) as i32 - input.is_key_pressed(input::Key::S) as i32) as f32,

@@ -438,8 +438,8 @@ pub struct BspModelCompileContext {
     pub bound_box: geom::BoundBox,
 }
 
-impl BspModelCompileContext {
-    pub fn new() -> Self {
+impl Default for BspModelCompileContext {
+    fn default() -> Self {
         Self {
             volumes: Vec::new(),
             split_infos: Vec::new(),
@@ -448,7 +448,9 @@ impl BspModelCompileContext {
             bound_box: geom::BoundBox::empty(),
         }
     }
+}
 
+impl BspModelCompileContext {
     // Generate new split id
     fn get_next_split_id(&self) -> SplitId {
         SplitId(NonZeroU32::try_from(self.split_infos.len() as u32 + 1).unwrap())
@@ -474,7 +476,7 @@ impl BspModelCompileContext {
         }
 
         // try to find optimal splitter
-        let mut best_splitter_rate: f32 = std::f32::MAX;
+        let mut best_splitter_rate: f32 = f32::MAX;
         let mut best_splitter_index: Option<usize> = None; // use polygon 0 as splitter by default
 
         // iterate through all polygons and try to find best one
@@ -805,10 +807,7 @@ impl BspModelCompileContext {
         // process tasks into polygon set
         'task_loop: for (_, task) in resolve_tasks {
             // Build front and back polygon set
-            let (
-                front_polygons,
-                back_polygons
-            ) = self.build_task_polygon_sets(&task);
+            let (front_polygons, back_polygons) = self.build_task_polygon_sets(&task);
 
             // Ignore task if there's no resolved polygons on one of faces
             if front_polygons.is_empty() || back_polygons.is_empty() {
@@ -828,7 +827,7 @@ impl BspModelCompileContext {
 
                     let mut portal = back_polygon.polygon.clone();
 
-                    for edge_plane in front_polygon_edge_planes.iter().copied() {
+                    for edge_plane in front_polygon_edge_planes.iter() {
                         match edge_plane.split_polygon(&portal) {
                             geom::PolygonSplitResult::Front => {
                                 continue 'back_polygon_loop;
@@ -937,7 +936,7 @@ impl BspModelCompileContext {
 
         // Map portal polygons
         // Meh, vector construction. I hope that rust compiler is 'good enuf' to deal with things like this.
-        self.portal_polygons = std::mem::replace(&mut self.portal_polygons, Vec::new())
+        self.portal_polygons = std::mem::take(&mut self.portal_polygons)
             .into_iter()
             .enumerate()
             .filter_map(|(index, polygon)| {
@@ -955,7 +954,7 @@ impl BspModelCompileContext {
         );
 
         // Map volumes
-        self.volumes = std::mem::replace(&mut self.volumes, Vec::new())
+        self.volumes = std::mem::take(&mut self.volumes)
             .into_iter()
             .enumerate()
             .filter_map(|(volume_index, mut volume)| {
@@ -964,7 +963,7 @@ impl BspModelCompileContext {
                 }
 
                 for face in &mut volume.faces {
-                    face.portal_polygons = std::mem::replace(&mut face.portal_polygons, Vec::new())
+                    face.portal_polygons = std::mem::take(&mut face.portal_polygons)
                         .into_iter()
                         .filter_map(|portal_polygon| {
                             let Some(new_volume_index) = volume_index_map[portal_polygon.dst_volume_index] else {
@@ -1010,7 +1009,7 @@ impl BspModelCompileContext {
             }
         }
 
-        if let Some(bsp) = std::mem::replace(&mut self.volume_bsp, None) {
+        if let Some(bsp) = std::mem::take(&mut self.volume_bsp) {
             self.volume_bsp = map_volume_bsp(*bsp, &volume_index_map);
         }
     }
@@ -1069,7 +1068,7 @@ impl BspModelCompileContext {
         total_conn_components
     }
 
-    pub fn start_remove_invisible(&mut self, visible_from: Vec<Vec3f>) {
+    pub fn start_remove_invisible(&mut self, visible_from: &[Vec3f]) {
         let removed_index_set = self
             .build_volume_graph()
             .into_iter()
@@ -1141,6 +1140,11 @@ impl CompileContext {
                 .collect::<Vec<_>>();
     
             for (f1, mtlid) in &planes {
+
+                // Disable invisible brush faces
+                if f1.flags.check(map::BrushFaceFlags::INVISIBLE) {
+                    continue;
+                }
     
                 let mut points = Vec::<Vec3f>::new();
     
@@ -1388,7 +1392,9 @@ pub fn compile(map: &map::Map) -> Result<super::Map, Error> {
 
         // Invisible removal pass is actual only for external volumes
         if is_worldspawn {
-            model_compile_context.start_remove_invisible(map_origins.clone());
+            if !map_origins.is_empty() {
+                model_compile_context.start_remove_invisible(&map_origins);
+            }
         } else {
             // TODO (?): Remove non-external (e.g. unreachable) volumes in non-worldspawn entities
         }
@@ -1404,7 +1410,7 @@ pub fn compile(map: &map::Map) -> Result<super::Map, Error> {
             .and_then(|v| v.split_whitespace().map(|v| v.parse::<f32>()).collect::<Result<Vec<_>, _>>().ok())
             .map(|mut vs| { vs.truncate(3); vs })
             .and_then(|va| TryInto::<[f32; 3]>::try_into(va).ok())
-            .map(|xyz| Vec3f::from_array(xyz));
+            .map(Vec3f::from_array);
 
         let angle = entity.properties
             .get("angle")

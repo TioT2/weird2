@@ -31,6 +31,8 @@ impl<'t, T> FrameSlice<'t, T> {
     }
 
     /// Construct new for raw structures
+    /// # Safety
+    /// [`ptr`] must point to start of WxH frame with S stride (W rows of size S where first H elements are borrowed for 't by resulting [`FrameSlice`]).
     pub const unsafe fn from_raw_parts(width: usize, height: usize, stride: usize, ptr: *const T) -> Self {
         assert!(width <= stride, "Slice width must be less or equal to frame stride");
         Self {
@@ -117,6 +119,8 @@ impl<'t, T> FrameSlice<'t, T> {
     }
 
     /// Unchecked get function
+    /// # Safety
+    /// [`y`] must be less, than [`height`][FrameSlice::height]
     pub unsafe fn get_unchecked(&self, y: usize) -> &'t [T] {
         unsafe {
             std::slice::from_raw_parts(
@@ -132,12 +136,15 @@ impl<'t, T> FrameSlice<'t, T> {
     }
 
     /// 2-dimensional unchecked access
+    /// # Safety
+    /// [`y`] must be less, than [`height`][FrameSlice::height] and
+    /// [`x`] must be less, than [`width`][FrameSlice::width]
     pub unsafe fn get2_unchecked(&self, y: usize, x: usize) -> &'t T {
         unsafe { self.data.add(y * self.stride + x).as_ref() }
     }
 
     /// 2-dimensional access
-    pub unsafe fn get2(&self, y: usize, x: usize) -> Option<&'t T> {
+    pub fn get2(&self, y: usize, x: usize) -> Option<&'t T> {
         (y < self.height && x < self.width).then(|| unsafe { self.get2_unchecked(y, x) })
     }
 }
@@ -168,6 +175,8 @@ impl<'t, T> FrameSliceMut<'t, T> {
     }
 
     /// Construct new for raw structures
+    /// # Safety
+    /// [`ptr`] must point to start of WxH frame with S stride (W rows of size S where first H elements are mutably borrowed for 't by resulting [`FrameSlice`]).
     pub const unsafe fn from_raw_parts(width: usize, height: usize, stride: usize, ptr: *mut T) -> Self {
         assert!(width <= stride, "Slice width must be less or equal to frame stride");
         Self {
@@ -220,7 +229,7 @@ impl<'t, T> FrameSliceMut<'t, T> {
     }
 
     /// Try to interpret self as a flat mutable slice
-    pub fn as_flat<'f>(&'f mut self) -> Option<&'f mut [T]> {
+    pub fn as_flat(&mut self) -> Option<&mut [T]> {
         (self.width == self.stride).then(|| unsafe {
             std::slice::from_raw_parts_mut(self.data.as_ptr(), self.stride * self.height)
         })
@@ -246,7 +255,6 @@ impl<'t, T> FrameSliceMut<'t, T> {
     }
 
     /// Split framebuffer by horizontal line at `y` to disjoint subsets.
-    /// `y` is truncated to buffer height.
     pub fn split_horizontal(self, y: usize) -> (Self, Self) {
         let y = usize::min(y, self.height);
 
@@ -265,7 +273,9 @@ impl<'t, T> FrameSliceMut<'t, T> {
     }
 
     /// Get mutable line reference without check
-    pub unsafe fn get_unchecked_mut<'l>(&'l mut self, y: usize) -> &'l mut [T] {
+    /// # Safety
+    /// [`y`] must be less, than [`height`][FrameSliceMut::height]
+    pub unsafe fn get_unchecked_mut(&mut self, y: usize) -> &mut [T] {
         unsafe {
             std::slice::from_raw_parts_mut(
                 self.data.add(y * self.stride).as_ptr(),
@@ -275,12 +285,14 @@ impl<'t, T> FrameSliceMut<'t, T> {
     }
 
     /// Get mutable line reference
-    pub fn get_mut<'l>(&'l mut self, y: usize) -> Option<&'l mut [T]> {
+    pub fn get_mut(&mut self, y: usize) -> Option<&mut [T]> {
         (y < self.height).then(|| unsafe { self.get_unchecked_mut(y) })
     }
 
     /// Get constant line reference without check
-    pub unsafe fn get_unchecked<'l>(&'l self, y: usize) -> &'l [T] {
+    /// # Safety
+    /// [`y`] must be less, than [`height`][FrameSliceMut::height]
+    pub unsafe fn get_unchecked(&self, y: usize) -> &[T] {
         unsafe {
             std::slice::from_raw_parts(
                 self.data.add(y * self.stride).as_ptr(),
@@ -290,28 +302,34 @@ impl<'t, T> FrameSliceMut<'t, T> {
     }
 
     /// Get constnat line reference
-    pub fn get<'l>(&'l self, y: usize) -> Option<&'l [T]> {
+    pub fn get(&self, y: usize) -> Option<&[T]> {
         (y < self.height).then(|| unsafe { self.get_unchecked(y) })
     }
 
 
     /// 2-dimensional unchecked mutable get
-    pub unsafe fn get2_unchecked_mut<'l>(&'l mut self, y: usize, x: usize) -> &'l mut T {
+    /// # Safety
+    /// [`y`] must be less than [`height`][FrameSliceMut::height] and
+    /// [`x`] must be less than [`width`][FrameSliceMut::width]
+    pub unsafe fn get2_unchecked_mut(&mut self, y: usize, x: usize) -> &mut T {
         unsafe { self.data.add(y * self.stride + x).as_mut() }
     }
 
     /// 2-dimensional mutable get
-    pub fn get2_mut<'l>(&'l mut self, y: usize, x: usize) -> Option<&'l mut T> {
+    pub fn get2_mut(&mut self, y: usize, x: usize) -> Option<&mut T> {
         (y < self.height && x < self.width).then(|| unsafe { self.get2_unchecked_mut(y, x) })
     }
 
     /// 2-dimensional unchecked get
-    pub unsafe fn get2_unchecked<'l>(&'l self, y: usize, x: usize) -> &'l T {
+    /// # Safety
+    /// [`y`] must be less than [`height`][FrameSliceMut::height] and
+    /// [`x`] must be less than [`width`][FrameSliceMut::width]
+    pub unsafe fn get2_unchecked(&self, y: usize, x: usize) -> &T {
         unsafe { self.data.add(y * self.stride + x).as_ref() }
     }
 
     /// 2-dimensional get
-    pub fn get2<'l>(&'l self, y: usize, x: usize) -> Option<&'l T> {
+    pub fn get2(&self, y: usize, x: usize) -> Option<&T> {
         (y < self.height && x < self.width).then(|| unsafe { self.get2_unchecked(y, x) })
     }
 }

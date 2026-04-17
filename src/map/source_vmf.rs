@@ -1,4 +1,4 @@
-///! Source engine VMF file format parsing module
+//! Source engine VMF format parser
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -7,11 +7,17 @@ use crate::{geom, math::Vec3f};
 /// VMF entry
 #[derive(Debug)]
 pub struct Entry {
+    /// Class of the entry
     pub class: String,
+
+    /// Set of entry properties
     pub properties: BTreeMap<String, String>,
-    pub entires: Vec<Entry>,
+
+    /// Sub-entry list
+    pub entries: Vec<Entry>,
 }
 
+/// Token iterator structure
 pub struct TokenIterator<'t> {
     rest: &'t str,
 }
@@ -19,9 +25,16 @@ pub struct TokenIterator<'t> {
 /// Token
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum Token<'t> {
+    /// Some bracket-enclosed string
     String(&'t str),
+
+    /// Identifier
     Ident(&'t str),
+
+    /// Opening curly brace
     BrOpen,
+
+    /// Closing curly brace
     BrClose,
 }
 
@@ -62,15 +75,15 @@ impl<'t> Iterator for TokenIterator<'t> {
 }
 
 impl Entry {
-    /// Parse .VMF file
+    /// Parse .VMF file contents
     pub fn parse_vmf(source: &str) -> Option<Entry> {
         let mut stack = Vec::new();
 
-        let mut token_list = TokenIterator { rest: &source };
+        let mut token_list = TokenIterator { rest: source };
 
         stack.push(Entry {
             class: "".to_string(),
-            entires: Vec::new(),
+            entries: Vec::new(),
             properties: BTreeMap::new(),
         });
 
@@ -86,7 +99,7 @@ impl Entry {
             if token == Token::BrClose {
                 let entry = stack.pop().unwrap();
                 if let Some(top) = stack.last_mut() {
-                    top.entires.push(entry);
+                    top.entries.push(entry);
                 } else {
                     return None;
                 }
@@ -115,34 +128,28 @@ impl Entry {
 
             stack.push(Entry {
                 class: class.to_string(),
-                entires: Vec::new(),
+                entries: Vec::new(),
                 properties: BTreeMap::new(),
             });
         }
 
-        return Some(stack.swap_remove(0));
+        Some(stack.swap_remove(0))
     }
 
     /// WMAP building function
     pub fn build_wmap(&self) -> Option<super::Map> {
-        let world =self.entires.iter().find(|entry| entry.class == "world")?;
 
-        let solids = world.entires
-            .iter()
-            .filter(|entry| entry.class == "solid");
+        /// Split by whitespace
+        fn num_iter(str: &str, left_br: char, right_br: char) -> impl Iterator<Item = &str> {
+            str
+                .split(move |ch: char| ch == left_br || ch == right_br || ch.is_whitespace())
+                .map(|v| v.trim())
+                .filter(|v| !v.is_empty())
+        }
 
+        /// Parse plane from String slice
         fn parse_plane(str: &str) -> Option<geom::Plane> {
-            let mut num_iter = str
-                .split(|ch: char| ch == '(' || ch == ')' || ch.is_whitespace())
-                .filter_map(|v| {
-                    let t = v.trim();
-
-                    if t.is_empty() {
-                        return None;
-                    }
-
-                    return Some(t);
-                });
+            let mut num_iter = num_iter(str, '(', ')');
 
             let mut parse_vec = || {
                 let x1 = num_iter.next()?.parse::<f32>().ok()?;
@@ -159,18 +166,9 @@ impl Entry {
             Some(geom::Plane::from_points(v2, v1, v3))
         }
 
+        /// Parse axis from string slice
         fn parse_axis(str: &str) -> Option<geom::Plane> {
-            let mut num_iter = str
-                .split(|ch: char| ch == '[' || ch == ']' || ch.is_whitespace())
-                .filter_map(|v| {
-                    let t = v.trim();
-
-                    if !t.is_empty() {
-                        Some(t)
-                    } else {
-                        None
-                    }
-                });
+            let mut num_iter = num_iter(str, '[', ']');
 
             let x = num_iter.next()?.parse::<f32>().ok()?;
             let y = num_iter.next()?.parse::<f32>().ok()?;
@@ -184,47 +182,33 @@ impl Entry {
             })
         }
 
-        let mut brushes = Vec::new();
+        /// Parse brush face from side node
+        fn parse_face(side: &Entry) -> Option<super::BrushFace> {
+            let u = side.properties.get("uaxis").map(String::as_str).and_then(parse_axis)?;
+            let v = side.properties.get("vaxis").map(String::as_str).and_then(parse_axis)?;
+            let mtl_name = side.properties.get("material")?.to_string();
+            let plane = side.properties.get("plane").map(String::as_str).and_then(parse_plane)?;
 
-        for solid in solids {
-            let sides = solid.entires
-                .iter()
-                .filter(|entry| entry.class == "side");
+            // Set flags based on surface properties
+            let flags = super::BrushFaceFlags::empty()
+                ;
 
-            let mut faces = Vec::new();
-
-            'side_loop: for side in sides {
-                let Some(u) = side.properties.get("uaxis") else {
-                    continue 'side_loop;
-                };
-
-                let Some(v) = side.properties.get("vaxis") else {
-                    continue 'side_loop;
-                };
-
-                let Some(material) = side.properties.get("material") else {
-                    continue 'side_loop;
-                };
-
-                let Some(plane) = side.properties.get("plane") else {
-                    continue 'side_loop;
-                };
-
-                let u = parse_axis(u)?;
-                let v = parse_axis(v)?;
-                let plane = parse_plane(plane)?;
-
-                faces.push(super::BrushFace {
-                    plane,
-                    u,
-                    v,
-                    mtl_name: material.to_string(),
-                    flags: super::BrushFaceFlags::empty(),
-                });
-            }
-
-            brushes.push(super::Brush { faces, flags: super::BrushFlags::empty() });
+            Some(super::BrushFace { plane, u, v, mtl_name, flags })
         }
+
+        // Find world node
+        let world = self.entries.iter().find(|entry| entry.class == "world")?;
+
+        // For all entries collect their sides converted to faces to vec and build brushes and collect them to vec
+        let brushes = world.entries
+            .iter()
+            .filter(|e| e.class == "solid")
+            .map(|s| s.entries.iter()
+                .filter(|e| e.class == "side")
+                .filter_map(parse_face)
+                .collect::<Vec<_>>())
+            .map(|faces| super::Brush { faces, flags: super::BrushFlags::empty() })
+            .collect::<Vec<_>>();
 
         Some(super::Map {
             entities: vec![super::Entity {

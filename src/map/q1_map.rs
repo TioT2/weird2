@@ -105,9 +105,7 @@ impl Map {
                 if str_rest.starts_with("//") {
                     let mut off = 0;
 
-                    let mut rest_iter = str_rest.chars();
-
-                    'comment_skip: while let Some(ch) = rest_iter.next() {
+                    'comment_skip: for ch in str_rest.chars() {
                         if ch == '\n' {
                             break 'comment_skip;
                         }
@@ -124,9 +122,7 @@ impl Map {
             if str_rest.starts_with('\"') {
                 let mut off = 1;
 
-                let mut rest_iter = str_rest[1..].chars();
-
-                while let Some(ch) = rest_iter.next() {
+                for ch in str_rest[1..].chars() {
                     if ch == '\"' {
                         let result = &str_rest[0..off + 1];
                         str_rest = &str_rest[off + 1..];
@@ -147,11 +143,11 @@ impl Map {
 
             if let Some((first, last)) = str_rest.split_once(char::is_whitespace) {
                 str_rest = last;
-                return Ok((first, str_rest));
+                Ok((first, str_rest))
             } else {
                 let result = str_rest;
                 str_rest = "";
-                return Ok((result, str_rest));
+                Ok((result, str_rest))
             }
         }
 
@@ -184,7 +180,7 @@ impl Map {
                 .parse::<f32>()
                 .map_err(|error| MapParseError::FloatParsingError { token, error })?;
 
-            return Ok((val, tl));
+            Ok((val, tl))
         }
 
         fn parse_vector<'t, 'l>(tl: &'l [&'t str]) -> Result<(Vec3f, &'l [&'t str]), MapParseError<'t>> {
@@ -259,8 +255,7 @@ impl Map {
             let (key, tl) = parse_next_token(tl)?;
             let (value, tl) = parse_next_token(tl)?;
 
-            if true
-                && key.starts_with('\"')
+            if     key.starts_with('\"')
                 && key.ends_with('\"')
                 && value.starts_with('\"')
                 && value.ends_with('\"')
@@ -319,7 +314,7 @@ impl Map {
             entities.push(MapEntity { brushes, properties });
         }
 
-        return Ok(Map { entities });
+        Ok(Map { entities })
     }
 
     /// Find best fitting UV from pre-defined candidate set

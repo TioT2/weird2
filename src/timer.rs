@@ -9,7 +9,7 @@ pub struct Timer {
     /// Duration between two last timer updates
     dt: std::time::Duration,
 
-    // Total frame count
+    /// Total frame count
     total_frame_count: u64,
 
     /// Current FPS updating duration
@@ -25,9 +25,8 @@ pub struct Timer {
     fps: Option<f32>,
 }
 
-impl Timer {
-    /// Create new timer
-    pub fn new() -> Self {
+impl Default for Timer {
+    fn default() -> Self {
         let now = std::time::Instant::now();
         Self {
             start: now,
@@ -41,7 +40,9 @@ impl Timer {
             fps: None,
         }
     }
+}
 
+impl Timer {
     /// Update timer
     pub fn response(&mut self) {
         let new_now = std::time::Instant::now();
@@ -74,7 +75,7 @@ impl Timer {
 
     /// Get current framaes-per-second
     pub fn get_fps(&self) -> f32 {
-        self.fps.unwrap_or(std::f32::NAN)
+        self.fps.unwrap_or(f32::NAN)
     }
 
     /// Set new measure duration

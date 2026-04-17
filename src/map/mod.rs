@@ -21,6 +21,9 @@ crate::flags! {
 
         /// Bursh texture should vary with time.
         const LIQUID      = 0b0000_0100;
+
+        /// Brush is not used during map compilation
+        const INVISIBLE   = 0b0000_1000;
     }
 }
 
@@ -83,21 +86,19 @@ impl Map {
     pub fn find_entity(&self, key: &str, value: Option<&str>) -> Option<&Entity> {
         if let Some(value) = value {
             for entity in &self.entities {
-                if let Some(actual_value) = entity.properties.get(key) {
-                    if actual_value == value {
-                        return Some(entity);
-                    }
+                if let Some(actual_value) = entity.properties.get(key) && actual_value == value {
+                    return Some(entity);
                 }
             }
         } else {
             for entity in &self.entities {
-                if entity.properties.get(key).is_some() {
+                if entity.properties.contains_key(key) {
                     return Some(entity);
                 }
             }
         }
 
-        return None;
+        None
     }
 
     /// Extract all 'origin' properties from map

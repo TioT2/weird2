@@ -1,6 +1,6 @@
-/// Fast vector implementation
-/// This is the common representation of Vec3/Vec4
-/// floating-point vectors based on x86 SSE.
+//! Fast vector implementation
+//! This is the common representation of Vec3/Vec4
+//! floating-point vectors based on x86 SSE.
 
 use std::arch::x86_64 as arch;
 
@@ -75,7 +75,7 @@ impl FVec4 {
     /// Convert vector into 3-component tuple
     pub fn into_tuple_3(self) -> (f32, f32, f32) {
         unsafe {
-            let arr = std::mem::transmute::<_, [f32; 4]>(self.0);
+            let arr = std::mem::transmute::<arch::__m128, [f32; 4]>(self.0);
 
             (arr[0], arr[1], arr[2])
         }
@@ -84,7 +84,7 @@ impl FVec4 {
     /// Convert vector into 4-component tuple
     pub fn into_tuple_4(self) -> (f32, f32, f32, f32) {
         unsafe {
-            let arr = std::mem::transmute::<_, [f32; 4]>(self.0);
+            let arr = std::mem::transmute::<arch::__m128, [f32; 4]>(self.0);
 
             (arr[0], arr[1], arr[2], arr[3])
         }
@@ -180,55 +180,3 @@ impl_binary_operator!(FVec4, Mul, mul, _mm_mul_ps, _mm_set1_ps);
 impl_binary_operator!(FVec4, Div, div, _mm_div_ps, _mm_set1_ps);
 impl_binary_operator!(FVec4, Add, add, _mm_add_ps, _mm_set1_ps);
 impl_binary_operator!(FVec4, Sub, sub, _mm_sub_ps, _mm_set1_ps);
-
-/// Fast 8-component vector
-#[repr(transparent)]
-#[derive(Copy, Clone)]
-pub struct FVec8(arch::__m256);
-
-impl FVec8 {
-    /// From component set
-    pub fn from_components(c0: f32, c1: f32, c2: f32, c3: f32, c4: f32, c5: f32, c6: f32, c7: f32) -> Self {
-        unsafe {
-            Self(arch::_mm256_set_ps(c7, c6, c5, c4, c3, c2, c1, c0))
-        }
-    }
-
-    /// From pair of FVec4's
-    pub fn from_fvec4(v1: FVec4, v2: FVec4) -> Self {
-        unsafe {
-            Self(arch::_mm256_set_m128(v2.0, v1.0))
-        }
-    }
-
-    /// From single number
-    pub fn from_single(v: f32) -> Self {
-        unsafe {
-            Self(arch::_mm256_set1_ps(v))
-        }
-    }
-
-    /// From zero components
-    pub fn zero() -> Self {
-        unsafe {
-            Self(arch::_mm256_setzero_ps())
-        }
-    }
-
-    /// Get element by index
-    pub fn get<const I: i32>(self) -> f32 {
-        // AVX solution
-        unsafe {
-            arch::_mm256_cvtss_f32(
-                arch::_mm256_shuffle_ps::<I>(self.0, self.0)
-            )
-        }
-    }
-}
-
-impl_binary_operator!(FVec8, Mul, mul, _mm256_mul_ps, _mm256_set1_ps);
-impl_binary_operator!(FVec8, Div, div, _mm256_div_ps, _mm256_set1_ps);
-impl_binary_operator!(FVec8, Add, add, _mm256_add_ps, _mm256_set1_ps);
-impl_binary_operator!(FVec8, Sub, sub, _mm256_sub_ps, _mm256_set1_ps);
-
-// fvec_x86.rs

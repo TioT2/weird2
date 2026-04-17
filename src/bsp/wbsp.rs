@@ -1,4 +1,4 @@
-///! Module with WBSP raw structure descriptions
+//! WBSP file format implementation module
 
 use zerocopy::{FromBytes, Immutable, IntoBytes};
 use thiserror::Error;
@@ -119,9 +119,9 @@ pub struct Plane {
     pub distance: f32,
 }
 
-impl Into<geom::Plane> for Plane {
-    fn into(self) -> geom::Plane {
-        geom::Plane { distance: self.distance, normal: self.normal.into(), }
+impl From<Plane> for geom::Plane {
+    fn from(p: Plane) -> geom::Plane {
+        geom::Plane { distance: p.distance, normal: p.normal.into(), }
     }
 }
 
@@ -329,10 +329,10 @@ pub enum LoadError {
 /// Load map from bytes
 pub fn load(data: &[u8]) -> Result<super::Map, LoadError> {
     // Read typed span
-    pub fn load_read_tspan<'t, T: Copy + Clone + FromBytes + Immutable>(
-        data: &'t [u8],
+    pub fn load_read_tspan<T: Copy + Clone + FromBytes + Immutable>(
+        data: &[u8],
         span: Span
-    ) -> Result<&'t [T], LoadError> {
+    ) -> Result<&[T], LoadError> {
         if std::mem::size_of::<T>() == 0 {
             // Empty slice of nothing
             return Ok(&[]);
@@ -431,9 +431,9 @@ pub fn load(data: &[u8]) -> Result<super::Map, LoadError> {
     }
 
     let header = load_read_tspan::<Header>(
-        &data,
+        data,
         Span { offset: 0, size: std::mem::size_of::<Header>() as u32 }
-    )?.get(0).unwrap();
+    )?.first().unwrap();
 
     // Check file magic
     if header.magic != MAGIC {
@@ -464,7 +464,7 @@ pub fn load(data: &[u8]) -> Result<super::Map, LoadError> {
             let point_span = get_slice(*span, points, "point")?;
 
             Ok(geom::Polygon::from_ccw(point_span
-                .into_iter()
+                .iter()
                 .map(|v| Into::<crate::math::Vec3f>::into(*v))
                 .collect()
             ))
@@ -530,37 +530,29 @@ pub fn load(data: &[u8]) -> Result<super::Map, LoadError> {
         material_name_set: map_material_name_set,
         volume_set: map_volume_set,
 
-        bsp_models: {
-            let bsp_models = bsp_models
-                .iter()
-                .map(|model| {
-                    Ok(super::BspModel {
-                        bound_box: geom::BoundBox::new(
-                            model.bound_box_min.into(),
-                            model.bound_box_max.into(),
-                        ),
-                        bsp: bsp_from(bsp_elements, volumes, model.bsp_root_index)?.0,
-                    })
+        bsp_models: bsp_models
+            .iter()
+            .map(|model| {
+                Ok(super::BspModel {
+                    bound_box: geom::BoundBox::new(
+                        model.bound_box_min.into(),
+                        model.bound_box_max.into(),
+                    ),
+                    bsp: bsp_from(bsp_elements, volumes, model.bsp_root_index)?.0,
                 })
-                .collect::<Result<Vec<_>, LoadError>>()?;
-
-            bsp_models
-        },
+            })
+            .collect::<Result<Vec<_>, LoadError>>()?,
         world_model_id: get_id(header.world_bsp_model_index, bsp_models, "bsp model")?,
-        dynamic_models: {
-            let models = dynamic_models
-                .iter()
-                .map(|model| {
-                    Ok(super::DynamicModel {
-                        model_id: get_id(model.bsp_model_index, bsp_models, "bsp model")?,
-                        origin: model.origin.into(),
-                        rotation: model.rotation
-                    })
+        dynamic_models: dynamic_models
+            .iter()
+            .map(|model| {
+                Ok(super::DynamicModel {
+                    model_id: get_id(model.bsp_model_index, bsp_models, "bsp model")?,
+                    origin: model.origin.into(),
+                    rotation: model.rotation
                 })
-                .collect::<Result<Vec<_>, LoadError>>()?;
-
-            models
-        },
+            })
+            .collect::<Result<Vec<_>, LoadError>>()?,
     };
 
     Ok(map)
@@ -736,7 +728,7 @@ pub fn save(map: &super::Map, dst: &mut dyn std::io::Write) -> Result<(), SaveEr
     // Bytes used for padding writes
     let pad_bytes = [0u8; 16];
 
-    fn align16(n: usize) -> usize { (n / 16 + (n % 16 != 0) as usize) * 16 }
+    fn align16(n: usize) -> usize { (n / 16 + !n.is_multiple_of(16) as usize) * 16 }
     let pad_for = |n| &pad_bytes[..align16(n) - n];
 
     let mut write_infos = Vec::with_capacity(2 + infos.len() * 2);

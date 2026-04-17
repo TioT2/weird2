@@ -267,7 +267,7 @@ impl MaterialTable {
     }
 
     /// Get default material
-    pub fn get_default_material<'t>(&'t self) -> &'t Texture {
+    pub fn get_default_material(&self) -> &Texture {
         self.textures.first().unwrap()
     }
 
@@ -280,7 +280,7 @@ impl MaterialTable {
     pub fn build_reference_table<'t>(&'t self, map: &bsp::Map) -> MaterialReferenceTable<'t> {
         let mut ref_table = Vec::new();
 
-        let default_texture = self.textures.get(0).unwrap();
+        let default_texture = self.textures.first().unwrap();
 
         for (mtl_id, mtl_name) in map.all_material_names() {
             let index = mtl_id.into_index();

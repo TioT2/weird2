@@ -1,6 +1,6 @@
-///! Random generator implementation module
+//! Random generator implementation module
 
-use std::num::NonZeroU128;
+use std::num::{NonZeroU32, NonZeroU128};
 
 /// 128bit lightweight random generator.
 /// This implementation is based on xorshift128+
@@ -26,13 +26,13 @@ impl Xorshift128p {
         let seed = seed.get();
 
         Self {
-            low:  ((seed >>  0) & u64::MAX as u128) as u64,
+            low:  ((seed      ) & u64::MAX as u128) as u64,
             high: ((seed >> 64) & u64::MAX as u128) as u64,
         }
     }
 
     /// Get next random number
-    pub fn next(&mut self) -> u64 {
+    pub fn next_u64(&mut self) -> u64 {
         let mut low = self.low;
         let high = self.high;
 
@@ -48,7 +48,7 @@ impl Xorshift128p {
 
     /// Generate unit float64 number
     pub fn next_unit_f64(&mut self) -> f64 {
-        return self.next() as f64 / u64::MAX as f64
+        self.next_u64() as f64 / u64::MAX as f64
     }
 }
 
@@ -56,7 +56,7 @@ impl Iterator for Xorshift128p {
     type Item = u64;
 
     fn next(&mut self) -> Option<Self::Item> {
-        Some(self.next())
+        Some(self.next_u64())
     }
 }
 
@@ -69,12 +69,12 @@ pub struct Xorshift32 {
 
 impl Xorshift32 {
     /// Generator constructor
-    pub fn new() -> Self {
-        Self { state: 1 }
+    pub fn new(seed: NonZeroU32) -> Self {
+        Self { state: seed.get() }
     }
 
     /// Generate next number
-    pub fn next(&mut self) -> u32 {
+    pub fn next_u32(&mut self) -> u32 {
         self.state ^= self.state << 13;
         self.state ^= self.state >> 17;
         self.state ^= self.state <<  5;
@@ -83,7 +83,7 @@ impl Xorshift32 {
 
     /// Generate next F64 in [0..1] range
     pub fn next_unit_f64(&mut self) -> f64 {
-        self.next() as f64 / 0xFFFF_FFFFu32 as f64
+        self.next_u32() as f64 / 0xFFFF_FFFFu32 as f64
     }
 }
 
@@ -91,6 +91,6 @@ impl Iterator for Xorshift32 {
     type Item = u32;
 
     fn next(&mut self) -> Option<Self::Item> {
-        Some(self.next())
+        Some(self.next_u32())
     }
 }

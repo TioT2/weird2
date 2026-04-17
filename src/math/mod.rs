@@ -1,4 +1,4 @@
-/// Standard analytic geometry primitive module
+//! Standard analytic geometry primitive module
 
 use std::ops::{Add, BitXor, Div, Mul, Neg, Rem, RemAssign, Sub};
 
@@ -158,9 +158,9 @@ macro_rules! impl_vecn {
             }
         }
 
-        impl<T> Into<[T; $DIM]> for $Vec<T> {
-            fn into(self) -> [T; $DIM] {
-                self.into_array()
+        impl<T> From<$Vec<T>> for [T; $DIM] {
+            fn from(v: $Vec<T>) -> [T; $DIM] {
+                v.into_array()
             }
         }
 
@@ -360,17 +360,17 @@ pub struct Mat3<T> {
 }
 
 impl<T> Mat3<T> {
-    pub fn new(
-        e00: T, e01: T, e02: T,
-        e10: T, e11: T, e12: T,
-        e20: T, e21: T, e22: T,
-    ) -> Self {
-        Self {
-            e00, e01, e02,
-            e10, e11, e12,
-            e20, e21, e22,
-        }
-    }
+    // pub fn new(
+    //     e00: T, e01: T, e02: T,
+    //     e10: T, e11: T, e12: T,
+    //     e20: T, e21: T, e22: T,
+    // ) -> Self {
+    //     Self {
+    //         e00, e01, e02,
+    //         e10, e11, e12,
+    //         e20, e21, e22,
+    //     }
+    // }
 
     pub fn from_rows(r0: Vec3<T>, r1: Vec3<T>, r2: Vec3<T>) -> Self {
         Self {

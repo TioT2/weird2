@@ -1,4 +1,4 @@
-///! Standard geometry primitive implementation module
+//! Standard geometry primitive implementation module
 
 use crate::math::{Vec2f, Vec3f, Vec4f};
 
@@ -14,10 +14,7 @@ pub fn f32_geom_equal(lhs: f32, rhs: f32) -> bool {
 
 /// Vector equality
 pub fn f32_vec_equal(lhs: &Vec3f, rhs: &Vec3f) -> bool {
-    true
-        && f32_geom_equal(lhs.x(), rhs.x())
-        && f32_geom_equal(lhs.y(), rhs.y())
-        && f32_geom_equal(lhs.z(), rhs.z())
+    f32_geom_equal(lhs.x(), rhs.x()) && f32_geom_equal(lhs.y(), rhs.y()) && f32_geom_equal(lhs.z(), rhs.z())
 }
 
 /// Float-point comparison
@@ -28,7 +25,8 @@ pub fn f32_relative_equal(lhs: f32, rhs: f32) -> bool {
 
     let diff = (lhs - rhs).abs();
     let norm = f32::min(lhs.abs() + rhs.abs(), f32::MAX);
-    return diff < f32::max(f32::MIN_POSITIVE, 128.0 * f32::EPSILON * norm);
+
+    diff < f32::max(f32::MIN_POSITIVE, 128.0 * f32::EPSILON * norm)
 }
 
 /// Plane represetnation structure
@@ -160,9 +158,7 @@ impl PartialEq for Plane {
         //     other.negate_direction()
         // };
 
-        true
-            && f32_geom_equal((self.normal % other.normal).length(), 0.0)
-            && f32_vec_equal(&(self.normal * self.distance.into()), &(other.normal * other.distance.into()))
+        f32_geom_equal((self.normal % other.normal).length(), 0.0) && f32_vec_equal(&(self.normal * self.distance.into()), &(other.normal * other.distance.into()))
     }
 }
 
@@ -213,9 +209,8 @@ impl Plane {
             if curr_relation == PointRelation::OnPlane {
                 first = Some(curr_point);
                 std::mem::swap(&mut first, &mut second);
-            } else if false
-                || prev_relation == PointRelation::Front && curr_relation == PointRelation::Back
-                || curr_relation == PointRelation::Front && prev_relation == PointRelation::Back
+            } else if prev_relation == PointRelation::Front && curr_relation == PointRelation::Back
+                   || curr_relation == PointRelation::Front && prev_relation == PointRelation::Back
             {
                 first = Some(self.intersect_line(Line::from_points(prev_point, curr_point)));
 
@@ -245,16 +240,14 @@ impl Plane {
 
         if f32_geom_equal(signed_distance, 0.0) {
             PointRelation::OnPlane
+        } else if signed_distance > 0.0 {
+            PointRelation::Front
         } else {
-            if signed_distance > 0.0 {
-                PointRelation::Front
-            } else {
-                PointRelation::Back
-            }
+            PointRelation::Back
         }
     }
 
-    // Get relation of plane and polygon
+    /// Get relation of plane and polygon
     pub fn get_polygon_relation(&self, polygon: &Polygon) -> PolygonRelation {
         if *self == polygon.plane {
             return PolygonRelation::Coplanar;
@@ -364,8 +357,8 @@ pub fn deduplicate_points(points: Vec<Vec3f>) -> Vec<Vec3f> {
     points
         .into_iter()
         .fold(Vec::new(), |mut prev, candidate| {
-            for point in prev.iter().copied() {
-                if f32_vec_equal(&candidate, &point) {
+            for point in prev.iter() {
+                if f32_vec_equal(&candidate, point) {
                     return prev;
                 }
             }
@@ -565,7 +558,7 @@ impl BoundBox {
     /// Get conservative bounding box of **any** rotation
     pub fn rotate(&self) -> Self {
         let center = (self.min + self.max) / 2.0.into();
-        let extent = Vec3f::broadcast((self.min - self.max).length() as f32) / 2.0.into();
+        let extent = Vec3f::broadcast((self.min - self.max).length() / 2.0);
 
         Self {
             min: center - extent,

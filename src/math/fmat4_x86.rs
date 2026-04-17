@@ -1,4 +1,4 @@
-/// 
+//! SSE matrix implementation
 
 pub use std::arch::x86_64 as arch;
 

@@ -40,12 +40,13 @@ pub struct Input {
     states: Box<[KeyState; KEY_NUMBER]>,
 }
 
-impl Input {
-    /// Construct new uninitialized input handler
-    pub fn new() -> Self {
+impl Default for Input {
+    fn default() -> Self {
         Self { states: Box::new([KeyState::new(false, false); _]) }
     }
+}
 
+impl Input {
     /// Get state of some key
     pub fn get_key_state(&self, key: Key) -> KeyState {
         self.states[key as usize]

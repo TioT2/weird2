@@ -1,4 +1,4 @@
-///! BSP implementation module
+//! BSP (Binary Space Partition) run-time type, compiler and lightmapper implementation module
 
 use std::num::NonZeroU32;
 

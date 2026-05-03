@@ -99,7 +99,8 @@ fn bake_volume(
                 // Divide for subpixel count
                 light_sum /= 64.0.into();
 
-                let [r, g, b] = light_sum.map(|x| (x * 256.0).clamp(0.0, 65535.0) as u16).into_array();
+                // 3 is just constant to made it look a bit better
+                let [r, g, b] = light_sum.map(|x| (x * 256.0 * 3.0).clamp(0.0, 65535.0) as u16).into_array();
 
                 data.push(u64_from_u16([r, g, b, 0]));
             }

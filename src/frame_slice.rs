@@ -2,6 +2,73 @@
 
 use std::{marker::PhantomData, ptr::NonNull};
 
+/// Owned 2D structure
+pub struct Frame<T> {
+    /// Frame width
+    width: usize,
+
+    /// Height
+    height: usize,
+
+    /// Frame contents
+    data: Box<[T]>,
+}
+
+impl<T: Clone> Clone for Frame<T> {
+    fn clone(&self) -> Self {
+        Self {
+            width: self.width,
+            height: self.height,
+            data: self.data.clone(),
+        }
+    }
+}
+
+impl<T> Frame<T> {
+    /// Construct frame
+    pub fn new(width: usize, height: usize, data: Box<[T]>) -> Self {
+        assert!(width * height <= data.len(), "Frame dimensions must be ");
+        Self { width, height, data }
+    }
+
+    /// Map frame into boxed slice
+    pub fn into_boxed_slice(self) -> Box<[T]> {
+        self.data
+    }
+
+    /// Get frame width
+    #[inline]
+    pub fn width(&self) -> usize {
+        self.width
+    }
+
+    /// Get frame height
+    #[inline]
+    pub fn height(&self) -> usize {
+        self.height
+    }
+
+    /// Extract frame data
+    pub fn data(&self) -> &[T] {
+        &self.data
+    }
+
+    /// Mutably extract frame data
+    pub fn data_mut(&mut self) -> &mut [T] {
+        &mut self.data
+    }
+
+    /// Get slice
+    pub fn as_slice<'t>(&'t self) -> FrameSlice<'t, T> {
+        FrameSlice::new(self.width, self.height, self.width, &self.data)
+    }
+
+    /// Get frame as mut slice
+    pub fn as_mut_slice<'t>(&'t mut self) -> FrameSliceMut<'t, T> {
+        FrameSliceMut::new(self.width, self.height, self.width, &mut self.data)
+    }
+}
+
 /// 2D image immutable slice
 #[derive(Copy, Clone)]
 pub struct FrameSlice<'t, T> {

@@ -2,7 +2,7 @@
 
 use zerocopy::{FromBytes, Immutable, IntoBytes};
 use thiserror::Error;
-use crate::{bsp::Id, geom};
+use crate::{bsp::Id, frame_slice::Frame, geom, math::Vec2};
 
 /// .WBSP file Magic number
 pub const MAGIC: u32 = u32::from_le_bytes(*b"WBSP");
@@ -54,6 +54,9 @@ pub struct Header {
     /// Span that holds all string characters (String are just indices in the span data)
     pub chars: Span,
 
+    /// Lightmap data span
+    pub lightmaps: Span,
+
     /// Span containing (unique) points referenced by polygons
     pub points: Span,
 
@@ -89,6 +92,53 @@ pub struct Material {
     pub name: Span,
 }
 
+/// Descriptor of lightmap texture reference. Lightaps are stored in U64s. Lightmaps with ~0 offset considered not present.
+#[repr(C)]
+#[derive(Copy, Clone, Default, FromBytes, IntoBytes, Immutable)]
+pub struct SurfaceLightmap {
+    /// Lightmap array offsef
+    pub offset: u32,
+
+    /// Image width (pixels)
+    pub width: u32,
+
+    /// Image height (pixels)
+    pub height: u32,
+
+    /// Image UV minimum
+    pub uv_min: [i32; 2],
+
+    /// Image UV maximum
+    pub uv_max: [i32; 2],
+}
+
+impl SurfaceLightmap {
+    /// Non-present lightmap
+    pub fn not_present() -> Self {
+        Self {
+            offset: !0,
+            ..Default::default()
+        }
+    }
+
+    /// Check lightmap for being present
+    pub const fn is_present(&self) -> bool {
+        self.offset != !0
+    }
+
+    /// Get lightmap data flat span
+    pub const fn as_span(&self) -> Option<Span> {
+        if !self.is_present() {
+            return None;
+        }
+
+        Some(Span {
+            offset: self.offset,
+            size: self.width * self.height,
+        })
+    }
+}
+
 /// Visible volume face piece
 #[repr(C)]
 #[derive(Copy, Clone, FromBytes, IntoBytes, Immutable)]
@@ -105,6 +155,9 @@ pub struct Surface {
     /// V axis
     pub v: Plane,
 
+    /// Surface lightmap descriptor.
+    pub lightmap: SurfaceLightmap,
+
     /// Surface flags (matches [`SurfaceFlags`][super::SurfaceFlags] data)
     pub flags: u32,
 }
@@ -113,7 +166,7 @@ pub struct Surface {
 #[derive(Copy, Clone, FromBytes, IntoBytes, Immutable)]
 pub struct Plane {
     /// Plane normal vector
-    pub normal: Vec3,
+    pub normal: [f32; 3],
 
     /// Distance from point to plane
     pub distance: f32,
@@ -159,14 +212,11 @@ pub struct Volume {
     pub portals: Span,
 
     /// Volume bound box minimum
-    pub bound_box_min: Vec3,
+    pub bound_box_min: [f32; 3],
 
     /// Volume bound box maximum
-    pub bound_box_max: Vec3,
+    pub bound_box_max: [f32; 3],
 }
-
-/// 3-component f32 vector
-pub type Vec3 = [f32; 3];
 
 /// BSP entry type
 #[repr(C)]
@@ -261,10 +311,10 @@ pub struct BspModel {
     pub bsp_root_index: u32,
 
     /// Bounding box minimum
-    pub bound_box_min: Vec3,
+    pub bound_box_min: [f32; 3],
 
     /// Bounding box maximum
-    pub bound_box_max: Vec3,
+    pub bound_box_max: [f32; 3],
 }
 
 /// Dynamic model (moving stuff, like doors etc.)
@@ -275,7 +325,7 @@ pub struct DynamicModel {
     pub bsp_model_index: u32,
 
     /// Position
-    pub origin: Vec3,
+    pub origin: [f32; 3],
 
     /// Rotation
     pub rotation: f32,
@@ -448,7 +498,8 @@ pub fn load(data: &[u8]) -> Result<super::Map, LoadError> {
 
     // Load spans stored in header
     load_head_span!(chars,           u8           );
-    load_head_span!(points,          Vec3         );
+    load_head_span!(lightmaps,       u64          );
+    load_head_span!(points,          [f32; 3]     );
     load_head_span!(polygons,        Span         );
     load_head_span!(material_names,  Span         );
     load_head_span!(volume_surfaces, Surface      );
@@ -507,11 +558,28 @@ pub fn load(data: &[u8]) -> Result<super::Map, LoadError> {
                         let v = surface.v.into();
                         let polygon_id: super::PolygonId = get_id(surface.polygon_index, polygons, "polygon")?;
 
+                        // Extract lightmap from map data
+                        let lightmap = if let Some(span) = surface.lightmap.as_span() {
+                            let data = get_slice(span, lightmaps, "lightmap")?;
+
+                            Some(super::SurfaceLightmap {
+                                image: Frame::new(
+                                    surface.lightmap.width as usize,
+                                    surface.lightmap.height as usize,
+                                    data.to_vec().into_boxed_slice(),
+                                ),
+                                uv_min: Vec2::from_array(surface.lightmap.uv_min).map(|i| i as isize),
+                                uv_max: Vec2::from_array(surface.lightmap.uv_max).map(|i| i as isize),
+                            })
+                        } else {
+                            None
+                        };
+
                         Ok(super::Surface {
                             material_id: get_id(surface.material_index, material_names, "material")?,
                             polygon_id,
                             flags: super::SurfaceFlags(surface.flags as u8),
-                            lightmap: None,
+                            lightmap,
                             u,
                             v,
                         })
@@ -621,7 +689,8 @@ pub fn save(map: &super::Map, dst: &mut dyn std::io::Write) -> Result<(), SaveEr
 
     // Precalculate chunks
     let mut chars = Vec::<u8>::new();
-    let mut points = Vec::<Vec3>::new();
+    let mut lightmaps = Vec::<u64>::new();
+    let mut points = Vec::<[f32; 3]>::new();
     let mut polygons = Vec::<Span>::new();
     let mut material_names = Vec::<Span>::new();
     let mut volume_surfaces = Vec::<Surface>::new();
@@ -666,11 +735,30 @@ pub fn save(map: &super::Map, dst: &mut dyn std::io::Write) -> Result<(), SaveEr
         });
 
         for surface in &volume.surfaces {
+
+            // Save surface lightmap
+            let lightmap = if let Some(lightmap) = surface.lightmap.as_ref() {
+                let offset = lightmaps.len();
+                lightmaps.extend_from_slice(&lightmap.image.data());
+
+                // Build lightmap strcture
+                SurfaceLightmap {
+                    offset: offset as u32,
+                    width: lightmap.image.width() as u32,
+                    height: lightmap.image.height() as u32,
+                    uv_min: lightmap.uv_min.map(|i| i as i32).into_array(),
+                    uv_max: lightmap.uv_max.map(|i| i as i32).into_array(),
+                }
+            } else {
+                SurfaceLightmap::not_present()
+            };
+
             volume_surfaces.push(Surface {
                 material_index: surface.material_id.into_index() as u32,
                 polygon_index: surface.polygon_id.into_index() as u32,
                 u: surface.u.into(),
                 v: surface.v.into(),
+                lightmap,
                 flags: surface.flags.0 as u32,
             });
         }
@@ -712,8 +800,9 @@ pub fn save(map: &super::Map, dst: &mut dyn std::io::Write) -> Result<(), SaveEr
         ..Default::default()
     };
 
-    let mut infos: [(&mut Span, &[u8]); 10] = [
+    let mut infos: [(&mut Span, &[u8]); 11] = [
         (&mut header.chars,           chars.as_bytes()),
+        (&mut header.lightmaps,       lightmaps.as_bytes()),
         (&mut header.points,          points.as_bytes()),
         (&mut header.polygons,        polygons.as_bytes()),
         (&mut header.material_names,  material_names.as_bytes()),

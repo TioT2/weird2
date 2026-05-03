@@ -2,7 +2,7 @@
 
 use std::num::NonZeroU32;
 
-use crate::{geom, map, math::Vec3f};
+use crate::{frame_slice::Frame, geom, math::{Vec2, Vec3f}};
 
 pub mod compiler;
 pub mod wbsp;
@@ -27,12 +27,12 @@ macro_rules! impl_id {
         impl Id for $name {
             /// Build id from index
             fn from_index(index: usize) -> Self {
-                $name(NonZeroU32::try_from(index as u32 + 1).unwrap())
+                $name(NonZeroU32::try_from(!(index as u32)).unwrap())
             }
     
             /// Get index by id
             fn into_index(self) -> usize {
-                self.0.get() as usize - 1
+                (!self.0.get()) as usize
             }
         }
     };
@@ -60,6 +60,18 @@ crate::flags! {
     }
 }
 
+/// Surface lightmapping data
+pub struct SurfaceLightmap {
+    /// Lightmap image
+    pub image: Frame<u64>,
+
+    /// Surface UV minimum
+    pub uv_min: Vec2::<isize>,
+
+    /// Surface UV maximum
+    pub uv_max: Vec2::<isize>,
+}
+
 /// Volume face convex visible part.
 pub struct Surface {
     /// Polygon material identifier
@@ -77,8 +89,8 @@ pub struct Surface {
     /// Flags denoting surface properties
     pub flags: SurfaceFlags,
 
-    /// Lightmap (if present)
-    pub lightmap: Option<Lightmap>,
+    /// Surface lightmap texture
+    pub lightmap: Option<SurfaceLightmap>,
 }
 
 impl Surface {
@@ -96,18 +108,6 @@ impl Surface {
     pub const fn is_liquid(&self) -> bool {
         self.flags.check(SurfaceFlags::LIQUID)
     }
-}
-
-/// Directional lightmap
-pub struct Lightmap {
-    /// Light color array
-    pub data: Box<[u64]>,
-
-    /// Width
-    pub width: usize,
-
-    /// Height
-    pub height: usize,
 }
 
 /// Portal (volume-volume connection descriptor)
@@ -327,17 +327,5 @@ impl Map {
         }
 
         Some(true)
-    }
-}
-
-impl Map {
-    /// Compile map to WBSP
-    pub fn compile(map: &map::Map) -> Result<Self, compiler::Error> {
-        compiler::compile(map)
-    }
-
-    /// Bake map lightmaps
-    pub fn bake_lightmaps(&mut self) {
-        lightmap_baker::bake(self);
     }
 }

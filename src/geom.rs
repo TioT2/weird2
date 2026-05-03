@@ -40,10 +40,10 @@ pub fn f32_relative_equal(lhs: f32, rhs: f32) -> bool {
 /// 
 #[derive(Debug, Copy, Clone)]
 pub struct Plane {
-    /// plane normal
+    /// Plane normal
     pub normal: Vec3f,
 
-    /// number to multiply normal to to get base point
+    /// Number to multiply normal to to get base point
     pub distance: f32,
 }
 
@@ -181,7 +181,7 @@ impl Plane {
         Self { distance: point ^ normal, normal }
     }
 
-    // Intersect this plane with another one
+    /// Intersect this plane with another one
     pub fn intersect_plane(&self, rhs: Plane) -> Line {
         let direction = (self.normal % rhs.normal).normalized();
         let dot = self.normal ^ rhs.normal;
@@ -227,6 +227,22 @@ impl Plane {
     /// Make plane that contains equal point set, but has counter-directional normal
     pub fn negate_direction(self) -> Self {
         Self { normal: -self.normal, distance: -self.distance }
+    }
+
+    /// Get point at some signed distance from plane
+    pub fn point_at(&self, dist: f32) -> Vec3f {
+        self.normal * (dist + self.distance).into()
+    }
+
+    /// Project point to plane
+    pub fn project(&self, point: Vec3f) -> Vec3f {
+        point - self.normal * self.get_signed_distance(point).into()
+    }
+
+    /// Project point on plane along axis
+    pub fn project_along(&self, point: Vec3f, axis: Vec3f) -> Vec3f {
+        let x = (self.distance - (self.normal ^ point)) / (self.normal ^ axis);
+        point + axis * x.into()
     }
 
     /// Get plane signed distance function
@@ -599,16 +615,13 @@ impl BoundBox {
 
     /// Extend boundbox by some (positive) vector.
     /// In case if delta is negative,
-    pub fn extend(self, delta: Vec3f) -> Self {
-        if delta.x() < 0.0 || delta.y() < 0.0 || delta.z() < 0.0 {
-            self
-        } else {
-            Self {
-                min: self.min - delta,
-                max: self.max + delta,
-            }
-        }
+    pub fn extend(self, mut delta: Vec3f) -> Self {
+        delta = delta.map(|x| x.max(0.0));
 
+        Self {
+            min: self.min - delta,
+            max: self.max + delta,
+        }
     }
 }
 

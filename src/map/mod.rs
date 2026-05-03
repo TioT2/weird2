@@ -75,6 +75,21 @@ pub struct Entity {
     pub properties: HashMap<String, String>,
 }
 
+impl Entity {
+    /// Try to extract entity origin
+    pub fn origin(&self) -> Option<Vec3f> {
+        self.properties
+            .get("origin")?
+            .split_whitespace()
+            .map(|str| str.parse::<f32>())
+            .collect::<Result<Vec<_>, _>>()
+            .ok()?
+            .try_into()
+            .ok()
+            .map(Vec3f::from_array)
+    }
+}
+
 /// Map main structure
 pub struct Map {
     /// Entry set
@@ -104,22 +119,6 @@ impl Map {
     /// Extract all 'origin' properties from map
     /// (this function is used in invisible volume removal pass)
     pub fn get_all_origins(&self) -> Vec<Vec3f> {
-        self
-            .entities
-            .iter()
-
-            // Map entities to their 'origin' properties
-            .filter_map(|entity| entity.properties.get("origin"))
-
-            // Parse origin property values into vectors
-            .filter_map(|origin| origin
-                .split_whitespace()
-                .map(|str| str.parse::<f32>())
-                .collect::<Result<Vec<_>, _>>()
-                .ok()?
-                .try_into()
-                .ok()
-                .map(Vec3f::from_array))
-            .collect::<Vec<_>>()
+        self.entities.iter().filter_map(Entity::origin).collect::<Vec<_>>()
     }
 }

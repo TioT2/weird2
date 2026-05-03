@@ -30,34 +30,42 @@ pub mod flags;
 /// Different rasterization modes
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub enum RasterizationMode {
+    /// Full rendering
+    Full = 0,
+
     /// Monochromatic polygons
-    Monochrome = 0,
+    Monochrome = 1,
 
     /// Overdraw (brighter => more overdraw)
-    Overdraw = 1,
+    Overdraw = 2,
 
     /// Inverse depth value
-    Depth = 2,
+    Depth = 3,
 
-    /// UV checker
-    UV = 3,
+    /// Rasterize with UV checker
+    UV = 4,
 
     /// Unlit textures
-    Textured = 4,
+    Textures = 5,
+
+    /// Lightmaps only
+    Lightmaps = 6,
 }
 
 impl RasterizationMode {
     // Rasterization mode count
-    const COUNT: u32 = 5;
+    const COUNT: u32 = 7;
 
     /// Build rasterization mode from u32
     const fn from_u32(n: u32) -> Option<RasterizationMode> {
         Some(match n {
-            0 => RasterizationMode::Monochrome,
-            1 => RasterizationMode::Overdraw,
-            2 => RasterizationMode::Depth,
-            3 => RasterizationMode::UV,
-            4 => RasterizationMode::Textured,
+            0 => Self::Full,
+            1 => Self::Monochrome,
+            2 => Self::Overdraw,
+            3 => Self::Depth,
+            4 => Self::UV,
+            5 => Self::Textures,
+            6 => Self::Lightmaps,
             _ => return None,
         })
     }
@@ -68,7 +76,7 @@ impl RasterizationMode {
     }
 }
 
-/// Make u64 from [u16; 4]
+/// Make u64 from
 pub const fn u64_from_u16(value: [u16; 4]) -> u64 {
     ( value[0] as u64       ) |
     ((value[1] as u64) << 16) |
@@ -221,16 +229,16 @@ fn clip_polygon_oct(
 
 /// Camera that (additionally) holds info about projection and frame size
 pub struct RenderCamera {
-    /// View-projection matrix
+    /// Projection * View matrix
     pub view_projection: Mat4f,
 
     /// Camera location
     pub location: Vec3f,
 
-    /// Half of frame width
+    /// Frame width half
     pub half_fw: f32,
 
-    /// Half of frame height
+    /// Frame height half
     pub half_fh: f32,
 }
 
@@ -361,7 +369,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
         vertices: &[Vertex],
         mut pixel_fn: PixelFn
     ) {
-        // Find polygon min/max
+        // Find polygon min/max (e.g. split into left and right parts)
         let (min_y_index, min_y_value, max_y_index, max_y_value) = {
             let mut min_y_index = 0;
             let mut max_y_index = 0;
@@ -604,7 +612,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
 
                 *dst = color.wrapping_mul((((xi >> 5) ^ (yi >> 5)) & 1) as u64);
             }),
-            RasterizationMode::Textured => {
+            RasterizationMode::Full | RasterizationMode::Textures | RasterizationMode::Lightmaps => {
                 if is_sky {
                     let width = texture.width() as isize >> (is_sky as isize);
                     let height = texture.height() as isize;
@@ -711,7 +719,11 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
             ((min_dist_2 / res).log2() / 2.0 + 1.3) as usize
         };
 
-        let (image, image_uv_scale) = texture.get_mip_level(mip_index.min(texture.mip_levels() - 1)).unwrap();
+        // Recalculate mip index
+        let mip_index = mip_index.min(texture.mip_levels() - 1);
+
+        // Image-induced UV scale is ignored now...
+        let (image, image_uv_scale) = texture.get_mip_level(mip_index).unwrap();
 
         vertices.clear();
 
@@ -719,12 +731,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
         if surface.is_sky() {
             self.camera.project_sky_polygon(polygon, vertices, self.sky_uv_offset);
         } else {
-            self.camera.project_polygon(
-                polygon,
-                surface.u / image_uv_scale,
-                surface.v / image_uv_scale,
-                vertices
-            );
+            self.camera.project_polygon(polygon, surface.u / image_uv_scale, surface.v / image_uv_scale, vertices);
         }
 
         // Clip polygon by Z=1
@@ -770,10 +777,13 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
         };
 
         let needs_surface_texture = match self.rasterization_mode {
+            // Does not build lightmaps for special rasterization modes
             RasterizationMode::Depth | RasterizationMode::Overdraw | RasterizationMode::UV | RasterizationMode::Monochrome => {
                 false
             }
-            RasterizationMode::Textured => {
+
+            // These rasterization modes are actually about texture building
+            RasterizationMode::Full | RasterizationMode::Lightmaps | RasterizationMode::Textures => {
                 true
             }
         };
@@ -797,7 +807,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                 uv_int_min.y().rem_euclid(image.height() as isize).cast_unsigned()
             );
 
-            // Replace UVimage with UVtexture * inv_z
+            // Replace UVimage with UVtexture * inv_z (e.g. with screen-linear UVs)
             for vt in vertices.iter_mut() {
                 vt.tex_coord = (vt.tex_coord - uv_int_min.map(|v| v as f32)) * vt.position.z().into();
             }
@@ -811,13 +821,60 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                 surface_texture_data.as_mut_slice()
             );
 
-            build_surface_texture(
-                texture.reborrow(),
-                image,
-                image_uv_off,
-                static_light,
-                !surface.is_sky()
-            );
+            match self.rasterization_mode {
+                RasterizationMode::Full => {
+                    if let Some(lightmap) = surface.lightmap.as_ref() {
+
+                        // Build surface texture using target
+                        build_surface_texture(
+                            texture.reborrow(),
+                            image,
+                            image_uv_off,
+                            lightmap.image.as_slice(),
+                            // Calculate image UV bounds
+                            (uv_int_min.map(|i| i) - lightmap.uv_min.map(|i| i >> mip_index)).map(|i| i.max(0).cast_unsigned()),
+                            // Vec2::new(0, 0),
+                            3 - mip_index,
+                        );
+                    } else {
+                        build_surface_texture_static(
+                            texture.reborrow(),
+                            image,
+                            image_uv_off,
+                            Some(static_light),
+                        );
+                    }
+                }
+                RasterizationMode::Textures => {
+                    build_surface_texture_static(
+                        texture.reborrow(),
+                        image,
+                        image_uv_off,
+                        None
+                    );
+                }
+                RasterizationMode::Lightmaps => {
+                    if let Some(lightmap) = surface.lightmap.as_ref() {
+                        build_surface_texture_lightmap(
+                            texture.reborrow(),
+                            lightmap.image.as_slice(),
+                            (uv_int_min.map(|i| i << mip_index) - lightmap.uv_min).map(|i| i.max(0).cast_unsigned() >> mip_index),
+                            3 - mip_index,
+                        );
+                    } else {
+                        build_surface_texture_static(
+                            texture.reborrow(),
+                            image,
+                            image_uv_off,
+                            None
+                        );
+                    }
+                }
+
+                // Should not be there
+                _ => {}
+            }
+
 
             texture.into()
         } else if needs_surface_texture {
@@ -1146,7 +1203,8 @@ pub enum RenderOutputMessage {
     }
 }
 
-fn build_surface_texture_impl<const ENABLE_LIGHTING: bool>(
+/// Surface texture building implementation
+fn build_surface_texture_static_impl<const ENABLE_LIGHTING: bool>(
     mut texture: FrameSliceMut<u64>,
     image: FrameSlice<u32>,
     image_uv_off: Vec2::<usize>,
@@ -1174,20 +1232,90 @@ fn build_surface_texture_impl<const ENABLE_LIGHTING: bool>(
     }
 }
 
-/// Build surface texture
-fn build_surface_texture(
+/// Build surface texture with static (whole-surface) light level
+fn build_surface_texture_static(
     texture: FrameSliceMut<u64>,
     image: FrameSlice<u32>,
     image_uv_off: Vec2::<usize>,
-    light: f32,
-    enable_lighting: bool,
+    light: Option<f32>,
 ) {
-    let f = if enable_lighting {
-        build_surface_texture_impl::<true>
+    if let Some(light) = light {
+        build_surface_texture_static_impl::<true>(texture, image, image_uv_off, light);
     } else {
-        build_surface_texture_impl::<false>
-    };
-    f(texture, image, image_uv_off, light);
+        build_surface_texture_static_impl::<false>(texture, image, image_uv_off, 0.0);
+    }
+}
+
+/// Build surface texture for lightmap
+fn build_surface_texture_lightmap(
+    mut target: FrameSliceMut<u64>,
+    lightmap: FrameSlice<u64>,
+    lightmap_uv_off: Vec2::<usize>,
+    lightmap_scale_log2: usize,
+) {
+    for y in 0..target.height() {
+        // Rows
+        let target = target.get_mut(y).unwrap();
+        let lightmap = lightmap.get(((y + lightmap_uv_off.y()) >> lightmap_scale_log2).min(lightmap.height() - 1)).unwrap();
+
+        // Iterators
+        let target_i = target.iter_mut();
+        let lightmap_i = lightmap.iter().flat_map(|e| std::iter::repeat_n(e, 1 << lightmap_scale_log2)).skip(lightmap_uv_off.x());
+
+        // Total iterator
+        let i = target_i.zip(lightmap_i);
+
+        // Iterate!
+        for (target, lightmap) in i {
+            *target = *lightmap;
+        }
+    }
+}
+
+/// Build surface texture for lightmap
+fn build_surface_texture(
+    mut target: FrameSliceMut<u64>,
+    image: FrameSlice<u32>,
+    image_uv_off: Vec2::<usize>,
+    lightmap: FrameSlice<u64>,
+    lightmap_uv_off: Vec2::<usize>,
+    lightmap_scale_log2: usize,
+) {
+    // println!("({}x{} << {}) - {}x{} <=> {}x{}",
+    //          lightmap.width(), lightmap.height(),
+    //          lightmap_scale_log2,
+    //          lightmap_uv_off.x(), lightmap_uv_off.y(),
+    //          target.width(), target.height(),
+    // );
+
+    for y in 0..target.height() {
+        // Rows
+        let target = target.get_mut(y).unwrap();
+        let image = image.get((y + image_uv_off.y()) % image.height()).unwrap();
+        let lightmap = lightmap.get(((y + lightmap_uv_off.y()) >> lightmap_scale_log2).min(lightmap.height() - 1)).unwrap();
+
+        // Iterators
+        let target_i = target.iter_mut();
+        let image_i = image.iter().cycle().skip(image_uv_off.x());
+        let lightmap_i = lightmap.iter().flat_map(|e| std::iter::repeat_n(e, 1 << lightmap_scale_log2)).skip(lightmap_uv_off.x());
+
+        // Total iterator
+        let i = target_i.zip(image_i).zip(lightmap_i);
+
+        // Iterate!
+        for ((target, image), lightmap) in i {
+            let [r, g, b, _] = image.to_le_bytes();
+            let [lr, lg, lb, _] = u64_into_u16(*lightmap);
+
+            // shitcode! (>> 8 is correct, but image is too dark)
+            *target = u64_from_u16([
+                ((r as u32 * lr as u32) >> 6).min(65535) as u16,
+                ((g as u32 * lg as u32) >> 6).min(65535) as u16,
+                ((b as u32 * lb as u32) >> 6).min(65535) as u16,
+                0
+            ]);
+        }
+    }
 }
 
 /// Just cast high-res to low-res
@@ -1306,6 +1434,7 @@ pub fn hdr_to_ldr(hdr: &[u64], ldr: &mut [u32], enable_tonemapping: bool) {
     }
 }
 
+/// Present frame from slice to window surface
 fn present_frame(
     mut frame: FrameSliceMut<'_, u32>,
     window_surface: &mut sdl2::video::WindowSurfaceRef,
@@ -1497,7 +1626,13 @@ fn main() {
                 _ => panic!("'{}' map format is not implemented", src_format)
             };
 
-            bsp::compiler::compile(&map).unwrap()
+            // Build BSP
+            let mut bsp = bsp::compiler::compile(&map).unwrap();
+
+            // Bake lightmaps
+            bsp::lightmap_baker::bake(&mut bsp, &map);
+
+            bsp
         }
 
         if do_enable_map_caching {
@@ -1529,8 +1664,6 @@ fn main() {
         }
     };
 
-    let mut map = map;
-    map.bake_lightmaps();
     let map = Arc::new(map);
 
     // Display some BSP statistics
@@ -1596,7 +1729,8 @@ fn main() {
     let mut event_pump = sdl.event_pump().unwrap();
 
     let window = video
-        .window("WEIRD-2", 1280, 800)
+        .window("WEIRD-2", 1280, 720)
+        .position_centered()
         .build()
         .unwrap();
 
@@ -1743,6 +1877,7 @@ fn main() {
                         rasterization_mode as u32
                     ))
                     .str(16, 24, &format!("TM: {}ms", tm_time))
+                    .str(16, 32, &format!("RES: {}x{}", width, height))
                     ;
 
                 // Present rendered frame

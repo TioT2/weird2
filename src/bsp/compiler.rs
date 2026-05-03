@@ -1346,7 +1346,7 @@ impl CompileContext {
 /// BSP compilation error
 #[derive(Debug)]
 pub enum Error {
-    /// No worldspawn entity
+    /// Cannot determine worldpawn entity
     NoWorldspawn,
 }
 

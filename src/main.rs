@@ -796,7 +796,6 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
 
             // Get UV bound rectangle and use it for surface used subrange recalculation
             let uv_bounds = geom::BoundRect::for_points(vertices.iter().map(|v| v.tex_coord));
-
             let uv_int_min = uv_bounds.min.map(|v| v.floor() as isize);
             let uv_int_max = uv_bounds.max.map(|v| v.ceil() as isize);
             let texture_res = (uv_int_max - uv_int_min).map(|v| v.cast_unsigned().max(1));
@@ -821,6 +820,13 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                 surface_texture_data.as_mut_slice()
             );
 
+            let lightmap_uv_offset = if let Some(lightmap) = surface.lightmap.as_ref() {
+                (uv_int_min.map(|i| i << mip_index) - lightmap.uv_min.map(|i| i)).map(|i| i.max(0).cast_unsigned() >> mip_index)
+            } else {
+                Vec2::new(0, 0)
+            };
+
+
             match self.rasterization_mode {
                 RasterizationMode::Full => {
                     if let Some(lightmap) = surface.lightmap.as_ref() {
@@ -829,8 +835,8 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                             texture.reborrow(),
                             image,
                             image_uv_off,
-                            lightmap.image.as_slice(),
-                            (uv_int_min.map(|i| i) - lightmap.uv_min.map(|i| i >> mip_index)).map(|i| i.max(0).cast_unsigned()),
+                            lightmap.as_slice(),
+                            lightmap_uv_offset,
                             3 - mip_index,
                         );
                     } else {
@@ -858,8 +864,8 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                             texture.reborrow(),
                             FrameSlice::empty(),
                             Vec2::new(0, 0),
-                            lightmap.image.as_slice(),
-                            (uv_int_min.map(|i| i << mip_index) - lightmap.uv_min).map(|i| i.max(0).cast_unsigned() >> mip_index),
+                            lightmap.as_slice(),
+                            lightmap_uv_offset,
                             3 - mip_index,
                         );
                     } else {
@@ -875,7 +881,6 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                 // Should not be there
                 _ => unreachable!("Trying to build surface in mode not requiring it."),
             }
-
 
             texture.into()
         } else if needs_surface_texture {
@@ -1178,7 +1183,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
     }
 }
 
-/// Input render message
+/// Input to render about world change
 pub enum RenderInputMessage {
     /// Request for frame rendering
     NewFrame {
@@ -1531,6 +1536,7 @@ fn init_render_thread(
                             half_fh: height as f32 * 0.5,
                         }),
 
+                        // Construct target frame slice
                         frame: FrameSliceMut::<u64>::new(
                             width as usize,
                             height as usize,
@@ -1542,14 +1548,8 @@ fn init_render_thread(
                         material_table: &material_reference_table,
                         rasterization_mode,
 
-                        sky_background_uv_offset: Vec2f::new(
-                            time * -12.0,
-                            time * -12.0,
-                        ),
-                        sky_uv_offset: Vec2f::new(
-                            time * 16.0,
-                            time * 16.0,
-                        ),
+                        sky_background_uv_offset: Vec2f::broadcast(time * -12.0),
+                        sky_uv_offset: Vec2f::broadcast(time * 16.0),
                     };
 
                     render_context.render();
@@ -1583,7 +1583,7 @@ fn main() {
     let map = {
         // yay, this code will not work on non-local builds)))
         // --
-        let (map_name, map_src_format) = ("quake/e1m1", "map");
+        let (map_name, map_src_format) = ("quake/e1m5", "map");
         // let (map_name, map_src_format) = ("d1_trainstation_01", "vmf");
         let data_path = ".local/";
 
@@ -1689,7 +1689,7 @@ fn main() {
     }
 
     let material_table = {
-        let mut wad_file = std::fs::File::open(".local/quake/gfx/base.wad").unwrap();
+        let mut wad_file = std::fs::File::open(".local/quake/gfx/medieval.wad").unwrap();
         let mut wad_file_data = Vec::new();
         wad_file.read_to_end(&mut wad_file_data).unwrap();
 

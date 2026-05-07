@@ -2,7 +2,7 @@
 
 use std::num::NonZeroU32;
 
-use crate::{frame_slice::Frame, geom, math::{Vec2, Vec3f}};
+use crate::{frame_slice::FrameSlice, geom, math::{Vec2, Vec3f}};
 
 pub mod compiler;
 pub mod wbsp;
@@ -60,16 +60,29 @@ crate::flags! {
     }
 }
 
-/// Surface lightmapping data
+/// Surface lightmap structure
 pub struct SurfaceLightmap {
-    /// Lightmap image
-    pub image: Frame<u64>,
+    /// Lightmap data bytes
+    pub data: Box<[u64]>,
 
-    /// Surface UV minimum
+    /// Image width (in u64 pixels)
+    pub width: usize,
+
+    /// Image height (in u64 pixels)
+    pub height: usize,
+
+    /// Polygon lightmapped UV minimum
     pub uv_min: Vec2::<isize>,
 
-    /// Surface UV maximum
+    /// Polygon lightmapped UV maximum
     pub uv_max: Vec2::<isize>,
+}
+
+impl SurfaceLightmap {
+    /// Get lightmap image slice
+    pub fn as_slice<'t>(&'t self) -> FrameSlice<'t, u64> {
+        FrameSlice::new(self.width, self.height, self.width, &self.data)
+    }
 }
 
 /// Volume face convex visible part.

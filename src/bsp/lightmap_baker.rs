@@ -1,6 +1,6 @@
 //! BSP lightmap baker implementation
 
-use crate::{bsp::{self, Id, SurfaceLightmap}, frame_slice::Frame, geom, map, math::{Vec2f, Vec3f}, u64_from_u16};
+use crate::{bsp::{self, Id, SurfaceLightmap}, geom, map, math::{Vec2f, Vec3f}, u64_from_u16};
 
 /// Point light structure
 struct PointLight {
@@ -108,11 +108,9 @@ fn bake_volume(
 
         // Assign surface lightmap
         surface.lightmap = Some(SurfaceLightmap {
-            image: Frame::new(
-                lightmap_res.x(),
-                lightmap_res.y(),
-                data.into_boxed_slice(),
-            ),
+            width: lightmap_res.x(),
+            height: lightmap_res.y(),
+            data: data.into_boxed_slice(),
             uv_min: uv_int_min,
             uv_max: uv_int_max,
         });

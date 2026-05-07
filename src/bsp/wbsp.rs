@@ -2,7 +2,7 @@
 
 use zerocopy::{FromBytes, Immutable, IntoBytes};
 use thiserror::Error;
-use crate::{bsp::Id, frame_slice::Frame, geom, math::Vec2};
+use crate::{bsp::Id, geom, math::Vec2};
 
 /// .WBSP file Magic number
 pub const MAGIC: u32 = u32::from_le_bytes(*b"WBSP");
@@ -267,7 +267,7 @@ pub union BspElementData {
     /// Partition contents
     pub partition: BspPartition,
 
-    /// Void case
+    /// Void contents
     pub void: BspElementVoid,
 }
 
@@ -376,7 +376,7 @@ pub enum LoadError {
     },
 }
 
-/// Load map from bytes
+/// Load .WBSP into map
 pub fn load(data: &[u8]) -> Result<super::Map, LoadError> {
     // Read typed span
     pub fn load_read_tspan<T: Copy + Clone + FromBytes + Immutable>(
@@ -563,11 +563,9 @@ pub fn load(data: &[u8]) -> Result<super::Map, LoadError> {
                             let data = get_slice(span, lightmaps, "lightmap")?;
 
                             Some(super::SurfaceLightmap {
-                                image: Frame::new(
-                                    surface.lightmap.width as usize,
-                                    surface.lightmap.height as usize,
-                                    data.to_vec().into_boxed_slice(),
-                                ),
+                                width: surface.lightmap.width as usize,
+                                height: surface.lightmap.height as usize,
+                                data: data.to_vec().into_boxed_slice(),
                                 uv_min: Vec2::from_array(surface.lightmap.uv_min).map(|i| i as isize),
                                 uv_max: Vec2::from_array(surface.lightmap.uv_max).map(|i| i as isize),
                             })
@@ -638,7 +636,7 @@ pub enum SaveError {
     IncompleteWrite,
 }
 
-/// Save map to the WBSP file
+/// Save .WBSP to map
 pub fn save(map: &super::Map, dst: &mut dyn std::io::Write) -> Result<(), SaveError> {
     fn write_bsp(dst: &mut Vec<BspElement>, bsp: &super::Bsp) {
         match bsp {
@@ -739,13 +737,13 @@ pub fn save(map: &super::Map, dst: &mut dyn std::io::Write) -> Result<(), SaveEr
             // Save surface lightmap
             let lightmap = if let Some(lightmap) = surface.lightmap.as_ref() {
                 let offset = lightmaps.len();
-                lightmaps.extend_from_slice(&lightmap.image.data());
+                lightmaps.extend_from_slice(&lightmap.data);
 
                 // Build lightmap strcture
                 SurfaceLightmap {
                     offset: offset as u32,
-                    width: lightmap.image.width() as u32,
-                    height: lightmap.image.height() as u32,
+                    width: lightmap.width as u32,
+                    height: lightmap.height as u32,
                     uv_min: lightmap.uv_min.map(|i| i as i32).into_array(),
                     uv_max: lightmap.uv_max.map(|i| i as i32).into_array(),
                 }

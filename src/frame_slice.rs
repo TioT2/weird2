@@ -2,6 +2,81 @@
 
 use std::{marker::PhantomData, ptr::NonNull};
 
+/// Unsafe frame slice iterator
+#[derive(Copy, Clone)]
+struct UnsafeIter<'t, T> {
+    /// Current pointer
+    ptr: NonNull<T>,
+
+    /// Range end
+    end: NonNull<T>,
+
+    /// Row width
+    width: usize,
+
+    /// Step
+    step: usize,
+
+    /// Phantom data
+    _phantom: PhantomData<&'t T>,
+}
+
+impl<'t, T> UnsafeIter<'t, T> {
+    /// Next pointer
+    fn next_ptr(&mut self) -> Option<NonNull<T>> {
+        if self.ptr < self.end {
+            let ptr = self.ptr;
+            self.ptr = unsafe { self.ptr.add(self.step) };
+            Some(ptr)
+        } else {
+            None
+        }
+    }
+
+    /// Next constant slice
+    unsafe fn next(&mut self) -> Option<&'t [T]> {
+        self.next_ptr().map(|ptr| unsafe {
+            std::slice::from_raw_parts(
+                ptr.as_ptr().cast_const(),
+                self.width
+            )
+        })
+    }
+
+    /// Next mutable slice
+    unsafe fn next_mut(&mut self) -> Option<&'t mut [T]> {
+        self.next_ptr().map(|ptr| unsafe {
+            std::slice::from_raw_parts_mut(
+                ptr.as_ptr(),
+                self.width
+            )
+        })
+    }
+}
+
+/// Frame slice constant iterator
+#[derive(Copy, Clone)]
+pub struct Iter<'t, T>(UnsafeIter<'t, T>);
+
+impl<'t, T> Iterator for Iter<'t, T> {
+    type Item = &'t [T];
+
+    fn next(&mut self) -> Option<&'t [T]> {
+        unsafe { self.0.next() }
+    }
+}
+
+/// Frame slice mutable iterator
+pub struct IterMut<'t, T>(UnsafeIter<'t, T>);
+
+impl<'t, T> Iterator for IterMut<'t, T> {
+    type Item = &'t mut [T];
+
+    fn next(&mut self) -> Option<&'t mut [T]> {
+        unsafe { self.0.next_mut() }
+    }
+}
+
 /// 2D image immutable slice
 #[derive(Copy, Clone)]
 pub struct FrameSlice<'t, T> {
@@ -19,6 +94,12 @@ pub struct FrameSlice<'t, T> {
 
     /// Phantom data
     _phantom: PhantomData<&'t T>,
+}
+
+impl<'t, T> Default for FrameSlice<'t, T> {
+    fn default() -> Self {
+        Self::empty()
+    }
 }
 
 impl<'t, T> FrameSlice<'t, T> {
@@ -147,6 +228,25 @@ impl<'t, T> FrameSlice<'t, T> {
     pub fn get2(&self, y: usize, x: usize) -> Option<&'t T> {
         (y < self.height && x < self.width).then(|| unsafe { self.get2_unchecked(y, x) })
     }
+
+    /// Create frame slice iterator
+    pub fn iter(&self) -> Iter<'t, T> {
+        Iter(UnsafeIter {
+            ptr: self.data,
+            end: unsafe { self.data.add(self.stride * self.height) },
+            step: self.stride,
+            width: self.width,
+            _phantom: PhantomData,
+        })
+    }
+}
+
+impl<'t, T> std::ops::Index<usize> for FrameSlice<'t, T> {
+    type Output = [T];
+
+    fn index(&self, index: usize) -> &'t Self::Output {
+        self.get(index).unwrap()
+    }
 }
 
 /// 2D image slicing structure that allows safe mutable access to disjoint image subsets
@@ -165,6 +265,12 @@ pub struct FrameSliceMut<'t, T> {
 
     /// `data` contents lifetime holder
     _phantom: PhantomData<&'t mut ()>,
+}
+
+impl<'t, T> Default for FrameSliceMut<'t, T> {
+    fn default() -> Self {
+        Self::empty()
+    }
 }
 
 impl<'t, T> FrameSliceMut<'t, T> {
@@ -331,6 +437,41 @@ impl<'t, T> FrameSliceMut<'t, T> {
     /// 2-dimensional get
     pub fn get2(&self, y: usize, x: usize) -> Option<&T> {
         (y < self.height && x < self.width).then(|| unsafe { self.get2_unchecked(y, x) })
+    }
+
+    /// Create unsafe iterator
+    unsafe fn iter_unsafe<'i>(&self) -> UnsafeIter<'i, T> {
+        UnsafeIter {
+            ptr: self.data,
+            end: unsafe { self.data.add(self.stride * self.height) },
+            step: self.stride,
+            width: self.width,
+            _phantom: PhantomData,
+        }
+    }
+
+    /// Create frame slice iterator
+    pub fn iter<'i>(&'i self) -> Iter<'i, T> {
+        unsafe { Iter(self.iter_unsafe()) }
+    }
+
+    /// Create frame slice mutable iterator
+    pub fn iter_mut<'i>(&'i mut self) -> IterMut<'i, T> {
+        unsafe { IterMut(self.iter_unsafe()) }
+    }
+}
+
+impl<'t, T> std::ops::Index<usize> for FrameSliceMut<'t, T> {
+    type Output = [T];
+
+    fn index(&self, index: usize) -> &Self::Output {
+        self.get(index).unwrap()
+    }
+}
+
+impl<'t, T> std::ops::IndexMut<usize> for FrameSliceMut<'t, T> {
+    fn index_mut(&mut self, index: usize) -> &mut Self::Output {
+        self.get_mut(index).unwrap()
     }
 }
 

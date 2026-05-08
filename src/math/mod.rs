@@ -49,24 +49,6 @@ mod fallback_fvec4 {
     }
 }
 
-pub mod numeric_traits {
-    pub trait Sqrt {
-        fn sqrt(self) -> Self;
-    }
-
-    impl Sqrt for f32 {
-        fn sqrt(self) -> Self {
-            self.sqrt()
-        }
-    }
-
-    impl Sqrt for f64 {
-        fn sqrt(self) -> Self {
-            self.sqrt()
-        }
-    }
-}
-
 macro_rules! operator_on_variadic {
     ($operator: tt, $first: expr) => {
         $first
@@ -103,7 +85,14 @@ macro_rules! impl_vecn {
 
         impl<T: Copy> Copy for $Vec<T> {}
 
+        impl<T: Default> Default for $Vec<T> {
+            fn default() -> Self {
+                Self { $($x: T::default()),* }
+            }
+        }
+
         impl<T> $Vec<T> {
+            /// Amount of vector dimensions
             pub const DIM: usize = $DIM;
 
             /// Construct new vector
@@ -197,30 +186,30 @@ macro_rules! impl_vecn {
         }
 
         impl<T: Add<T, Output = T> + Mul<T, Output = T> + Clone> $Vec<T> {
+            /// Vector squared length
             pub fn length2(&self) -> T {
                 self.clone() ^ self.clone()
             }
         }
 
-        impl<T: Add<T, Output = T> + Mul<T, Output = T> + Clone + numeric_traits::Sqrt> $Vec<T> {
-            pub fn length(&self) -> T {
-                self.length2().sqrt()
-            }
+        macro_rules! with_sqrt {
+            ($T: ty) => {
+                impl $Vec<$T> {
+                    /// Calculate vcetor length
+                    pub fn length(&self) -> $T {
+                        self.length2().sqrt()
+                    }
+
+                    /// Get normalized vector
+                    pub fn normalized(&self) -> Self {
+                        *self * self.length().recip().into()
+                    }
+                }
+            };
         }
 
-        impl<T: Add<T, Output = T> + Mul<T, Output = T> + Div<T, Output = T> + Clone + numeric_traits::Sqrt> $Vec<T> {
-            pub fn normalized(&self) -> Self {
-                let len = self.length();
-
-                Self { $( $x: self.$x.clone() / len.clone() ),* }
-            }
-
-            pub fn normalize(&mut self) {
-                let len = self.length();
-
-                $( self.$x = self.$x.clone() / len.clone(); )*
-            }
-        }
+        with_sqrt!(f32);
+        with_sqrt!(f64);
 
         macro_rules! binary_operator {
             ($Op: ident, $op: ident, $AOp: ident, $aop: ident) => {
@@ -856,7 +845,7 @@ impl Mat4<f32> {
     /// * `axis` - axis to create rotation matrix based on
     /// * Returns rotation matrix
     pub fn rotate(angle: f32, mut axis: Vec3<f32>) -> Self {
-        axis.normalize();
+        axis = axis.normalized();
 
         let sina = angle.sin();
         let cosa = angle.cos();

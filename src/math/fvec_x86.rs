@@ -22,7 +22,7 @@ impl From<f32> for FVec4 {
 }
 
 impl FVec4 {
-    /// Construct vector from components
+    /// Construct vector from XYZW components
     pub fn new(x: f32, y: f32, z: f32, w: f32) -> Self {
         Self(unsafe { arch::_mm_set_ps(w, z, y, x) })
     }

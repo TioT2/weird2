@@ -152,13 +152,10 @@ pub enum PolygonSplitResult {
 
 impl PartialEq for Plane {
     fn eq(&self, other: &Self) -> bool {
-        // let other = if self.distance.signum() == other.distance.signum() {
-        //     *other
-        // } else {
-        //     other.negate_direction()
-        // };
-
-        f32_geom_equal((self.normal % other.normal).length(), 0.0) && f32_vec_equal(&(self.normal * self.distance.into()), &(other.normal * other.distance.into()))
+        f32_geom_equal((self.normal % other.normal).length(), 0.0)
+            && f32_vec_equal(
+                &(self.normal * self.distance.into()),
+                &(other.normal * other.distance.into()))
     }
 }
 
@@ -177,7 +174,7 @@ impl Plane {
 
     /// Build plane from it's point and normal
     pub fn from_point_normal(point: Vec3f, mut normal: Vec3f) -> Self {
-        normal.normalize();
+        normal = normal.normalized();
         Self { distance: point ^ normal, normal }
     }
 

@@ -9,10 +9,12 @@
 // WDAT - Data format, contains 'final' project with BSP's.
 
 use std::{collections::{HashMap, HashSet}, io::Read, sync::{Arc, mpsc}};
-use math::{Mat4f, Vec2f, Vec3f};
 use zerocopy::IntoBytes;
 
-use crate::{frame_slice::{FrameSlice, FrameSliceMut}, math::{FVec4, Vec2}};
+use crate::{
+    frame_slice::{FrameSlice, FrameSliceMut},
+    math::{FVec4, Vec2, Mat4f, Vec2f, Vec3f},
+};
 
 pub mod math;
 pub mod system_font;
@@ -205,7 +207,7 @@ fn clip_polygon_oct(
     temp: &mut Vec<Vertex>,
     clip_oct: &geom::BoundOct
 ) -> bool {
-    // Norm functions
+    // Vertex norm functions
     fn norm_x     (vt: Vertex) -> f32 { vt.position.x() }
     fn norm_y     (vt: Vertex) -> f32 { vt.position.y() }
     fn norm_y_a_x (vt: Vertex) -> f32 { vt.position.y() + vt.position.x() }
@@ -420,8 +422,9 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                 self.prev_y = self.curr_y;
                 self.prev_xzuv = self.curr_xzuv;
 
-                self.curr_y = points[self.index].position.y();
-                self.curr_xzuv = points[self.index].xzuv();
+                let vt = &points[self.index];
+                self.curr_y = vt.position.y();
+                self.curr_xzuv = vt.xzuv();
 
                 let dy = self.curr_y - self.prev_y;
 
@@ -512,6 +515,60 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
         }
     }
 
+    /// Wrap pixel function with transparency
+    fn pixelfn_wrap_transparent(mut f: impl FnMut(&mut u64, FVec4)) -> impl FnMut(&mut u64, FVec4) {
+        move |pixel_ptr: &mut u64, xzuv: FVec4| {
+            // uugh transparency performance...
+            let mut src_color = *pixel_ptr;
+            f(&mut src_color, xzuv);
+
+            // SIMD-based transparency
+            #[cfg(target_feature = "sse")]
+            unsafe {
+                use std::arch::x86_64 as arch;
+
+                let src = std::mem::transmute::<arch::__m128d, arch::__m128i>(arch::_mm_set_sd(f64::from_bits(src_color)));
+                let src32 = arch::_mm_cvtepi16_epi32(src);
+                let src_m = arch::_mm_mul_ps(
+                    arch::_mm_cvtepi32_ps(src32),
+                    arch::_mm_set1_ps(0.6)
+                );
+
+                let dst = std::mem::transmute::<arch::__m128d, arch::__m128i>(
+                    arch::_mm_load_sd((pixel_ptr as *mut u64).cast())
+                );
+                let dst32 = arch::_mm_cvtepi16_epi32(dst);
+                let dst_m = arch::_mm_mul_ps(
+                    arch::_mm_cvtepi32_ps(dst32),
+                    arch::_mm_set1_ps(0.4)
+                );
+
+                let sum = arch::_mm_add_ps(src_m, dst_m);
+                let res = arch::_mm_cvtps_epi32(sum);
+                let cvt = arch::_mm_packus_epi32(res, res);
+                arch::_mm_store_sd(
+                    pixel_ptr as *mut u64 as *mut f64,
+                    std::mem::transmute::<arch::__m128i, arch::__m128d>(cvt)
+                );
+            }
+
+            // Fallback (slow) transparency
+            #[cfg(not(target_feature = "sse"))]
+            {
+                let dst_color = *pixel_ptr;
+                let [dr, dg, db, _] = u64_into_u16(dst_color);
+                let [sr, sg, sb, _] = u64_into_u16(src_color);
+
+                *pixel_ptr = u64_from_u16([
+                    (sr as f32 * 0.6 + dr as f32 * 0.4) as u16,
+                    (sg as f32 * 0.6 + dg as f32 * 0.4) as u16,
+                    (sb as f32 * 0.6 + db as f32 * 0.4) as u16,
+                    0
+                ]);
+            }
+        }
+    }
+
     /// Render polygon
     unsafe fn render_clipped_polygon(
         &mut self,
@@ -519,62 +576,9 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
         is_sky: bool,
         points: &[Vertex],
         color: u64,
-        texture: FrameSlice<u64>
+        texture: FrameSlice<u64>,
+        sky_texture: FrameSlice<u32>,
     ) {
-        /// Add transparency layer after fragment function
-        fn wrap_transparent(mut f: impl FnMut(&mut u64, FVec4)) -> impl FnMut(&mut u64, FVec4) {
-            move |pixel_ptr: &mut u64, xzuv: FVec4| {
-                // uugh transparency performance...
-                let mut src_color = *pixel_ptr;
-                f(&mut src_color, xzuv);
-
-                // SIMD-based transparency
-                #[cfg(target_feature = "sse")]
-                unsafe {
-                    use std::arch::x86_64 as arch;
-
-                    let src = std::mem::transmute::<arch::__m128d, arch::__m128i>(arch::_mm_set_sd(f64::from_bits(src_color)));
-                    let src32 = arch::_mm_cvtepi16_epi32(src);
-                    let src_m = arch::_mm_mul_ps(
-                        arch::_mm_cvtepi32_ps(src32),
-                        arch::_mm_set1_ps(0.6)
-                    );
-
-                    let dst = std::mem::transmute::<arch::__m128d, arch::__m128i>(
-                        arch::_mm_load_sd((pixel_ptr as *mut u64).cast())
-                    );
-                    let dst32 = arch::_mm_cvtepi16_epi32(dst);
-                    let dst_m = arch::_mm_mul_ps(
-                        arch::_mm_cvtepi32_ps(dst32),
-                        arch::_mm_set1_ps(0.4)
-                    );
-
-                    let sum = arch::_mm_add_ps(src_m, dst_m);
-                    let res = arch::_mm_cvtps_epi32(sum);
-                    let cvt = arch::_mm_packus_epi32(res, res);
-                    arch::_mm_store_sd(
-                        pixel_ptr as *mut u64 as *mut f64,
-                        std::mem::transmute::<arch::__m128i, arch::__m128d>(cvt)
-                    );
-                }
-
-                // Fallback (slow) transparency
-                #[cfg(not(target_feature = "sse"))]
-                {
-                    let dst_color = *pixel_ptr;
-                    let [dr, dg, db, _] = u64_into_u16(dst_color);
-                    let [sr, sg, sb, _] = u64_into_u16(src_color);
-
-                    *pixel_ptr = u64_from_u16([
-                        (sr as f32 * 0.6 + dr as f32 * 0.4) as u16,
-                        (sg as f32 * 0.6 + dg as f32 * 0.4) as u16,
-                        (sb as f32 * 0.6 + db as f32 * 0.4) as u16,
-                        0
-                    ]);
-                }
-            }
-        }
-
         // Macro that wraps actual rendering function call
         macro_rules! run {
             ($func: expr) => {
@@ -583,7 +587,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                     let f = $func;
 
                     if is_transparent {
-                        self.render_clipped_polygon_impl(points, wrap_transparent(f));
+                        self.render_clipped_polygon_impl(points, Self::pixelfn_wrap_transparent(f));
                     } else {
                         self.render_clipped_polygon_impl(points, f);
                     }
@@ -614,8 +618,8 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
             }),
             RasterizationMode::Full | RasterizationMode::Textures | RasterizationMode::Lightmaps => {
                 if is_sky {
-                    let width = texture.width() as isize >> (is_sky as isize);
-                    let height = texture.height() as isize;
+                    let width = sky_texture.width() as isize >> 1;
+                    let height = sky_texture.height() as isize;
                     let uv_offset = self.sky_uv_offset;
                     let background_uv_offset = self.sky_background_uv_offset;
 
@@ -632,11 +636,12 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                             .rem_euclid(height)
                             .cast_unsigned();
 
-                        let fg_color = *unsafe { texture.get2_unchecked(fg_v, fg_u) };
+                        let fg_color = *unsafe { sky_texture.get2_unchecked(fg_v, fg_u) };
 
                         // Check foreground color and fetch backround if foreground is transparent
                         if fg_color != 0 {
-                            *dst = fg_color;
+                            let [r, g, b, _] = fg_color.to_le_bytes();
+                            *dst = u64_from_u16([r as u16, g as u16, b as u16, 0]);
                             return;
                         }
 
@@ -649,7 +654,8 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                             .rem_euclid(height)
                             .cast_unsigned();
 
-                        *dst = *unsafe { texture.get2_unchecked(bg_v, bg_u) };
+                        let [r, g, b, _] = unsafe { sky_texture.get2_unchecked(bg_v, bg_u) }.to_le_bytes();
+                        *dst = u64_from_u16([r as u16, g as u16, b as u16, 0]);
                     })
                 } else {
                     let max_u = texture.width() - 1;
@@ -732,6 +738,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
             self.camera.project_sky_polygon(polygon, vertices, self.sky_uv_offset);
         } else {
             self.camera.project_polygon(polygon, surface.u / image_uv_scale, surface.v / image_uv_scale, vertices);
+            // self.camera.project_polygon(polygon, surface.u, surface.v, vertices);
         }
 
         // Clip polygon by Z=1
@@ -765,13 +772,15 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
             diffuse * 0.9 + 0.09
         };
 
+        let material_color = self.material_table.get_color(surface.material_id).unwrap();
+
         // Calculate color from light and material color
         let static_color = {
-            let color = self.material_table.get_color(surface.material_id).unwrap().to_le_bytes();
+            let [r, g, b, _] = material_color.to_le_bytes();
             u64_from_u16([
-                (color[0] as f32 * static_light) as u16,
-                (color[1] as f32 * static_light) as u16,
-                (color[2] as f32 * static_light) as u16,
+                (r as f32 * static_light) as u16,
+                (g as f32 * static_light) as u16,
+                (b as f32 * static_light) as u16,
                 0
             ])
         };
@@ -788,8 +797,14 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
             }
         };
 
+        let sky_texture = if surface.is_sky() {
+            image
+        } else {
+            FrameSlice::empty()
+        };
+
         let surface_texture = if needs_surface_texture && !surface.is_sky() {
-            // Map tex_coords into space-linear state
+            // Map tex coords into space-linear coordinates
             for vt in vertices.iter_mut() {
                 vt.tex_coord *= vt.position.z().recip().into();
             }
@@ -811,7 +826,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                 vt.tex_coord = (vt.tex_coord - uv_int_min.map(|v| v as f32)) * vt.position.z().into();
             }
 
-            // Resize surface texture to fit surface resolution
+            // Resize surface texture data to fit resolution
             surface_texture_data.resize(texture_res.x() * texture_res.y(), 0);
             let mut texture = FrameSliceMut::new(
                 texture_res.x(),
@@ -820,79 +835,32 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                 surface_texture_data.as_mut_slice()
             );
 
-            let lightmap_uv_offset = if let Some(lightmap) = surface.lightmap.as_ref() {
-                (uv_int_min.map(|i| i << mip_index) - lightmap.uv_min.map(|i| i)).map(|i| i.max(0).cast_unsigned() >> mip_index)
+            let rm_is_lit = matches!(self.rasterization_mode, RasterizationMode::Full | RasterizationMode::Lightmaps);
+            let lighting = if rm_is_lit && let Some(lightmap) = surface.lightmap.as_ref() {
+                Some(SurfaceLightmap {
+                    img: FrameSlice::new(lightmap.width, lightmap.height, lightmap.width, &lightmap.data),
+                    uv_off: (uv_int_min.map(|i| i << mip_index) - lightmap.uv_min.map(|i| i)).map(|i| i.max(0).cast_unsigned() >> mip_index),
+                    scale_log2: 3 - mip_index,
+                })
             } else {
-                Vec2::new(0, 0)
+                None
             };
 
+            let rm_is_textured = matches!(self.rasterization_mode, RasterizationMode::Full | RasterizationMode::Textures);
+            let color = if rm_is_textured {
+                Some(SurfaceColormap {
+                    img: image,
+                    uv_off: image_uv_off,
+                })
+            } else {
+                None
+            };
 
-            match self.rasterization_mode {
-                RasterizationMode::Full => {
-                    if let Some(lightmap) = surface.lightmap.as_ref() {
-                        // Build surface texture using target
-                        build_surface_texture_impl::<true, true>(
-                            texture.reborrow(),
-                            image,
-                            image_uv_off,
-                            lightmap.as_slice(),
-                            lightmap_uv_offset,
-                            3 - mip_index,
-                        );
-                    } else {
-                        build_surface_texture_static(
-                            texture.reborrow(),
-                            image,
-                            image_uv_off,
-                            static_light,
-                        );
-                    }
-                }
-                RasterizationMode::Textures => {
-                    build_surface_texture_impl::<true, false>(
-                        texture.reborrow(),
-                        image,
-                        image_uv_off,
-                        FrameSlice::empty(),
-                        Vec2::new(0, 0),
-                        0
-                    );
-                }
-                RasterizationMode::Lightmaps => {
-                    if let Some(lightmap) = surface.lightmap.as_ref() {
-                        build_surface_texture_impl::<false, true>(
-                            texture.reborrow(),
-                            FrameSlice::empty(),
-                            Vec2::new(0, 0),
-                            lightmap.as_slice(),
-                            lightmap_uv_offset,
-                            3 - mip_index,
-                        );
-                    } else {
-                        build_surface_texture_static(
-                            texture.reborrow(),
-                            image,
-                            image_uv_off,
-                            static_light,
-                        );
-                    }
-                }
-
-                // Should not be there
-                _ => unreachable!("Trying to build surface in mode not requiring it."),
-            }
-
-            texture.into()
-        } else if needs_surface_texture {
-            let width = image.width();
-            let height = image.height();
-
-            // TODO: Cache sky textures, rebuilding'em every time is a bit dogshit in terms of performance.
-            surface_texture_data.resize(width * height, 0);
-            let mut texture = FrameSliceMut::new(width, height, width, surface_texture_data.as_mut_slice());
-
-            // Build simple surface texture without UV remapping
-            build_surface_texture_plain(texture.reborrow(), image);
+            build_surface_texture(
+                texture.reborrow(),
+                lighting,
+                color
+            );
 
             texture.into()
         } else {
@@ -906,7 +874,8 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                 surface.is_sky(),
                 vertices,
                 static_color,
-                surface_texture
+                surface_texture,
+                sky_texture,
             );
         }
     }
@@ -1209,116 +1178,90 @@ pub enum RenderOutputMessage {
     }
 }
 
-/// Build surface texture with constant (whole-surface) light level
-fn build_surface_texture_static(
-    mut texture: FrameSliceMut<u64>,
-    image: FrameSlice<u32>,
-    image_uv_off: Vec2::<usize>,
-    light: f32,
-) {
-    for y in 0..texture.height() {
-        let src = image.get((y + image_uv_off.y()) % image.height()).unwrap();
-        let dst = texture.get_mut(y).unwrap();
+/// Surface texture building lightmap descriptor
+#[derive(Default)]
+pub struct SurfaceLightmap<'t> {
+    /// Lightmap image
+    pub img: FrameSlice<'t, u64>,
 
-        let iter = dst.iter_mut().zip(src.iter().cycle().skip(image_uv_off.x()));
-        for (dst, src) in iter {
-            let [r, g, b, _] = src.to_le_bytes();
+    /// Offset from texture UVs
+    pub uv_off: Vec2::<usize>,
 
-            *dst = u64_from_u16([
-                unsafe { (r as f32 * light).to_int_unchecked::<u16>() },
-                unsafe { (g as f32 * light).to_int_unchecked::<u16>() },
-                unsafe { (b as f32 * light).to_int_unchecked::<u16>() },
-                0
-            ]);
-        }
-    }
+    /// Base-2 logarithm of relative lightmap-texture scale
+    pub scale_log2: usize,
+}
+
+/// Surface texture building color map descrpitor
+#[derive(Default)]
+pub struct SurfaceColormap<'t> {
+    /// Color map image
+    pub img: FrameSlice<'t, u32>,
+
+    /// Offset from texture UVs
+    pub uv_off: Vec2::<usize>,
 }
 
 /// Build surface texture for lightmap
 fn build_surface_texture_impl<const IMAGE: bool, const LIGHTMAP: bool>(
     mut target: FrameSliceMut<u64>,
-
-    image: FrameSlice<u32>,
-    image_uv_off: Vec2::<usize>,
-
-    lightmap: FrameSlice<u64>,
-    lightmap_uv_off: Vec2::<usize>,
-    lightmap_scale_log2: usize,
+    colormap: SurfaceColormap,
+    lightmap: SurfaceLightmap,
 ) {
-    let t_w = target.width();
-    let t_h = target.height();
-
-    for y in 0..t_h {
-        // Rows
-        let target_r = target.get_mut(y).unwrap();
+    for (y, target_r) in target.iter_mut().enumerate() {
         let image_r = if IMAGE {
-            image.get((y + image_uv_off.y()) % image.height()).unwrap()
-        } else {
-            &[]
-        };
-        let lightmap_r = if LIGHTMAP {
-            lightmap.get(((y + lightmap_uv_off.y()) >> lightmap_scale_log2).min(lightmap.height() - 1)).unwrap()
+            &colormap.img[(y + colormap.uv_off.y()) % colormap.img.height()]
         } else {
             &[]
         };
 
-        for x in 0..t_w {
-            let image_x = if IMAGE {
-                image_r[(x + image_uv_off.x()) % image.width()]
+        let lightmap_r = if LIGHTMAP {
+            &lightmap.img[((y + lightmap.uv_off.y()) >> lightmap.scale_log2).min(lightmap.img.height() - 1)]
+        } else {
+            &[]
+        };
+
+        for (x, dst) in target_r.iter_mut().enumerate() {
+            let [r, g, b, _] = if IMAGE {
+                image_r[(x + colormap.uv_off.x()) % colormap.img.width()]
             } else {
-                0xFFFFFF
-            };
-            let lightmap_x = if LIGHTMAP {
-                lightmap_r[((x + lightmap_uv_off.x()) >> lightmap_scale_log2).min(lightmap.width() - 1)]
+                0xFF_FF_FF
+            }.to_le_bytes();
+
+            let [lr, lg, lb, _] = u64_into_u16(if LIGHTMAP {
+                lightmap_r[((x + lightmap.uv_off.x()) >> lightmap.scale_log2).min(lightmap.img.width() - 1)]
             } else {
                 0x00FF_00FF_00FF
-            };
+            });
 
-            target_r[x] = if LIGHTMAP && IMAGE {
-                let [r, g, b, _] = image_x.to_le_bytes();
-                let [lr, lg, lb, _] = u64_into_u16(lightmap_x);
-
-                u64_from_u16([
+            *dst = u64_from_u16(match (IMAGE, LIGHTMAP) {
+                (true, true) => [
                     ((r as u32 * lr as u32) >> 8) as u16,
                     ((g as u32 * lg as u32) >> 8) as u16,
                     ((b as u32 * lb as u32) >> 8) as u16,
                     0
-                ])
-            } else if LIGHTMAP {
-                lightmap_x
-            } else if IMAGE {
-                let [r, g, b, _] = image_x.to_le_bytes();
-                u64_from_u16([r as u16, g as u16, b as u16, 0])
-            } else {
-                // Unit white light and white color
-                0x00FF_00FF_00FF
-            };
+                ],
+                (false, true) => [lr, lg, lb, 0],
+                (true, false) => [r as u16, g as u16, b as u16, 0],
+                (false, false) => [0xFF, 0xFF, 0xFF, 0],
+            });
         }
     }
 }
 
-/// Just cast high-res to low-res
-fn build_surface_texture_plain(
-    mut texture: FrameSliceMut<u64>,
-    image: FrameSlice<u32>,
+/// Build surface texture
+fn build_surface_texture(
+    target: FrameSliceMut<u64>,
+    lightmap: Option<SurfaceLightmap>,
+    colormap: Option<SurfaceColormap>,
 ) {
-    let w = texture.width();
-    let h = texture.height();
+    let build_fn = match (colormap.is_some(), lightmap.is_some()) {
+        (false, false) => build_surface_texture_impl::<false, false>,
+        (false, true ) => build_surface_texture_impl::<false, true >,
+        (true , false) => build_surface_texture_impl::<true , false>,
+        (true , true ) => build_surface_texture_impl::<true , true >,
+    };
 
-    // Assert dimension equality
-    assert!(w == image.width() && h == image.height());
-
-    for y in 0..texture.height() {
-        let dst = texture.get_mut(y).unwrap();
-        let src = image.get(y).unwrap();
-
-        let iter = dst.iter_mut().zip(src.iter());
-
-        for (dst, src) in iter {
-            let [r, g, b, _] = src.to_le_bytes();
-            *dst = u64_from_u16([r as u16, g as u16, b as u16, 0]);
-        }
-    }
+    build_fn(target, colormap.unwrap_or_default(), lightmap.unwrap_or_default());
 }
 
 /// Convert HDR frame buffer to LDR
@@ -1583,7 +1526,7 @@ fn main() {
     let map = {
         // yay, this code will not work on non-local builds)))
         // --
-        let (map_name, map_src_format) = ("quake/e1m5", "map");
+        let (map_name, map_src_format) = ("quake/e1m1", "map");
         // let (map_name, map_src_format) = ("d1_trainstation_01", "vmf");
         let data_path = ".local/";
 
@@ -1689,7 +1632,8 @@ fn main() {
     }
 
     let material_table = {
-        let mut wad_file = std::fs::File::open(".local/quake/gfx/medieval.wad").unwrap();
+        // let mut wad_file = std::fs::File::open(".local/quake/gfx/medieval.wad").unwrap();
+        let mut wad_file = std::fs::File::open(".local/quake/gfx/base.wad").unwrap();
         let mut wad_file_data = Vec::new();
         wad_file.read_to_end(&mut wad_file_data).unwrap();
 

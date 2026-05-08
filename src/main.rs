@@ -1216,31 +1216,55 @@ fn build_surface_texture_impl<const IMAGE: bool, const LIGHTMAP: bool>(
     colormap: SurfaceColormap,
     lightmap: SurfaceLightmap,
 ) {
+    let mut iy = colormap.uv_off.y();
+    let mut ly = !0;
+    let mut lightmap_r: &[u64] = &[];
+
     for (y, target_r) in target.iter_mut().enumerate() {
         let image_r = if IMAGE {
-            &colormap.img[(y + colormap.uv_off.y()) % colormap.img.height()]
+            if iy >= colormap.img.height() {
+                iy -= colormap.img.height();
+            }
+            &colormap.img[iy]
         } else {
             &[]
         };
 
-        let lightmap_r = if LIGHTMAP {
-            &lightmap.img[((y + lightmap.uv_off.y()) >> lightmap.scale_log2).min(lightmap.img.height() - 1)]
-        } else {
-            &[]
-        };
+        if IMAGE { iy += 1; }
+
+        if LIGHTMAP {
+            let ly1 = (y + lightmap.uv_off.y()) >> lightmap.scale_log2;
+            if ly1 != ly {
+                ly = ly1;
+                lightmap_r = &lightmap.img[ly.min(lightmap.img.height() - 1)];
+            }
+        }
+
+        let mut ix = colormap.uv_off.x();
+        let mut lx = !0;
+        let mut lightmap_p = 0x00FF_00FF_00FF;
 
         for (x, dst) in target_r.iter_mut().enumerate() {
             let [r, g, b, _] = if IMAGE {
-                image_r[(x + colormap.uv_off.x()) % colormap.img.width()]
+                if ix >= colormap.img.width() {
+                    ix -= colormap.img.width();
+                }
+                image_r[ix]
             } else {
                 0xFF_FF_FF
             }.to_le_bytes();
 
-            let [lr, lg, lb, _] = u64_into_u16(if LIGHTMAP {
-                lightmap_r[((x + lightmap.uv_off.x()) >> lightmap.scale_log2).min(lightmap.img.width() - 1)]
-            } else {
-                0x00FF_00FF_00FF
-            });
+            if IMAGE { ix += 1; }
+
+            if LIGHTMAP {
+                let lx1 = (x + lightmap.uv_off.x()) >> lightmap.scale_log2;
+                if lx1 != lx {
+                    lx = lx1;
+                    lightmap_p = lightmap_r[lx.min(lightmap.img.width() - 1)];
+                }
+            }
+
+            let [lr, lg, lb, _] = u64_into_u16(lightmap_p);
 
             *dst = u64_from_u16(match (IMAGE, LIGHTMAP) {
                 (true, true) => [

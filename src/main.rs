@@ -12,8 +12,7 @@ use std::{collections::{HashMap, HashSet}, io::Read, sync::{Arc, mpsc}};
 use zerocopy::IntoBytes;
 
 use crate::{
-    frame_slice::{FrameSlice, FrameSliceMut},
-    math::{FVec4, Vec2, Mat4f, Vec2f, Vec3f},
+    bsp::Id, frame_slice::{FrameSlice, FrameSliceMut}, math::{FVec4, Mat4f, Vec2, Vec2f, Vec3f}
 };
 
 pub mod math;
@@ -35,39 +34,43 @@ pub enum RasterizationMode {
     /// Full rendering
     Full = 0,
 
-    /// Monochromatic polygons
-    Monochrome = 1,
+    /// Material-id-defined monochrome
+    MonochromeMaterial = 1,
+
+    /// Polygon-id-defined monochrome
+    MonochromePolygon = 2,
 
     /// Overdraw (brighter => more overdraw)
-    Overdraw = 2,
+    Overdraw = 3,
 
     /// Inverse depth value
-    Depth = 3,
+    Depth = 4,
 
     /// Rasterize with UV checker
-    UV = 4,
+    UV = 5,
 
     /// Unlit textures
-    Textures = 5,
+    Textures = 6,
 
     /// Lightmaps only
-    Lightmaps = 6,
+    Lightmaps = 7,
 }
 
 impl RasterizationMode {
     // Rasterization mode count
-    const COUNT: u32 = 7;
+    const COUNT: u32 = 8;
 
     /// Build rasterization mode from u32
     const fn from_u32(n: u32) -> Option<RasterizationMode> {
         Some(match n {
             0 => Self::Full,
-            1 => Self::Monochrome,
-            2 => Self::Overdraw,
-            3 => Self::Depth,
-            4 => Self::UV,
-            5 => Self::Textures,
-            6 => Self::Lightmaps,
+            1 => Self::MonochromeMaterial,
+            2 => Self::MonochromePolygon,
+            3 => Self::Overdraw,
+            4 => Self::Depth,
+            5 => Self::UV,
+            6 => Self::Textures,
+            7 => Self::Lightmaps,
             _ => return None,
         })
     }
@@ -596,7 +599,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
         }
 
         match self.rasterization_mode {
-            RasterizationMode::Monochrome => run!(move |dst: &mut u64, _| {
+            RasterizationMode::MonochromeMaterial | RasterizationMode::MonochromePolygon => run!(move |dst: &mut u64, _| {
                 *dst = color;
             }),
             RasterizationMode::Overdraw => run!(|dst: &mut u64, _| {
@@ -772,11 +775,23 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
             diffuse * 0.9 + 0.09
         };
 
-        let material_color = self.material_table.get_color(surface.material_id).unwrap();
 
         // Calculate color from light and material color
         let static_color = {
-            let [r, g, b, _] = material_color.to_le_bytes();
+            fn xorshift32(mut i: u32) -> u32 {
+                i ^= i << 13;
+                i ^= i >> 17;
+                i ^= i << 5;
+                i
+            }
+
+            let [r, g, b, _] = if matches!(self.rasterization_mode, RasterizationMode::MonochromePolygon) {
+                let i = surface.polygon_id.into_index() as u64;
+                xorshift32(((i | (i >> 32)) & 0xFFFF_FFFF) as u32)
+            } else {
+                self.material_table.get_color(surface.material_id).unwrap()
+            }.to_le_bytes();
+
             u64_from_u16([
                 (r as f32 * static_light) as u16,
                 (g as f32 * static_light) as u16,
@@ -787,7 +802,8 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
 
         let needs_surface_texture = match self.rasterization_mode {
             // Does not build lightmaps for special rasterization modes
-            RasterizationMode::Depth | RasterizationMode::Overdraw | RasterizationMode::UV | RasterizationMode::Monochrome => {
+            RasterizationMode::Depth | RasterizationMode::Overdraw | RasterizationMode::UV
+                | RasterizationMode::MonochromeMaterial | RasterizationMode::MonochromePolygon => {
                 false
             }
 

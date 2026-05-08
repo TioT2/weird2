@@ -778,16 +778,9 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
 
         // Calculate color from light and material color
         let static_color = {
-            fn xorshift32(mut i: u32) -> u32 {
-                i ^= i << 13;
-                i ^= i >> 17;
-                i ^= i << 5;
-                i
-            }
-
             let [r, g, b, _] = if matches!(self.rasterization_mode, RasterizationMode::MonochromePolygon) {
                 let i = surface.polygon_id.into_index() as u64;
-                xorshift32(((i | (i >> 32)) & 0xFFFF_FFFF) as u32)
+                rand::xorshift32(((i | (i >> 32)) & 0xFFFF_FFFF) as u32)
             } else {
                 self.material_table.get_color(surface.material_id).unwrap()
             }.to_le_bytes();

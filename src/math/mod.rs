@@ -202,7 +202,7 @@ macro_rules! impl_vecn {
 
                     /// Get normalized vector
                     pub fn normalized(&self) -> Self {
-                        *self * self.length().recip().into()
+                        *self / self.length().into()
                     }
                 }
             };

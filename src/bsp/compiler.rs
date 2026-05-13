@@ -11,7 +11,7 @@ Compilation:
    That's the exact reason why levels must not have 'holes' in their structure)
 */
 
-use std::{collections::{BTreeMap, BTreeSet, HashMap}, num::NonZeroU32};
+use std::{collections::{BTreeMap, BTreeSet, HashMap, HashSet}, num::NonZeroU32};
 use crate::{geom, map, math::{Mat3f, Vec3f}};
 
 use super::Id;
@@ -29,8 +29,38 @@ pub enum MaterialKind {
     Sky,
 }
 
+/// Brush face identifier
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub struct BrushFaceId {
+    /// Index of brsuh in polygon brush array
+    pub brush: u32,
+
+    /// Id of face in brush
+    pub face: u32,
+}
+
+/// Identifier of volume face
+#[derive(Copy, Clone)]
+pub struct VolumeFaceId {
+    /// Volume index (in hull volume array)
+    pub volume: u32,
+
+    /// Face index (in volume face array)
+    pub face: u32,
+}
+
+impl VolumeFaceId {
+    /// Create new identifier of volume face
+    pub fn new(volume: usize, face: usize) -> Self {
+        Self {
+            volume: volume as u32,
+            face: face as u32,
+        }
+    }
+}
+
 /// Polygon that should be displayed
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct DisplayPolygon {
     /// Actual polygon
     pub polygon: geom::Polygon,
@@ -46,6 +76,9 @@ pub struct DisplayPolygon {
 
     /// Flags of map material
     pub flags: super::SurfaceFlags,
+
+    /// Identifier of polygon source brush face
+    pub brush_face_id: BrushFaceId,
 }
 
 /// Reference to another volume
@@ -61,20 +94,16 @@ pub struct PortalPolygon {
     pub is_front: bool,
 }
 
-/// Hull polygon
+/// Face of the hull volume
 #[derive(Debug)]
 pub struct HullFace {
     /// Polygon itself
     pub polygon: geom::Polygon,
 
-    /// Do polygon belong to set of polygons of initial hull
-    /// (used in invisible surface removal pass)
-    pub is_external: bool,
-
-    /// Set of all polygons that will be actually displayed
+    /// Set of all polygons that are actually displayed
     pub display_polygons: Vec<DisplayPolygon>,
 
-    /// Polygons, that 'points' to another volumes
+    /// Polygons, that 'points' to another volumes, empty before portal resolution pass
     pub portal_polygons: Vec<PortalPolygon>,
 
     /// Reference to split this polygon born at
@@ -82,11 +111,18 @@ pub struct HullFace {
     pub split_reference: Option<SplitReference>,
 }
 
+/// Volume holding full info about **all** polyhedron edges (empty edges too)
+#[derive(Debug)]
+pub struct HullVolume {
+    /// Set of external polygons
+    pub faces: Vec<HullFace>,
+}
+
 /// Polygon split id
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
 pub struct SplitId(NonZeroU32);
 
-/// Reference to certain split pass during split pass
+/// Reference to certain split
 #[derive(Copy, Clone, Debug)]
 pub struct SplitReference {
     /// split operation index
@@ -94,13 +130,6 @@ pub struct SplitReference {
 
     /// true if portal belongs to front part of split, false - if to back
     pub edge_is_front: bool,
-}
-
-/// Hull volume
-#[derive(Debug)]
-pub struct HullVolume {
-    /// Set of external polygons
-    pub faces: Vec<HullFace>,
 }
 
 /// Volume BSP
@@ -183,14 +212,8 @@ impl HullVolume {
             faces: indices
                 .iter()
                 .copied()
-                .map(|[a, b, c, d]| HullFace {
-                    polygon: geom::Polygon::from_cw(vec![
-                        vertices[a],
-                        vertices[b],
-                        vertices[c],
-                        vertices[d],
-                    ]),
-                    is_external: true,
+                .map(|idx| HullFace {
+                    polygon: geom::Polygon::from_cw(idx.iter().map(|i| vertices[*i]).collect()),
                     display_polygons: Vec::new(),
                     portal_polygons: Vec::new(),
                     split_reference: None,
@@ -202,15 +225,11 @@ impl HullVolume {
 
     /// Check if volume contains point or not
     pub fn contains_point(&self, point: Vec3f) -> bool {
-        self
-            .faces
-            .iter()
-            .all(|face| {
-                face.polygon.plane.get_point_relation(point) != geom::PointRelation::Back
-            })
+        self.faces.iter()
+            .all(|face| face.polygon.plane.get_point_relation(point) != geom::PointRelation::Back)
     }
 
-    /// Calculate statistics about splitting
+    /// Calculate statistics about splitting display polygons by plane
     pub fn get_split_stat(&self, plane: geom::Plane) -> VolumeSplitStat {
         self.faces
             .iter()
@@ -252,7 +271,7 @@ impl HullVolume {
             .flat_map(|(begin, end)| [begin, end].into_iter())
             .collect::<Vec<Vec3f>>();
 
-        // Deduplicate and sort them
+        // Deduplicate and sort intersection points
         intersection_points = geom::deduplicate_points(intersection_points);
 
         if intersection_points.len() < 3 {
@@ -295,15 +314,13 @@ impl HullVolume {
     ) -> Result<(Self, Self, geom::Polygon), Self> {
   
         // intersection polygon MUST exist
-        let mut intersection_polygon = match self.get_intersection_polygon(plane) {
+        let intersection_polygon = match self.get_intersection_polygon(plane) {
             Some(polygon) => polygon,
             None => return Err(self),
         };
 
         let mut front_hull_polygons = Vec::new();
         let mut back_hull_polygons = Vec::new();
-
-        /*  */
 
         for hull_polygon in self.faces {
             match plane.split_polygon(&hull_polygon.polygon) {
@@ -314,38 +331,37 @@ impl HullVolume {
                     back_hull_polygons.push(hull_polygon);
                 }
                 geom::PolygonSplitResult::Intersects { front: front_hull_polygon, back: back_hull_polygon } => {
-                    // split display polygons
+                    // split intersected display polygons
                     let mut front_display_polygons = Vec::new();
                     let mut back_display_polygons = Vec::new();
 
-                    for physical_polygon in hull_polygon.display_polygons {
-                        match plane.split_polygon(&physical_polygon.polygon) {
+                    for display_polygon in hull_polygon.display_polygons {
+                        match plane.split_polygon(&display_polygon.polygon) {
                             geom::PolygonSplitResult::Front => {
-                                front_display_polygons.push(physical_polygon);
+                                front_display_polygons.push(display_polygon);
                             }
                             geom::PolygonSplitResult::Back => {
-                                back_display_polygons.push(physical_polygon);
+                                back_display_polygons.push(display_polygon);
                             }
                             geom::PolygonSplitResult::Intersects { front, back } => {
                                 front_display_polygons.push(DisplayPolygon {
                                     polygon: front,
-                                    ..physical_polygon
+                                    ..display_polygon
                                 });
 
                                 back_display_polygons.push(DisplayPolygon {
                                     polygon: back,
-                                    ..physical_polygon
+                                    ..display_polygon
                                 });
                             }
                             geom::PolygonSplitResult::Coplanar => {
                                 // probably panic here...
-                                eprintln!("Physical polygon somehow lies on volume splitter plane...");
+                                eprintln!("Display polygon somehow lies on volume splitter plane... (ignored)");
                             }
                         }
                     }
 
                     front_hull_polygons.push(HullFace {
-                        is_external: hull_polygon.is_external,
                         display_polygons: front_display_polygons,
                         portal_polygons: Vec::new(),
                         polygon: front_hull_polygon,
@@ -353,7 +369,6 @@ impl HullVolume {
                     });
 
                     back_hull_polygons.push(HullFace {
-                        is_external: hull_polygon.is_external,
                         display_polygons: back_display_polygons,
                         portal_polygons: Vec::new(),
                         polygon: back_hull_polygon,
@@ -366,33 +381,26 @@ impl HullVolume {
             }
         }
 
-        let split_polygon = intersection_polygon.clone();
-
-        let front_intersection_hull_polygon = HullFace {
-            is_external: false,
+        // Front face created by split
+        front_hull_polygons.push(HullFace {
             display_polygons: incident_front_polygons,
             portal_polygons: Vec::new(), // constructed during portal_resolve pass
             polygon: intersection_polygon.clone(),
             split_reference: Some(SplitReference { edge_is_front: false, split_id })
-        };
-        
-        // negate intersection polygon's orientation to match back
-        intersection_polygon.negate_orientation();
-        let back_intersection_hull_polygon = HullFace {
-            is_external: false,
+        });
+
+        // Back face created by split
+        back_hull_polygons.push(HullFace {
             display_polygons: incident_back_polygons,
             portal_polygons: Vec::new(),
-            polygon: intersection_polygon,
+            polygon: intersection_polygon.clone().negated_orientation(),
             split_reference: Some(SplitReference { edge_is_front: true, split_id })
-        };
-
-        front_hull_polygons.push(front_intersection_hull_polygon);
-        back_hull_polygons.push(back_intersection_hull_polygon);
+        });
 
         let front_hull_volume = HullVolume { faces: front_hull_polygons };
         let back_hull_volume = HullVolume { faces: back_hull_polygons };
 
-        Ok((front_hull_volume, back_hull_volume, split_polygon))
+        Ok((front_hull_volume, back_hull_volume, intersection_polygon))
     }
 }
 
@@ -407,13 +415,10 @@ pub struct SplitInfo {
 
 /// Portal resolution pass internal polygon structure
 pub struct SplitTaskPolygon {
-    /// Index of volume portals generated by the polygon will belong to
-    pub dst_volume_index: usize,
+    /// Id of destination volume face
+    pub dst: VolumeFaceId,
 
-    /// Destination
-    pub dst_face_index: usize,
-
-    /// Polygon boundbox (calculated during task polygon building subpass)
+    /// Polygon bound box (calculated during task polygon building subpass)
     pub polygon_bb: geom::BoundBox,
 
     /// Polygon
@@ -436,6 +441,20 @@ pub struct BspModelCompileContext {
 
     /// Global bounding box
     pub bound_box: geom::BoundBox,
+}
+
+impl std::ops::Index<VolumeFaceId> for BspModelCompileContext {
+    type Output = HullFace;
+
+    fn index(&self, i: VolumeFaceId) -> &HullFace {
+        &self.volumes[i.volume as usize].faces[i.face as usize]
+    }
+}
+
+impl std::ops::IndexMut<VolumeFaceId> for BspModelCompileContext {
+    fn index_mut(&mut self, i: VolumeFaceId) -> &mut HullFace {
+        &mut self.volumes[i.volume as usize].faces[i.face as usize]
+    }
 }
 
 impl Default for BspModelCompileContext {
@@ -461,12 +480,14 @@ impl BspModelCompileContext {
     }
 
     fn build_volume(&mut self, volume: HullVolume, physical_polygons: Vec<DisplayPolygon>) -> VolumeBsp {
-        // final polygon, insert hull in volume set and return
+
+        // final polygon, insert hull in volume set and finish
         if physical_polygons.is_empty() {
             self.volumes.push(volume);
             return VolumeBsp::Leaf(self.volumes.len() - 1);
         }
 
+        // Just for safety #N+1
         for physical_polygon in &physical_polygons {
             for point in &physical_polygon.polygon.points {
                 if !self.bound_box.contains_point(point) {
@@ -547,8 +568,9 @@ impl BspModelCompileContext {
 
         let mut front_polygons: Vec<DisplayPolygon> = Vec::new();
         let mut front_incident_polygons: Vec<DisplayPolygon> = Vec::new();
-        let mut back_incident_polygons: Vec<DisplayPolygon> = Vec::new();
+
         let mut back_polygons: Vec<DisplayPolygon> = Vec::new();
+        let mut back_incident_polygons: Vec<DisplayPolygon> = Vec::new();
 
         // classify all polygons to 4 types
         for physical_polygon in physical_polygons {
@@ -600,17 +622,19 @@ impl BspModelCompileContext {
             Ok((front_volume, back_volume, split_polygon)) => {
                 // add split info
                 self.add_split(SplitInfo { split_polygon, id: split_id });
-        
+
+                // Recursively build polygon BSPs
                 let front_bsp = self.build_volume(front_volume, front_polygons);
                 let back_bsp = self.build_volume(back_volume, back_polygons);
-        
+
+                // Create new BSP
                 VolumeBsp::Node {
                     front: Some(Box::new(front_bsp)),
                     back: Some(Box::new(back_bsp)),
                     plane: splitter_plane,
                 }
             }
-            // Split failed
+            // Split failed by some unknown reasons
             Err(old_volume) => {
                 self.volumes.push(old_volume);
 
@@ -619,55 +643,41 @@ impl BspModelCompileContext {
         }
     }
 
-    /// Start volume building pass
+    /// Perform volume building pass
     pub fn start_build_volumes(&mut self, physical_polygons: Vec<DisplayPolygon>) {
 
-        // Calculate boundbox
-        self.bound_box = geom::BoundBox::for_points(physical_polygons
-            .iter()
-            .flat_map(|polygon| polygon
-                .polygon
-                .points
-                .iter()
-                .copied()
-            )
-        );
+        // Calculate display polygon set bound box and extend it a bit
+        self.bound_box = geom::BoundBox::for_points(physical_polygons.iter()
+            .flat_map(|polygon| polygon.polygon.points.iter().copied()))
+            .extend(Vec3f::broadcast(10.0));
 
-        // Slightly extend model boundbox
-        self.bound_box = self.bound_box.extend(Vec3f::new(1.0, 1.0, 1.0));
-
-        // calculate hull volume
-        let hull_volume = HullVolume::from_bound_box(
-            self.bound_box.extend(Vec3f::new(200.0, 200.0, 200.0))
-        );
-
-        // Build volumes
-        let volume_bsp = self.build_volume(hull_volume, physical_polygons);
-
-        // write volume BSP
-        self.volume_bsp = Some(Box::new(volume_bsp));
+        // Build BSP
+        self.volume_bsp = Some(Box::new(self.build_volume(
+            HullVolume::from_bound_box(self.bound_box),
+            physical_polygons
+        )));
     }
 
     /// Build resolve tasks
     /// (mapping between split id and sets of references (volume_id, volume_face_id))
-    fn build_resolve_tasks(&self) -> BTreeMap<SplitId, Vec<(usize, usize)>> {
+    fn build_resolve_tasks(&self) -> BTreeMap<SplitId, Vec<VolumeFaceId>> {
+
         // Construct initial structure
         let mut tasks = self.split_infos
             .iter()
             .map(|split_info| (split_info.id, Vec::new()))
-            .collect::<BTreeMap<SplitId, Vec<(usize, usize)>>>();
+            .collect::<BTreeMap<SplitId, Vec<VolumeFaceId>>>();
 
         // Fill volume arrays
         for (volume_index, volume) in self.volumes.iter().enumerate() {
-            'face_loop: for (hull_face_index, hull_face) in volume.faces.iter().enumerate() {
-                let Some(split_ref) = hull_face.split_reference else {
+            'face_loop: for (face_index, face) in volume.faces.iter().enumerate() {
+                let Some(split_ref) = face.split_reference else {
                     continue 'face_loop;
                 };
-                
-                tasks
-                    .get_mut(&split_ref.split_id)
+
+                tasks.get_mut(&split_ref.split_id)
                     .unwrap()
-                    .push((volume_index, hull_face_index));
+                    .push(VolumeFaceId::new(volume_index, face_index));
             }
         }
 
@@ -679,8 +689,9 @@ impl BspModelCompileContext {
     /// Tuple that contains front and back polygon sets
     fn build_task_polygon_sets(
         &self,
-        task: &[(usize, usize)]
+        task: &[VolumeFaceId]
     ) -> (Vec<SplitTaskPolygon>, Vec<SplitTaskPolygon>) {
+
         /// Polygon cutting descriptor
         pub struct CutInfo {
             /// Plane set
@@ -693,22 +704,11 @@ impl BspModelCompileContext {
         let cut_info_set = task
             .iter()
             .copied()
-            .flat_map(|(volume_index, face_index)| {
-                let volume = self.volumes.get(volume_index).unwrap();
-                let face = volume.faces.get(face_index).unwrap();
-
-                face.display_polygons.iter()
-            })
-            .filter_map(|physical_polygon| {
-                // Do not cut portals by transparent polygons
-                if physical_polygon.flags.check(super::SurfaceFlags::TRANSPARENT) {
-                    None
-                } else {
-                    Some(CutInfo {
-                        planes: physical_polygon.polygon.iter_edge_planes().collect(),
-                        bound_box: physical_polygon.polygon.build_bound_box(),
-                    })
-                }
+            .flat_map(|volume_face_id| self[volume_face_id].display_polygons.iter())
+            .filter(|pp| !pp.flags.check(super::SurfaceFlags::TRANSPARENT))
+            .map(|physical_polygon| CutInfo {
+                planes: physical_polygon.polygon.iter_edge_planes().collect(),
+                bound_box: physical_polygon.polygon.build_bound_box(),
             })
             .collect::<Vec<_>>();
 
@@ -718,15 +718,11 @@ impl BspModelCompileContext {
         // Back polygons to resolve
         let mut total_back_polygons = Vec::<SplitTaskPolygon>::new();
 
-        'task_loop: for (volume_index, face_index) in task.iter().copied() {
-            let volume = self.volumes.get(volume_index).unwrap();
-            let face = volume.faces.get(face_index).unwrap();
+        'task_loop: for vfi in task.iter().copied() {
+            let face = &self[vfi];
 
             // Build potential portal polygon set
-            let mut portal_polygons = vec![(
-                face.polygon.clone(),
-                face.polygon.build_bound_box())
-            ];
+            let mut portal_polygons = vec![(face.polygon.clone(), face.polygon.build_bound_box())];
 
             for cut_info in &cut_info_set {
                 let mut new_portal_polygons = Vec::new();
@@ -781,8 +777,7 @@ impl BspModelCompileContext {
             let split_task_iter = portal_polygons
                 .into_iter()
                 .map(|(polygon, polygon_bb)| SplitTaskPolygon {
-                    dst_volume_index: volume_index,
-                    dst_face_index: face_index,
+                    dst: vfi,
                     polygon,
                     polygon_bb,
                 });
@@ -851,22 +846,18 @@ impl BspModelCompileContext {
                     let portal_polygon_index = self.portal_polygons.len();
                     self.portal_polygons.push(portal);
 
-                    self
-                        .volumes[front_polygon.dst_volume_index]
-                        .faces[front_polygon.dst_face_index]
+                    self[front_polygon.dst]
                         .portal_polygons
                         .push(PortalPolygon {
-                            dst_volume_index: back_polygon.dst_volume_index,
+                            dst_volume_index: back_polygon.dst.volume as usize,
                             is_front: false,
                             polygon_set_index: portal_polygon_index,
                         });
 
-                    self
-                        .volumes[back_polygon.dst_volume_index]
-                        .faces[back_polygon.dst_face_index]
+                    self[back_polygon.dst]
                         .portal_polygons
                         .push(PortalPolygon {
-                            dst_volume_index: front_polygon.dst_volume_index,
+                            dst_volume_index: front_polygon.dst.volume as usize,
                             is_front: true,
                             polygon_set_index: portal_polygon_index,
                         })
@@ -1015,45 +1006,32 @@ impl BspModelCompileContext {
     }
 
     /// Build sets of potentially-visible volumes
-    fn build_volume_graph(&self) -> Vec<BTreeSet<usize>> {
-        // Indices of ALL volumes in graph
-        let mut total_volume_idx = BTreeSet::from_iter(0..self.volumes.len());
-        let mut total_conn_components = Vec::<BTreeSet<usize>>::new();
+    fn get_volume_connectivity_components(&self) -> Vec<HashSet<usize>> {
+        let mut total_volume_idx = HashSet::<usize>::from_iter(0..self.volumes.len());
+        let mut total_conn_components = Vec::<HashSet<usize>>::new();
 
-        while let Some(first_index) = total_volume_idx.first().copied() {
-            let mut conn_component = BTreeSet::<usize>::new();
-            let mut component_edge = BTreeSet::<usize>::new();
-            let mut new_component_edge = BTreeSet::<usize>::new();
+        while let Some(first_index) = total_volume_idx.iter().next().copied() {
+            let mut conn_component = HashSet::<usize>::new();
+            let mut component_edge = HashSet::<usize>::new();
+            let mut new_component_edge = HashSet::<usize>::new();
 
             component_edge.insert(first_index);
 
             while !component_edge.is_empty() {
-
-                for edge_elt_index in component_edge.iter().copied() {
-                    let volume = &self.volumes[edge_elt_index];
-
-                    let portal_idx_iter = volume
-                        .faces
-                        .iter()
-                        .flat_map(|face| face
+                let new_edge_iter = component_edge.iter()
+                    .flat_map(|ei| self.volumes[*ei].faces.iter()
+                        .flat_map(|f| f
                             .portal_polygons
                             .iter()
                             .map(|pp| pp.dst_volume_index)
-                        );
-
-                    for dst_index in portal_idx_iter {
-                        if conn_component.contains(&dst_index) {
-                            continue;
-                        }
-
-                        new_component_edge.insert(dst_index);
-                    }
-
-                    conn_component.insert(edge_elt_index);
-                }
+                        )
+                        .filter(|i| !conn_component.contains(&i))
+                    );
+                new_component_edge.clear();
+                new_component_edge.extend(new_edge_iter);
+                conn_component.extend(component_edge.iter());
 
                 std::mem::swap(&mut component_edge, &mut new_component_edge);
-                new_component_edge.clear();
             }
 
             // Remove current conn component elements from total index span
@@ -1068,12 +1046,73 @@ impl BspModelCompileContext {
         total_conn_components
     }
 
+    /// Get set of actually used brush faces
+    pub fn get_used_brush_faces(&self) -> HashSet<BrushFaceId> {
+        let mut result = HashSet::new();
+
+        let Some(root) = self.volume_bsp.as_ref() else {
+            return result;
+        };
+
+        let mut stack = vec![root.as_ref()];
+
+        while let Some(node) = stack.pop() {
+            match node {
+                VolumeBsp::Node { plane: _, front, back } => {
+                    if let Some(front) = front.as_ref() {
+                        stack.push(front.as_ref());
+                    }
+                    if let Some(back) = back.as_ref() {
+                        stack.push(back.as_ref());
+                    }
+                }
+                VolumeBsp::Leaf(vol) => {
+                    let bfii = self.volumes[*vol].faces.iter()
+                        .flat_map(|f| f.display_polygons.iter())
+                        .map(|dp| dp.brush_face_id);
+                    result.extend(bfii);
+                }
+            }
+        }
+
+        result
+    }
+
+    /// Find volume point belongs to
+    pub fn find_point_volume(&self, pt: Vec3f) -> Option<usize> {
+        let mut node = self.volume_bsp.as_ref()?.as_ref();
+
+        loop {
+            match node {
+                VolumeBsp::Node { plane, front, back } => {
+                    let next_node = match plane.get_point_relation(pt) {
+                        geom::PointRelation::Front | geom::PointRelation::OnPlane => front,
+                        geom::PointRelation::Back => back,
+                    };
+                    node = next_node.as_ref()?.as_ref();
+                }
+                VolumeBsp::Leaf(id) => return Some(*id),
+            }
+        }
+    }
+
+    /// Run invisible volume removal pass
     pub fn start_remove_invisible(&mut self, visible_from: &[Vec3f]) {
+
+
+        // let visible_volumes = visible_from.iter()
+        //     .filter_map(|p| self.find_point_volume(*p))
+        //     .collect::<HashSet::<_>>();
+        // let conn_components = self.get_volume_connectivity_components();
+        // let removed_index_set = conn_components.into_iter()
+        //     .filter(|cc| cc.is_disjoint(&visible_volumes))
+        //     .flat_map(|cc| cc.into_iter())
+        //     .collect();
+
         let removed_index_set = self
-            .build_volume_graph()
+            .get_volume_connectivity_components()
             .into_iter()
-            .filter(|volume_index_set| volume_index_set
-                .iter()
+            .filter(|cc| cc.iter()
                 .map(|index| &self.volumes[*index])
                 .all(|volume| visible_from
                     .iter()
@@ -1111,11 +1150,11 @@ pub struct CompileContext {
 
 impl CompileContext {
     // Build entity physical polygon set
-    pub fn build_entity_physical_polygons(&mut self, entity: &map::Entity) -> Vec<DisplayPolygon> {
+    pub fn build_entity_display_polygons(&mut self, entity: &map::Entity) -> Vec<DisplayPolygon> {
 
         let mut display_polygons = Vec::<DisplayPolygon>::new();
 
-        'brush_polygon_building: for brush in &entity.brushes {
+        'brush_polygon_building: for (brush_id, brush) in entity.brushes.iter().enumerate() {
             // Don't merge clip brushes into render BSP
             if brush.flags.check(map::BrushFlags::INVISIBLE) {
                 continue 'brush_polygon_building;
@@ -1139,7 +1178,7 @@ impl CompileContext {
                 })
                 .collect::<Vec<_>>();
     
-            for (f1, mtlid) in &planes {
+            for (face_id, (f1, mtlid)) in planes.iter().enumerate() {
 
                 // Disable invisible brush faces
                 if f1.flags.check(map::BrushFaceFlags::INVISIBLE) {
@@ -1205,6 +1244,10 @@ impl CompileContext {
                     flags: map_brush_face_flags(f1.flags),
                     u: f1.u,
                     v: f1.v,
+                    brush_face_id: BrushFaceId {
+                        brush: brush_id as u32,
+                        face: face_id as u32,
+                    }
                 };
 
                 // Insert reversed polygon for transparent surfaces
@@ -1377,26 +1420,30 @@ pub fn compile(map: &map::Map) -> Result<super::Map, Error> {
             .map(|n| n == "worldspawn")
             .unwrap_or(false);
 
-        let mut model_compile_context = BspModelCompileContext {
-            bound_box: geom::BoundBox::empty(),
-            portal_polygons: Vec::new(),
-            split_infos: Vec::new(),
-            volume_bsp: None,
-            volumes: Vec::new(),
-        };
+        let mut model_compile_context = BspModelCompileContext::default();
 
-        let physical_polygons = context.build_entity_physical_polygons(entity);
+        let display_polygons = context.build_entity_display_polygons(entity);
 
-        model_compile_context.start_build_volumes(physical_polygons);
-        model_compile_context.start_resolve_portals();
+        if is_worldspawn && !map_origins.is_empty() {
+            // let mut filtered_display_polygons = display_polygons.clone();
 
-        // Invisible removal pass is actual only for external volumes
-        if is_worldspawn {
-            if !map_origins.is_empty() {
-                model_compile_context.start_remove_invisible(&map_origins);
-            }
+            // Compile with initial polygon set
+            model_compile_context.start_build_volumes(display_polygons);
+            model_compile_context.start_resolve_portals();
+            model_compile_context.start_remove_invisible(&map_origins);
+
+            // Remove unused polygons from polygon set
+            // let used_brush_faces = model_compile_context.get_used_brush_faces();
+            // filtered_display_polygons.retain(|dp| used_brush_faces.contains(&dp.brush_face_id));
+
+            // Recompile with stripped set
+            // model_compile_context = BspModelCompileContext::default();
+            // model_compile_context.start_build_volumes(filtered_display_polygons);
+            // model_compile_context.start_resolve_portals();
+            // model_compile_context.start_remove_invisible(&map_origins);
         } else {
-            // TODO (?): Remove non-external (e.g. unreachable) volumes in non-worldspawn entities
+            model_compile_context.start_build_volumes(display_polygons);
+            model_compile_context.start_resolve_portals();
         }
 
         let index = context.add_model(model_compile_context);

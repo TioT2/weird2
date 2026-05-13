@@ -1547,7 +1547,7 @@ fn init_render_thread(
 
 fn main() {
     // Enable/disable map caching
-    let do_enable_map_caching = true;
+    let do_enable_map_caching = false;
 
     // Synchronize visible-set-building and projection cameras
     let mut shadow_camera: Option<camera::Camera> = None;
@@ -1559,7 +1559,7 @@ fn main() {
     let map = {
         // yay, this code will not work on non-local builds)))
         // --
-        let (map_name, map_src_format) = ("quake/e1m1", "map");
+        let (map_name, map_src_format) = ("quake/e1m5", "map");
         // let (map_name, map_src_format) = ("d1_trainstation_01", "vmf");
         let data_path = ".local/";
 
@@ -1665,8 +1665,8 @@ fn main() {
     }
 
     let material_table = {
-        // let mut wad_file = std::fs::File::open(".local/quake/gfx/medieval.wad").unwrap();
-        let mut wad_file = std::fs::File::open(".local/quake/gfx/base.wad").unwrap();
+        let mut wad_file = std::fs::File::open(".local/quake/gfx/medieval.wad").unwrap();
+        // let mut wad_file = std::fs::File::open(".local/quake/gfx/base.wad").unwrap();
         let mut wad_file_data = Vec::new();
         wad_file.read_to_end(&mut wad_file_data).unwrap();
 

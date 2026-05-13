@@ -261,6 +261,14 @@ pub struct Map {
     world_model_id: BspModelId,
 }
 
+impl std::ops::Index<VolumeId> for Map {
+    type Output = Volume;
+
+    fn index(&self, id: VolumeId) -> &Volume {
+        self.get_volume(id).unwrap()
+    }
+}
+
 impl Map {
     /// Get volume by id
     pub fn get_volume(&self, id: VolumeId) -> Option<&Volume> {

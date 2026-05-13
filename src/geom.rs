@@ -436,12 +436,19 @@ impl Polygon {
         self.points.reverse();
     }
 
+    /// Negate orientation of the polygon
+    pub fn negated_orientation(mut self) -> Self {
+        self.negate_orientation();
+        self
+    }
+
     /// Build polygon bounding box
     pub fn build_bound_box(&self) -> BoundBox {
         BoundBox::for_points(self.points.iter().copied())
     }
 
-    /// Iterator on planes that are parallel to polygon normal and contain corresponding edges
+    /// Iterator on planes that are parallel to polygon normal and contain corresponding edges.
+    /// Plane normals directed out of polygon.
     pub fn iter_edge_planes<'t>(&'t self) -> impl Iterator<Item = Plane> + 't {
         (0..self.points.len())
             .map(|index| {

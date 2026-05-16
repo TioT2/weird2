@@ -66,6 +66,9 @@ pub struct DisplayPolygon {
 
     /// Identifier of polygon source brush face
     pub brush_face_id: BrushFaceId,
+
+    /// True if polygon is optimized out during unused volume removal pass
+    pub is_optimized_out: bool,
 }
 
 /// Reference to another volume
@@ -139,10 +142,9 @@ pub enum VolumeBsp {
     Leaf(usize),
 }
 
-/// Statistics about volume split, used during splitter selection process to
-/// find best fitting splitter
+/// Statistics for splitter
 #[derive(Copy, Clone, Default)]
-pub struct VolumeSplitStat {
+pub struct SplitStat {
     /// Count of polygons in front of splitter plane
     pub front: u32,
 
@@ -152,10 +154,34 @@ pub struct VolumeSplitStat {
     /// Count of splits occured
     pub split: u32,
 
-    // Indicent faces aren't accounted, because it's assumed that all possible splitter planes
-    // are located IN volume user is getting statistics for.
+    /// Count of incident polygons
+    pub incident: u32,
+}
 
-    // pub indicent: u32,
+impl SplitStat {
+    /// Add new polygon relation to volume split stat
+    pub fn add_polygon_rel(self, rel: geom::PolygonRelation) -> Self {
+        match rel {
+            geom::PolygonRelation::Front => Self {
+                front: self.front + 1,
+                ..self
+            },
+            geom::PolygonRelation::Back => Self {
+                back: self.back + 1,
+                ..self
+            },
+            geom::PolygonRelation::Intersects => Self {
+                front: self.front + 1,
+                back: self.back + 1,
+                split: self.split + 1,
+                ..self
+            },
+            geom::PolygonRelation::Coplanar => Self {
+                incident: self.incident + 1,
+                ..self
+            }
+        }
+    }
 }
 
 /// Map brush face flags into surface flags
@@ -217,35 +243,14 @@ impl HullVolume {
     }
 
     /// Calculate statistics about splitting display polygons by plane
-    pub fn get_split_stat(&self, plane: geom::Plane) -> VolumeSplitStat {
-        self.faces
-            .iter()
+    pub fn get_split_stat(&self, plane: geom::Plane) -> SplitStat {
+        self.faces.iter()
             .flat_map(|polygon| std::iter::once(&polygon.polygon)
-                .chain(polygon.display_polygons
-                    .iter()
+                .chain(polygon.display_polygons.iter()
+                    .filter(|p| !p.is_optimized_out)
                     .map(|p| &p.polygon)))
-            .fold(VolumeSplitStat::default(), |stat, polygon| match plane.get_polygon_relation(polygon) {
-                geom::PolygonRelation::Front => VolumeSplitStat {
-                    front: stat.front + 1,
-                    ..stat
-                },
-                geom::PolygonRelation::Back => VolumeSplitStat {
-                    back: stat.back + 1,
-                    ..stat
-                },
-                geom::PolygonRelation::Intersects => VolumeSplitStat {
-                    front: stat.front + 1,
-                    back: stat.back + 1,
-                    split: stat.split + 1,
-                },
-                geom::PolygonRelation::Coplanar => {
-                    // It's technically **should not** be reached,
-                    // but I don't want to have a panic here...
-                    eprintln!("Potential splitter plane is incident to face of volume it holds.");
-
-                    stat
-                }
-            })
+            .map(|polygon| plane.get_polygon_relation(polygon))
+            .fold(SplitStat::default(), SplitStat::add_polygon_rel)
     }
 
     /// Get intersection polygon of current volume and plane
@@ -466,16 +471,16 @@ impl BspModelCompileContext {
         self.split_infos.push(info);
     }
 
-    fn build_volume(&mut self, volume: HullVolume, physical_polygons: Vec<DisplayPolygon>) -> VolumeBsp {
+    fn build_volume(&mut self, volume: HullVolume, display_polygons: Vec<DisplayPolygon>) -> VolumeBsp {
 
         // final polygon, insert hull in volume set and finish
-        if physical_polygons.is_empty() {
+        if display_polygons.is_empty() {
             self.volumes.push(volume);
             return VolumeBsp::Leaf(self.volumes.len() - 1);
         }
 
         // Just for safety #N+1
-        for physical_polygon in &physical_polygons {
+        for physical_polygon in &display_polygons {
             for point in &physical_polygon.polygon.points {
                 if !self.bound_box.contains_point(point) {
                     eprintln!("Boundbox somehow does not contain point");
@@ -488,54 +493,34 @@ impl BspModelCompileContext {
         let mut best_splitter_index: Option<usize> = None; // use polygon 0 as splitter by default
 
         // iterate through all polygons and try to find best one
-        'splitter_search_loop: for (physical_polygon_index, physical_polygon) in physical_polygons.iter().enumerate() {
-            let mut current_front: u32 = 0;
-            let mut current_back: u32 = 0;
-            let mut current_on: u32 = 0;
-            let mut current_split: u32 = 0;
+        for (split_polygon_i, split_polygon) in display_polygons.iter().enumerate() {
+            let mut split_stat = SplitStat::default();
 
             // collect physical polygon statistics
-            for second_physical_polygon in physical_polygons.iter() {
-                if std::ptr::eq(physical_polygon, second_physical_polygon) {
+            for (polygon_i, polygon) in display_polygons.iter().enumerate() {
+                if polygon.is_optimized_out || polygon_i == split_polygon_i {
                     continue;
                 }
 
-                let relation = physical_polygon.polygon.plane
-                    .get_polygon_relation(&second_physical_polygon.polygon);
-
-                match relation {
-                    geom::PolygonRelation::Front => current_front += 1,
-                    geom::PolygonRelation::Coplanar => current_on += 1,
-                    geom::PolygonRelation::Back => current_back += 1,
-                    geom::PolygonRelation::Intersects => {
-                        current_front += 1;
-                        current_back += 1;
-                        current_split += 1;
-                    }
-                }
+                let relation = split_polygon.polygon.plane.get_polygon_relation(&polygon.polygon);
+                split_stat = split_stat.add_polygon_rel(relation);
             }
 
-            let volume_split_stat = volume.get_split_stat(physical_polygon.polygon.plane);
-
-            if volume_split_stat.front == 0 || volume_split_stat.back == 0 {
-                continue 'splitter_search_loop;
-            }
-
+            let volume_split_stat = volume.get_split_stat(split_polygon.polygon.plane);
             let volume_polygon_rate = volume_split_stat.front
                 .abs_diff(volume_split_stat.back) as f32
                 + volume_split_stat.split as f32;
 
             // -- kind of heuristics
             let splitter_rate = 0.0
-                + current_back.abs_diff(current_front) as f32 * 2.0
-                + current_split as f32 * 4.0
-                - current_on as f32 * 4.0
-                + volume_polygon_rate * 0.125
-            ;
+                + split_stat.back.abs_diff(split_stat.front) as f32 * 2.0
+                + split_stat.split as f32 * 4.0
+                - split_stat.incident as f32 * 4.0
+                + volume_polygon_rate * 0.125;
 
             if splitter_rate < best_splitter_rate {
                 best_splitter_rate = splitter_rate;
-                best_splitter_index = Some(physical_polygon_index);
+                best_splitter_index = Some(split_polygon_i);
             }
         }
         
@@ -546,12 +531,11 @@ impl BspModelCompileContext {
         };
 
         // use splitter to...split!
-        let splitter_plane = physical_polygons
+        let splitter_plane = display_polygons
             .get(best_splitter_index)
             .unwrap()
             .polygon
-            .plane
-        ;
+            .plane;
 
         let mut front_polygons: Vec<DisplayPolygon> = Vec::new();
         let mut front_incident_polygons: Vec<DisplayPolygon> = Vec::new();
@@ -560,7 +544,7 @@ impl BspModelCompileContext {
         let mut back_incident_polygons: Vec<DisplayPolygon> = Vec::new();
 
         // classify all polygons to 4 types
-        for physical_polygon in physical_polygons {
+        for physical_polygon in display_polygons {
             match splitter_plane.split_polygon(&physical_polygon.polygon) {
                 // to front
                 geom::PolygonSplitResult::Front => front_polygons.push(physical_polygon),
@@ -763,7 +747,7 @@ impl BspModelCompileContext {
             for (face_index, face) in volume.faces.iter().enumerate() {
                 if let Some(split_ref) = face.split_reference {
                     resolve_tasks.entry(split_ref.split_id)
-                        .or_insert(Vec::new())
+                        .or_default()
                         .push(VolumeFaceId::new(volume_index, face_index));
                 }
             }
@@ -997,7 +981,7 @@ impl BspModelCompileContext {
                             .iter()
                             .map(|pp| pp.dst_volume_index)
                         )
-                        .filter(|i| !conn_component.contains(&i))
+                        .filter(|i| !conn_component.contains(i))
                     );
                 new_component_edge.clear();
                 new_component_edge.extend(new_edge_iter);
@@ -1208,7 +1192,8 @@ impl CompileContext {
                     brush_face_id: BrushFaceId {
                         brush: brush_id as u32,
                         face: f1_ind as u32,
-                    }
+                    },
+                    is_optimized_out: false,
                 };
 
                 // Insert reversed polygon for transparent surfaces
@@ -1386,22 +1371,24 @@ pub fn compile(map: &map::Map) -> Result<super::Map, Error> {
         let display_polygons = context.build_entity_display_polygons(entity);
 
         if is_worldspawn && !map_origins.is_empty() {
-            // let mut filtered_display_polygons = display_polygons.clone();
+            let mut marked_display_polygons = display_polygons.clone();
 
             // Compile with initial polygon set
             model_compile_context.start_build_volumes(display_polygons);
             model_compile_context.start_resolve_portals();
             model_compile_context.start_remove_invisible(&map_origins);
 
-            // Remove unused polygons from polygon set
-            // let used_brush_faces = model_compile_context.get_used_brush_faces();
-            // filtered_display_polygons.retain(|dp| used_brush_faces.contains(&dp.brush_face_id));
+            // Mark optimized out polygons
+            let used_brush_faces = model_compile_context.get_used_brush_faces();
+            for dp in marked_display_polygons.iter_mut() {
+                dp.is_optimized_out = !used_brush_faces.contains(&dp.brush_face_id);
+            }
 
-            // Recompile with stripped set
-            // model_compile_context = BspModelCompileContext::default();
-            // model_compile_context.start_build_volumes(filtered_display_polygons);
-            // model_compile_context.start_resolve_portals();
-            // model_compile_context.start_remove_invisible(&map_origins);
+            // Compile again disabling unused polygon statistics
+            model_compile_context = BspModelCompileContext::default();
+            model_compile_context.start_build_volumes(marked_display_polygons);
+            model_compile_context.start_resolve_portals();
+            model_compile_context.start_remove_invisible(&map_origins);
         } else {
             model_compile_context.start_build_volumes(display_polygons);
             model_compile_context.start_resolve_portals();

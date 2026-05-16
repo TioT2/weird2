@@ -1516,13 +1516,16 @@ fn main() {
     // Enable rendering with synchronization after some portion of frame pixels renderend
     let mut rasterization_mode = RasterizationMode::Full;
 
+    let data_path = ".local/";
+    let (map_name, map_src_format, wad_name) =
+        // ("d1_trainstation_01", "vmf", "base");
+        ("quake/e1m1", "map", "quake/gfx/base.wad");
+        // ("quake/e1m5", "map", "quake/gfx/medieval.wad");
+
     // Load map
     let map = {
         // yay, this code will not work on non-local builds)))
         // --
-        let (map_name, map_src_format) = ("quake/e1m1", "map");
-        // let (map_name, map_src_format) = ("d1_trainstation_01", "vmf");
-        let data_path = ".local/";
 
         let wbsp_path = format!("{}wbsp/{}.wbsp", data_path, map_name);
         let map_src_path = format!("{}{}.{}", data_path, map_name, map_src_format);
@@ -1630,12 +1633,11 @@ fn main() {
     }
 
     let material_table = {
-        // let mut wad_file = std::fs::File::open(".local/quake/gfx/medieval.wad").unwrap();
-        let mut wad_file = std::fs::File::open(".local/quake/gfx/base.wad").unwrap();
-        let mut wad_file_data = Vec::new();
-        wad_file.read_to_end(&mut wad_file_data).unwrap();
+        let mut wp = std::path::PathBuf::new();
+        wp.push(data_path);
+        wp.push(wad_name);
 
-        res::MaterialTable::load_wad2(&wad_file_data).unwrap()
+        res::MaterialTable::load_wad2(&std::fs::read(&wp).unwrap()).unwrap()
     };
     let material_table = Arc::new(material_table);
 

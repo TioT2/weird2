@@ -301,14 +301,14 @@ pub type Mat4f = Mat4<f32>;
 impl<T: Copy + Mul<T, Output = T> + Add<T, Output = T> + Sub<T, Output = T>> Mat3<T> {
     /// Calculate generic NxN matrix determinant
     pub fn determinant(&self) -> T {
-        let [[e00, e10, e20], [e01, e11, e21], [e02, e12, e22]] = self.data.clone();
+        let [[e00, e10, e20], [e01, e11, e21], [e02, e12, e22]] = self.data;
           e00 * e11 * e22 + e01 * e12 * e20 + e02 * e10 * e21 - e10 * e01 * e22 - e02 * e11 * e20 - e12 * e21 * e00
     }
 }
 
 impl<T: Copy + Neg<Output = T> + Mul<T, Output = T> + Add<T, Output = T> + Sub<T, Output = T> + Div<T, Output = T>> Mat3<T> {
     fn inverse_impl(&self, det: T) -> Mat3<T> {
-        let [[e00, e10, e20], [e01, e11, e21], [e02, e12, e22]] = self.data.clone();
+        let [[e00, e10, e20], [e01, e11, e21], [e02, e12, e22]] = self.data;
         Self {
             data: [
                 [
@@ -393,65 +393,30 @@ impl Mul<Mat4<f32>> for Mat4<f32> {
 
 /// Pack of operators definition module
 impl Mat4<f32> {
-    /// Determinant getting function
-    /// * Returns determinant of this matrix
+    /// Calculate matrix minor determinant
+    pub const fn minor_det<const I: usize, const J: usize>(&self) -> f32 {
+        // Indexing macro
+        macro_rules! ind {
+            ($i: expr, $j: expr) => {
+                self.data[$i + ($i >= I) as usize][$j + ($j >= J) as usize]
+            };
+        }
+
+        ind!(0, 0) * ind!(1, 1) * ind!(2, 2) + ind!(0, 1) * ind!(1, 2) * ind!(2, 0) + ind!(0, 2) * ind!(1, 0) * ind!(2, 1)
+            - ind!(0, 0) * ind!(1, 2) * ind!(2, 1) - ind!(0, 1) * ind!(1, 0) * ind!(2, 2) - ind!(0, 2) * ind!(1, 1) * ind!(2, 0)
+    }
+
+    /// Calculate matrix determinant
     pub fn determinant(&self) -> f32 {
         0.0
-            + self.data[0][0]
-                * (self.data[1][1] * self.data[2][2] * self.data[3][3]
-                    + self.data[1][2] * self.data[2][3] * self.data[3][1]
-                    + self.data[1][3] * self.data[2][1] * self.data[3][2]
-                    - self.data[1][1] * self.data[2][3] * self.data[3][2]
-                    - self.data[1][2] * self.data[2][1] * self.data[3][3]
-                    - self.data[1][3] * self.data[2][2] * self.data[3][1])
-            - self.data[0][1]
-                * (self.data[0][1] * self.data[2][2] * self.data[3][3]
-                    + self.data[0][2] * self.data[2][3] * self.data[3][1]
-                    + self.data[0][3] * self.data[2][1] * self.data[3][2]
-                    - self.data[0][1] * self.data[2][3] * self.data[3][2]
-                    - self.data[0][2] * self.data[2][1] * self.data[3][3]
-                    - self.data[0][3] * self.data[2][2] * self.data[3][1])
-            + self.data[0][2]
-                * (self.data[0][1] * self.data[1][2] * self.data[3][3]
-                    + self.data[0][2] * self.data[1][3] * self.data[3][1]
-                    + self.data[0][3] * self.data[1][1] * self.data[3][2]
-                    - self.data[0][1] * self.data[1][3] * self.data[3][2]
-                    - self.data[0][2] * self.data[1][1] * self.data[3][3]
-                    - self.data[0][3] * self.data[1][2] * self.data[3][1])
-            - self.data[0][3]
-                * (self.data[0][1] * self.data[1][2] * self.data[2][3]
-                    + self.data[0][2] * self.data[1][3] * self.data[2][1]
-                    + self.data[0][3] * self.data[1][1] * self.data[2][2]
-                    - self.data[0][1] * self.data[1][3] * self.data[2][2]
-                    - self.data[0][2] * self.data[1][1] * self.data[2][3]
-                    - self.data[0][3] * self.data[1][2] * self.data[2][1])
-    } // fn determinant
+            + self.data[0][0] * self.minor_det::<0, 0>()
+            - self.data[0][1] * self.minor_det::<0, 1>()
+            + self.data[0][2] * self.minor_det::<0, 2>()
+            - self.data[0][3] * self.minor_det::<0, 3>()
+    }
 
-    /// Matrix inversion getting function
-    /// * Returns this matrix inersed
+    /// Calculate inverse matrix
     pub fn inversed(&self) -> Self {
-        // // Minor DETerminant
-        // macro_rules! mdet {
-        //     ($i0: expr, $j0: expr) => {
-        //         {
-        //             macro_rules! iskip {
-        //                 ($v: expr, $sk: expr) => {
-        //                     ($v - ($v >= $sk) as usize)
-        //                 };
-        //             }
-
-        //             macro_rules! ind {
-        //                 ($i: expr, $j: expr) => {
-        //                     self.data[iskip!($i, $i0)][iskip!($j, $j0)]
-        //                 };
-        //             }
-
-        //             ind!(0, 0) * ind!(1, 1) * ind!(2, 2) + ind!(0, 1) * ind!(1, 2) * ind!(2, 0) + ind!(0, 2) * ind!(1, 0) * ind!(2, 1)
-        //                 - ind!(0, 0) * ind!(1, 2) * ind!(2, 1) - ind!(0, 1) * ind!(1, 0) * ind!(2, 2) - ind!(0, 2) * ind!(1, 1) * ind!(2, 0)
-        //         }
-        //     };
-        // }
-
         let determ_00 = self.data[1][1] * self.data[2][2] * self.data[3][3]
             + self.data[1][2] * self.data[2][3] * self.data[3][1]
             + self.data[1][3] * self.data[2][1] * self.data[3][2]

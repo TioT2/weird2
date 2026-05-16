@@ -3,7 +3,7 @@
 use crate::frame_slice::FrameSliceMut;
 
 /// System font data (256 8x8 1bit images)
-const FONT: [u64; 256] = [
+const FONT: &[u64; 256] = &[
     0x0000000000000000, 0x7E81A581BD99817E, 0x7EFFDBFFC3E7FF7E, 0x6CFEFEFE7C381000,
     0x10387CFE7C381000, 0x387C38FEFED61038, 0x10387CFEFE7C1038, 0x0000183C3C180000,
     0xFFFFE7C3C3E7FFFF, 0x003C664242663C00, 0xFFC399BDBD99C3FF, 0x0F070F7DCCCCCC78,
@@ -72,44 +72,88 @@ const FONT: [u64; 256] = [
 const FONT_WIDTH: usize = 8;
 const FONT_HEIGHT: usize = 8;
 
-/// Frame structure
-pub struct Frame<'t>(FrameSliceMut<'t, u32>);
+/// Structure that writes to frame
+pub struct FrameWriter<'t> {
+    /// Frame slice
+    fs: FrameSliceMut<'t, u32>,
 
-impl<'t> Frame<'t> {
-    /// Write character
-    fn write_ch(&mut self, x0: usize, y0: usize, utf_ch: char) {
-        let img = FONT.get(utf_ch as usize).copied().unwrap_or(FONT[1]);
+    /// X coordinate
+    x: usize,
 
-        for y in y0..y0 + FONT_HEIGHT {
-            for x in x0..x0 + FONT_WIDTH {
-                if (img >> ((7 + y0 - y) * FONT_WIDTH + (7 + x0 - x))) & 1 == 1
-                    && let Some(ptr) = self.0.get2_mut(y, x) {
+    /// Y coordinate
+    y: usize,
+}
+
+impl<'t> FrameWriter<'t> {
+    pub fn new(fs: FrameSliceMut<'t, u32>) -> Self {
+        Self {
+            fs,
+            x: 0,
+            y: 0,
+        }
+    }
+
+    pub fn jump(&mut self, x: usize, y: usize) {
+        self.x = x;
+        self.y = y;
+    }
+
+    fn print_char(&mut self, ch: char) {
+        let img = FONT.get(ch as usize).copied().unwrap_or(FONT[1]);
+
+        for y in self.y..self.y + FONT_HEIGHT {
+            for x in self.x..self.x + FONT_WIDTH {
+                if (img >> ((7 + self.y - y) * FONT_WIDTH + (7 + self.x - x))) & 1 == 1
+                    && let Some(ptr) = self.fs.get2_mut(y, x) {
                     *ptr = !*ptr;
                 }
             }
         }
     }
 
-    fn write_str(&mut self, x: usize, y: usize, str: &str) {
-        for (index, ch) in str.chars().enumerate() {
-            self.write_ch(x + index * FONT_WIDTH, y, ch);
+    /// Write single character
+    pub fn write_char(&mut self, ch: char) {
+        match ch {
+            '\n' => {
+                self.x = 0;
+                self.y += FONT_HEIGHT;
+            }
+            '\r' => {
+                self.x = 0;
+            }
+            '\t' => {
+                self.x += (8 - (self.x / FONT_WIDTH) % 8) * FONT_WIDTH;
+            }
+            _ => {
+                self.print_char(ch);
+                self.x += FONT_WIDTH;
+            }
         }
     }
 
-    /// Write string (note: non-ASCII characters are replaced with special character)
-    pub fn str(&mut self, x: usize, y: usize, str: &str) -> &mut Self {
-        self.write_str(x, y, str);
-        self
-    }
-
     /// Write single character
-    pub fn char(&mut self, x: usize, y: usize, ch: char) -> &mut Self {
-        self.write_ch(x, y, ch);
-        self
+    pub fn write_str(&mut self, str: &str) {
+        for ch in str.chars() {
+            self.write_char(ch);
+        }
     }
 }
 
-/// Write with system font to `fs` frame slice
-pub fn write<'t>(fs: FrameSliceMut<'t, u32>) -> Frame<'t> {
-    Frame(fs)
+impl<'t> std::io::Write for FrameWriter<'t> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        for ch in buf {
+            self.write_char(*ch as char);
+        }
+
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Create system font writer for frame slice
+pub fn writer<'t>(fs: FrameSliceMut<'t, u32>) -> FrameWriter<'t> {
+    FrameWriter::new(fs)
 }

@@ -12,6 +12,8 @@ Compilation:
 */
 
 use std::collections::{HashMap, HashSet};
+use thiserror::Error;
+
 use crate::{geom, map, math::{Mat3f, Vec3f}};
 
 use super::Id;
@@ -1333,9 +1335,10 @@ impl CompileContext {
 }
 
 /// BSP compilation error
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub enum Error {
     /// Cannot determine worldpawn entity
+    #[error("Cannot compile map without worldspawn")]
     NoWorldspawn,
 }
 

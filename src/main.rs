@@ -8,7 +8,7 @@
 // WRES - Resource format, contains textures/sounds/models/etc.
 // WDAT - Data format, contains 'final' project with BSP's.
 
-use std::{collections::{HashMap, HashSet}, io::Read, sync::{Arc, mpsc}};
+use std::{collections::{HashMap, HashSet}, io::{Read, Write}, sync::{Arc, mpsc}};
 use zerocopy::IntoBytes;
 
 use crate::{
@@ -1506,7 +1506,7 @@ fn init_render_thread(
     (render_in_sender, render_out_reciever)
 }
 
-fn main() {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Enable/disable map caching
     let do_enable_map_caching = true;
 
@@ -1787,17 +1787,15 @@ fn main() {
                     || hdr_to_ldr(&rendered_hdr_buffer, &mut ldr_frame_buffer, true)
                 ).1;
 
-                // Render statistics
                 let mut ldr_frame = FrameSliceMut::new(width as usize, height as usize, stride as usize, &mut ldr_frame_buffer);
-                system_font::write(ldr_frame.reborrow())
-                    .str(16, 8, &format!("FPS: {} ({}ms)", timer.get_fps(), 1000.0 / timer.get_fps()))
-                    .str(16, 16, &format!("SC={}, RM={}",
-                        shadow_camera.is_some() as u32,
-                        rasterization_mode as u32
-                    ))
-                    .str(16, 24, &format!("TM: {}ms", tm_time))
-                    .str(16, 32, &format!("RES: {}x{}", width, height))
-                    ;
+
+                // Display statistics
+                let mut fw = system_font::writer(ldr_frame.reborrow());
+                writeln!(fw)?;
+                writeln!(fw, " FPS: {} ({}ms)", timer.get_fps(), 1000.0 / timer.get_fps())?;
+                writeln!(fw, " SC={}, RM={}", shadow_camera.is_some() as u32, rasterization_mode as u32)?;
+                writeln!(fw, " TM: {}ms", tm_time)?;
+                writeln!(fw, " RES: {}x{}", width, height)?;
 
                 // Present rendered frame
                 match window.surface(&event_pump) {
@@ -1812,4 +1810,6 @@ fn main() {
 
         hdr_frame_buffer = prev_hdr_frame_buffer.unwrap_or(Vec::new());
     }
+
+    Ok(())
 }

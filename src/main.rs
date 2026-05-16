@@ -12,7 +12,7 @@ use std::{collections::{HashMap, HashSet}, io::Read, sync::{Arc, mpsc}};
 use zerocopy::IntoBytes;
 
 use crate::{
-    bsp::Id, frame_slice::{FrameSlice, FrameSliceMut}, math::{FVec4, Mat4f, Vec2, Vec2f, Vec3f}
+    bsp::Id, frame_slice::{FrameSlice, FrameSliceMut}, math::{Vec4f, Mat4f, Vec2, Vec2f, Vec3f}
 };
 
 pub mod math;
@@ -111,8 +111,8 @@ pub struct Vertex {
 
 impl Vertex {
     /// Get vertex XZUV (used during rasterization process)
-    pub fn xzuv(self) -> math::FVec4 {
-        math::FVec4::new(
+    pub fn xzuv(self) -> math::Vec4f {
+        math::Vec4f::new(
             self.position.x(),
             self.position.z(),
             self.tex_coord.x(),
@@ -163,45 +163,6 @@ impl std::ops::Mul<Self> for Vertex {
     }
 }
 
-/// Clip type-generic polygon by some linear vertex norm function
-/// # Note
-/// `cmp` must be ordering function, `norm` must be linear in respect of `V` operators
-fn clip_polygon<V>(
-    points: &mut Vec<V>,
-    temp: &mut Vec<V>,
-    value: f32,
-    cmp: impl Fn(f32, f32) -> bool,
-    norm: impl Fn(V) -> f32,
-) -> bool
-where
-    V: Copy
-        + std::ops::Add<V, Output = V>
-        + std::ops::Sub<V, Output = V>
-        + std::ops::Mul<V, Output = V>
-        + From<f32>
-{
-    temp.clear();
-    for index in 0..points.len() {
-        let curr = points[index];
-        let next = points[(index + 1) % points.len()];
-
-        if cmp(norm(curr), value) {
-            temp.push(curr);
-
-            if cmp(value, norm(next)) {
-                let t = (value - norm(curr)) / (norm(next) - norm(curr));
-                temp.push((next - curr) * V::from(t) + curr);
-           }
-        } else if cmp(norm(next), value) {
-            let t = (value - norm(curr)) / (norm(next) - norm(curr));
-            temp.push((next - curr) * V::from(t) + curr);
-        }
-    }
-    std::mem::swap(points, temp);
-
-    points.len() >= 3
-}
-
 /// Clip polygon by octagon
 /// # Return
 /// True if there are points rest
@@ -222,14 +183,14 @@ fn clip_polygon_oct(
 
     // Utilize '&&' hands calculation rules to stop clipping if there's <= 3 points
     
-           clip_polygon(vertices, temp, clip_oct.min.x(), ge, norm_x)
-        && clip_polygon(vertices, temp, clip_oct.max.x(), le, norm_x)
-        && clip_polygon(vertices, temp, clip_oct.min.y(), ge, norm_y)
-        && clip_polygon(vertices, temp, clip_oct.max.y(), le, norm_y)
-        && clip_polygon(vertices, temp, clip_oct.min.z(), ge, norm_y_s_x)
-        && clip_polygon(vertices, temp, clip_oct.max.z(), le, norm_y_s_x)
-        && clip_polygon(vertices, temp, clip_oct.min.w(), ge, norm_y_a_x)
-        && clip_polygon(vertices, temp, clip_oct.max.w(), le, norm_y_a_x)
+           geom::clip_polygon(vertices, temp, clip_oct.min.x(), ge, norm_x)
+        && geom::clip_polygon(vertices, temp, clip_oct.max.x(), le, norm_x)
+        && geom::clip_polygon(vertices, temp, clip_oct.min.y(), ge, norm_y)
+        && geom::clip_polygon(vertices, temp, clip_oct.max.y(), le, norm_y)
+        && geom::clip_polygon(vertices, temp, clip_oct.min.z(), ge, norm_y_s_x)
+        && geom::clip_polygon(vertices, temp, clip_oct.max.z(), le, norm_y_s_x)
+        && geom::clip_polygon(vertices, temp, clip_oct.min.w(), ge, norm_y_a_x)
+        && geom::clip_polygon(vertices, temp, clip_oct.max.w(), le, norm_y_a_x)
 }
 
 /// Camera that (additionally) holds info about projection and frame size
@@ -256,12 +217,12 @@ impl RenderCamera {
     ) {
         point_dst.clear();
         for point in points.iter() {
-            point_dst.push(self.view_projection.transform_point(*point));
+            point_dst.push(self.view_projection.transform_hom(*point));
         }
         std::mem::swap(points, point_dst);
 
         // Clip polygon by z=1
-        clip_polygon(points, point_dst, 1.0, |l, r| l > r, |p| p.z());
+        geom::clip_polygon(points, point_dst, 1.0, |l, r| l > r, |p| p.z());
 
         point_dst.clear();
         for pt in points.iter() {
@@ -297,7 +258,7 @@ impl RenderCamera {
 
             point_dst.push(Vertex {
                 // Vector-only transform is used here to don't add camera location back.
-                position: self.view_projection.transform_vector(Vec3f::new(u, v, s_dist)),
+                position: self.view_projection.transform_aff(Vec3f::new(u, v, s_dist)),
                 tex_coord: Vec2f::new(u, v) + uv_offset,
             });
         }
@@ -314,7 +275,7 @@ impl RenderCamera {
         point_dst.clear();
         for point in polygon.points.iter() {
             point_dst.push(Vertex {
-                position: self.view_projection.transform_point(*point),
+                position: self.view_projection.transform_hom(*point),
                 tex_coord: Vec2f::new(u.get_signed_distance(*point), v.get_signed_distance(*point)),
             });
         }
@@ -369,7 +330,7 @@ struct RenderContext<'t, 'ref_table> {
 
 impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
     /// Call pixel_fn for all polygon pixels
-    fn render_clipped_polygon_impl<PixelFn: FnMut(&mut u64, FVec4)>(
+    fn render_clipped_polygon_impl<PixelFn: FnMut(&mut u64, Vec4f)>(
         &mut self,
         vertices: &[Vertex],
         mut pixel_fn: PixelFn
@@ -408,11 +369,11 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
         #[derive(Copy, Clone, Default)]
         struct LineContext {
             index: usize,
-            prev_xzuv: math::FVec4,
-            curr_xzuv: math::FVec4,
+            prev_xzuv: math::Vec4f,
+            curr_xzuv: math::Vec4f,
             prev_y: f32,
             curr_y: f32,
-            d_xzuv: math::FVec4,
+            d_xzuv: math::Vec4f,
         }
 
         impl LineContext {
@@ -433,7 +394,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
 
                 // Check if edge is flat
                 self.d_xzuv = if dy <= DY_EPSILON {
-                    math::FVec4::zero()
+                    math::Vec4f::zero()
                 } else {
                     (self.curr_xzuv - self.prev_xzuv) / dy.into()
                 };
@@ -470,15 +431,15 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                 right.next_point::<false>(vertices);
             }
 
-            let left_xzuv = math::FVec4::mul_add(
+            let left_xzuv = math::Vec4f::mul_add(
                 left.d_xzuv,
-                math::FVec4::broadcast(y - left.prev_y),
+                math::Vec4f::broadcast(y - left.prev_y),
                 left.prev_xzuv,
             );
 
-            let right_xzuv = math::FVec4::mul_add(
+            let right_xzuv = math::Vec4f::mul_add(
                 right.d_xzuv,
-                math::FVec4::broadcast(y - right.prev_y),
+                math::Vec4f::broadcast(y - right.prev_y),
                 right.prev_xzuv,
             );
 
@@ -488,7 +449,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
             let dx = right_x - left_x;
 
             let d_xzuv = if dx <= DY_EPSILON {
-                math::FVec4::zero()
+                math::Vec4f::zero()
             } else {
                 (right_xzuv - left_xzuv) / dx.into()
             };
@@ -509,9 +470,9 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
             let pixel_off = left_x.fract() - 0.5;
 
             for (x, p) in pixel_row_slice.iter_mut().enumerate() {
-                pixel_fn(p, math::FVec4::mul_add(
+                pixel_fn(p, math::Vec4f::mul_add(
                     d_xzuv,
-                    math::FVec4::broadcast(x as f32 - pixel_off),
+                    math::Vec4f::broadcast(x as f32 - pixel_off),
                     left_xzuv
                 ));
             }
@@ -519,8 +480,8 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
     }
 
     /// Wrap pixel function with transparency
-    fn pixelfn_wrap_transparent(mut f: impl FnMut(&mut u64, FVec4)) -> impl FnMut(&mut u64, FVec4) {
-        move |pixel_ptr: &mut u64, xzuv: FVec4| {
+    fn pixelfn_wrap_transparent(mut f: impl FnMut(&mut u64, Vec4f)) -> impl FnMut(&mut u64, Vec4f) {
+        move |pixel_ptr: &mut u64, xzuv: Vec4f| {
             // uugh transparency performance...
             let mut src_color = *pixel_ptr;
             f(&mut src_color, xzuv);
@@ -605,11 +566,11 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
             RasterizationMode::Overdraw => run!(|dst: &mut u64, _| {
                 *dst = dst.wrapping_add(0x0010_0010_0010u64);
             }),
-            RasterizationMode::Depth => run!(|dst: &mut u64, xzuv: FVec4| {
+            RasterizationMode::Depth => run!(|dst: &mut u64, xzuv: Vec4f| {
                 let color = (xzuv.y() * 25500.0) as u16;
                 *dst = u64_from_u16([color; 4]);
             }),
-            RasterizationMode::UV => run!(|dst: &mut u64, xzuv: FVec4| {
+            RasterizationMode::UV => run!(|dst: &mut u64, xzuv: Vec4f| {
                 let inv_z = xzuv.y().recip();
                 let u = xzuv.z() * inv_z;
                 let v = xzuv.w() * inv_z;
@@ -626,7 +587,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                     let uv_offset = self.sky_uv_offset;
                     let background_uv_offset = self.sky_background_uv_offset;
 
-                    run!(move |dst: &mut u64, xzuv: FVec4| {
+                    run!(move |dst: &mut u64, xzuv: Vec4f| {
                         let inv_z = xzuv.y().recip();
                         let u = xzuv.z() * inv_z + uv_offset.x();
                         let v = xzuv.w() * inv_z + uv_offset.y();
@@ -664,7 +625,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                     let max_u = texture.width() - 1;
                     let max_v = texture.height() - 1;
 
-                    run!(move |dst: &mut u64, xzuv: FVec4| {
+                    run!(move |dst: &mut u64, xzuv: Vec4f| {
                         let inv_z = xzuv.y().recip();
 
                         // min just for get2_unchecked safety
@@ -745,7 +706,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
         }
 
         // Clip polygon by Z=1
-        if !clip_polygon(vertices, vertices_dst, 1.0, |l, r| l > r, |v| v.position.z()) {
+        if !geom::clip_polygon(vertices, vertices_dst, 1.0, |l, r| l > r, |v| v.position.z()) {
             return;
         }
 
@@ -1547,7 +1508,7 @@ fn init_render_thread(
 
 fn main() {
     // Enable/disable map caching
-    let do_enable_map_caching = false;
+    let do_enable_map_caching = true;
 
     // Synchronize visible-set-building and projection cameras
     let mut shadow_camera: Option<camera::Camera> = None;
@@ -1559,7 +1520,7 @@ fn main() {
     let map = {
         // yay, this code will not work on non-local builds)))
         // --
-        let (map_name, map_src_format) = ("quake/e1m5", "map");
+        let (map_name, map_src_format) = ("quake/e1m1", "map");
         // let (map_name, map_src_format) = ("d1_trainstation_01", "vmf");
         let data_path = ".local/";
 
@@ -1577,10 +1538,14 @@ fn main() {
             };
 
             // Build BSP
+            let build_start = std::time::Instant::now();
             let mut bsp = bsp::compiler::compile(&map).unwrap();
+            println!("BSP compilation time: {}", build_start.elapsed().as_secs_f32());
 
             // Bake lightmaps
+            let bake_start = std::time::Instant::now();
             bsp::lightmap_baker::bake(&mut bsp, &map);
+            println!("Lightmap baking time: {}", bake_start.elapsed().as_secs_f32());
 
             bsp
         }
@@ -1665,8 +1630,8 @@ fn main() {
     }
 
     let material_table = {
-        let mut wad_file = std::fs::File::open(".local/quake/gfx/medieval.wad").unwrap();
-        // let mut wad_file = std::fs::File::open(".local/quake/gfx/base.wad").unwrap();
+        // let mut wad_file = std::fs::File::open(".local/quake/gfx/medieval.wad").unwrap();
+        let mut wad_file = std::fs::File::open(".local/quake/gfx/base.wad").unwrap();
         let mut wad_file_data = Vec::new();
         wad_file.read_to_end(&mut wad_file_data).unwrap();
 

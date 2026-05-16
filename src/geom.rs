@@ -386,8 +386,7 @@ pub fn sort_points_by_angle(mut points: Vec<Vec3f>, normal: Vec3f) -> Vec<Vec3f>
     let center = points
         .iter()
         .copied()
-        .fold(Vec3f::zero(), std::ops::Add::add) / (points.len() as f32).into()
-    ;
+        .fold(Vec3f::zero(), std::ops::Add::add) / (points.len() as f32).into();
 
     let mut sorted = vec![points.pop().unwrap()];
 
@@ -427,6 +426,45 @@ pub fn sort_points_by_angle(mut points: Vec<Vec3f>, normal: Vec3f) -> Vec<Vec3f>
     }
 
     sorted
+}
+
+/// Clip generic polygon by some linear vertex norm function
+/// # Note
+/// `cmp` must be ordering function, `norm` must be linear in respect of `V` operators
+pub fn clip_polygon<V>(
+    points: &mut Vec<V>,
+    temp: &mut Vec<V>,
+    value: f32,
+    cmp: impl Fn(f32, f32) -> bool,
+    norm: impl Fn(V) -> f32,
+) -> bool
+where
+    V: Copy
+        + std::ops::Add<V, Output = V>
+        + std::ops::Sub<V, Output = V>
+        + std::ops::Mul<V, Output = V>
+        + From<f32>
+{
+    temp.clear();
+    for index in 0..points.len() {
+        let curr = points[index];
+        let next = points[(index + 1) % points.len()];
+
+        if cmp(norm(curr), value) {
+            temp.push(curr);
+
+            if cmp(value, norm(next)) {
+                let t = (value - norm(curr)) / (norm(next) - norm(curr));
+                temp.push((next - curr) * V::from(t) + curr);
+           }
+        } else if cmp(norm(next), value) {
+            let t = (value - norm(curr)) / (norm(next) - norm(curr));
+            temp.push((next - curr) * V::from(t) + curr);
+        }
+    }
+    std::mem::swap(points, temp);
+
+    points.len() >= 3
 }
 
 impl Polygon {

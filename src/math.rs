@@ -2,53 +2,6 @@
 
 use std::ops::{Add, BitXor, Div, Mul, Neg, Rem, RemAssign, Sub};
 
-/// CPU-dependent 3/4-component vector implementation
-#[cfg(target_feature = "sse")]
-pub mod fvec_x86;
-
-#[cfg(target_feature = "sse")]
-impl From<Vec4f> for fvec_x86::FVec4 {
-    fn from(value: Vec4f) -> Self {
-        Self::new(value.x(), value.y(), value.z(), value.w())
-    }
-}
-
-#[cfg(target_feature = "sse")]
-pub mod fmat4_x86;
-
-#[cfg(target_feature = "sse")]
-pub type FVec4 = fvec_x86::FVec4;
-
-#[cfg(not(target_feature = "sse"))]
-pub use fallback_fvec4::*;
-
-#[cfg(not(target_feature = "sse"))]
-mod fallback_fvec4 {
-    use crate::math::Vec4;
-
-    /// Fallback FVec4 value
-    #[allow(unused)]
-    pub type FVec4 = Vec4<f32>;
-
-    impl Vec4<f32> {
-        /// Construct zero vector
-        pub fn zero() -> Self {
-            Self::broadcast(0.0)
-        }
-
-        /// Multiply and add self
-        pub fn mul_add(self, mul: Self, add: Self) -> Self {
-            self * mul + add
-        }
-    }
-
-    impl Default for Vec4<f32> {
-        fn default() -> Self {
-            Self::zero()
-        }
-    }
-}
-
 macro_rules! operator_on_variadic {
     ($operator: tt, $first: expr) => {
         $first
@@ -69,12 +22,19 @@ macro_rules! cfoldl1 {
     };
 }
 
-macro_rules! impl_vecn {
-    ($DIM: expr, $Vec: ident { $($x: ident),* }) => {
+macro_rules! impl_matn_vecn {
+    ($DIM: expr, $Mat: ident, $Vec: ident { $($x: ident),* }) => {
         #[doc = concat!(stringify!($DIM), "-component generic vector")]
         #[derive(Debug)]
         pub struct $Vec<T> {
             $($x: T),*
+        }
+
+        impl<T: Clone + From<i8>> $Vec<T> {
+            /// Produce vector filled with zeros.
+            pub fn zero() -> Self {
+                Self::broadcast(From::from(0))
+            }
         }
 
         impl<T: Clone> Clone for $Vec<T> {
@@ -187,29 +147,35 @@ macro_rules! impl_vecn {
 
         impl<T: Add<T, Output = T> + Mul<T, Output = T> + Clone> $Vec<T> {
             /// Vector squared length
-            pub fn length2(&self) -> T {
+            pub fn length2(self) -> T {
                 self.clone() ^ self.clone()
             }
         }
 
-        macro_rules! with_sqrt {
+        /// Implement float-specific functions
+        macro_rules! for_float {
             ($T: ty) => {
                 impl $Vec<$T> {
-                    /// Calculate vcetor length
-                    pub fn length(&self) -> $T {
+                    /// Calculate vector length
+                    pub fn length(self) -> $T {
                         self.length2().sqrt()
                     }
 
                     /// Get normalized vector
-                    pub fn normalized(&self) -> Self {
-                        *self / self.length().into()
+                    pub fn normalized(self) -> Self {
+                        self / self.length().into()
+                    }
+
+                    /// Per-component mul-add function. Hints compiler to use FMA.
+                    pub fn mul_add(self, mul: Self, add: Self) -> Self {
+                        Self::new($(self.$x.mul_add(mul.$x, add.$x)),*)
                     }
                 }
             };
         }
 
-        with_sqrt!(f32);
-        with_sqrt!(f64);
+        for_float!(f32);
+        for_float!(f64);
 
         macro_rules! binary_operator {
             ($Op: ident, $op: ident, $AOp: ident, $aop: ident) => {
@@ -250,12 +216,48 @@ macro_rules! impl_vecn {
                 $Vec::<U> { $($x: -self.$x),* }
             }
         }
+
+        #[doc = concat!(stringify!($DIM), "x", stringify!($DIM), "column-major generic matrix")]
+        pub struct $Mat<T> {
+            /// Matrix contents
+            pub data: [[T; $DIM]; $DIM],
+        }
+
+        impl<T: Clone> Clone for $Mat<T> {
+            fn clone(&self) -> Self {
+                Self {
+                    data: self.data.clone(),
+                }
+            }
+        }
+
+        impl<T: Copy> Copy for $Mat<T> {}
+
+        impl<T> $Mat<T> {
+            /// Construct matrix from column vector array
+            pub fn from_cols(cols: [$Vec<T>; $DIM]) -> Self {
+                Self { data: cols.map($Vec::into_array)  }
+            }
+
+            /// Transpose matrix
+            pub fn transposed(mut self) -> Self where T: Copy {
+                for i in 0..$DIM {
+                    for j in i + 1..$DIM {
+                        let tmp = self.data[i][j];
+                        self.data[i][j] = self.data[j][i];
+                        self.data[j][i] = tmp;
+                    }
+                }
+
+                self
+            }
+        }
     }
 }
 
-impl_vecn!(2, Vec2 { x, y });
-impl_vecn!(3, Vec3 { x, y, z });
-impl_vecn!(4, Vec4 { x, y, z, w });
+impl_matn_vecn!(2, Mat2, Vec2 { x, y });
+impl_matn_vecn!(3, Mat3, Vec3 { x, y, z });
+impl_matn_vecn!(4, Mat4, Vec4 { x, y, z, w });
 
 impl<T: Clone + Mul<T, Output = T> + Sub<T, Output = T>> Vec3<T> {
     pub fn cross(self, rhs: Self) -> Vec3<T> {
@@ -288,122 +290,48 @@ impl<T: Clone + Mul<T, Output = T> + Sub<T, Output = T>> Rem for Vec2<T> {
     }
 }
 
+pub type Vec2f = Vec2<f32>;
+pub type Vec3f = Vec3<f32>;
+pub type Vec4f = Vec4<f32>;
 
-/// 2-component generic matrix
-#[derive(Copy, Clone)]
-pub struct Mat2<T> {
-    pub e00: T,
-    pub e01: T,
-    pub e10: T,
-    pub e11: T,
-}
-
-impl<T: Mul<T, Output = T> + Sub<T, Output = T>> Mat2<T> {
-    pub fn new(e00: T, e01: T, e10: T, e11: T) -> Self {
-        Self { e00, e01, e10, e11 }
-    }
-
-    pub fn determinant(self) -> T {
-        self.e00 * self.e11 - self.e01 * self.e10
-    }
-}
-
-impl Mat2<f32> {
-    pub fn inversed(self) -> Option<Self> {
-        let determinant = self.determinant();
-
-        if determinant.abs() < f32::EPSILON {
-            return None;
-        }
-
-        Some(Self {
-            e00:  self.e11 / determinant,
-            e01: -self.e01 / determinant,
-            e10: -self.e10 / determinant,
-            e11:  self.e00 / determinant,
-        })
-    }
-}
-
-impl Mul<Vec2f> for Mat2f {
-    type Output = Vec2f;
-
-    fn mul(self, rhs: Vec2f) -> Self::Output {
-        Self::Output {
-            x: rhs.x * self.e00 + rhs.y * self.e10,
-            y: rhs.x * self.e01 + rhs.y * self.e11,
-        }
-    }
-}
-
-pub struct Mat3<T> {
-    pub e00: T,
-    pub e01: T,
-    pub e02: T,
-    pub e10: T,
-    pub e11: T,
-    pub e12: T,
-    pub e20: T,
-    pub e21: T,
-    pub e22: T,
-}
-
-impl<T> Mat3<T> {
-    // pub fn new(
-    //     e00: T, e01: T, e02: T,
-    //     e10: T, e11: T, e12: T,
-    //     e20: T, e21: T, e22: T,
-    // ) -> Self {
-    //     Self {
-    //         e00, e01, e02,
-    //         e10, e11, e12,
-    //         e20, e21, e22,
-    //     }
-    // }
-
-    pub fn from_rows(r0: Vec3<T>, r1: Vec3<T>, r2: Vec3<T>) -> Self {
-        Self {
-            e00: r0.x, e01: r0.y, e02: r0.z,
-            e10: r1.x, e11: r1.y, e12: r1.z,
-            e20: r2.x, e21: r2.y, e22: r2.z,
-        }
-    }
-
-    pub fn from_cols(c0: Vec3<T>, c1: Vec3<T>, c2: Vec3<T>) -> Self {
-        Self {
-            e00: c0.x, e01: c1.x, e02: c2.x,
-            e10: c0.y, e11: c1.y, e12: c2.y,
-            e20: c0.z, e21: c1.z, e22: c2.z,
-        }
-    }
-}
+pub type Mat2f = Mat2<f32>;
+pub type Mat3f = Mat3<f32>;
+pub type Mat4f = Mat4<f32>;
 
 impl<T: Copy + Mul<T, Output = T> + Add<T, Output = T> + Sub<T, Output = T>> Mat3<T> {
+    /// Calculate generic NxN matrix determinant
     pub fn determinant(&self) -> T {
-          self.e00 * self.e11 * self.e22 + self.e01 * self.e12 * self.e20 + self.e02 * self.e10 * self.e21
-        - self.e10 * self.e01 * self.e22 - self.e02 * self.e11 * self.e20 - self.e12 * self.e21 * self.e00
+        let [[e00, e10, e20], [e01, e11, e21], [e02, e12, e22]] = self.data.clone();
+          e00 * e11 * e22 + e01 * e12 * e20 + e02 * e10 * e21 - e10 * e01 * e22 - e02 * e11 * e20 - e12 * e21 * e00
     }
 }
 
 impl<T: Copy + Neg<Output = T> + Mul<T, Output = T> + Add<T, Output = T> + Sub<T, Output = T> + Div<T, Output = T>> Mat3<T> {
-    unsafe fn inverse_impl(&self, nonzero_determinant: T) -> Mat3<T> {
+    fn inverse_impl(&self, det: T) -> Mat3<T> {
+        let [[e00, e10, e20], [e01, e11, e21], [e02, e12, e22]] = self.data.clone();
         Self {
-            e00:  (self.e11 * self.e22 - self.e12 * self.e21) / nonzero_determinant,
-            e01: -(self.e01 * self.e22 - self.e02 * self.e21) / nonzero_determinant,
-            e02:  (self.e01 * self.e12 - self.e02 * self.e11) / nonzero_determinant,
-            e10: -(self.e10 * self.e22 - self.e12 * self.e20) / nonzero_determinant,
-            e11:  (self.e00 * self.e22 - self.e02 * self.e20) / nonzero_determinant,
-            e12: -(self.e00 * self.e12 - self.e02 * self.e10) / nonzero_determinant,
-            e20:  (self.e10 * self.e21 - self.e11 * self.e20) / nonzero_determinant,
-            e21: -(self.e00 * self.e21 - self.e01 * self.e20) / nonzero_determinant,
-            e22:  (self.e00 * self.e11 - self.e01 * self.e10) / nonzero_determinant,
+            data: [
+                [
+                     (e11 * e22 - e12 * e21) / det,
+                    -(e10 * e22 - e12 * e20) / det,
+                     (e10 * e21 - e11 * e20) / det,
+                ],
+                [
+                    -(e01 * e22 - e02 * e21) / det,
+                     (e00 * e22 - e02 * e20) / det,
+                    -(e00 * e21 - e01 * e20) / det,
+                ],
+                [
+                     (e01 * e12 - e02 * e11) / det,
+                    -(e00 * e12 - e02 * e10) / det,
+                     (e00 * e11 - e01 * e10) / det,
+                ]
+            ],
         }
     }
 
     pub fn inversed_unchecked(&self) -> Mat3<T> {
-        unsafe {
-            self.inverse_impl(self.determinant())
-        }
+        self.inverse_impl(self.determinant())
     }
 
 }
@@ -414,7 +342,7 @@ impl Mat3<f32> {
         if det.abs() < f32::EPSILON {
             return None;
         }
-        Some(unsafe { self.inverse_impl(det) })
+        Some(self.inverse_impl(det))
     }
 }
 
@@ -422,59 +350,13 @@ impl<T: Copy + Add<T, Output = T> + Mul<T, Output = T>> Mul<Vec3<T>> for Mat3<T>
     type Output = Vec3<T>;
 
     fn mul(self, rhs: Vec3<T>) -> Self::Output {
-        Self::Output {
-            x: self.e00 * rhs.x + self.e01 * rhs.y + self.e02 * rhs.z,
-            y: self.e10 * rhs.x + self.e11 * rhs.y + self.e12 * rhs.z,
-            z: self.e20 * rhs.x + self.e21 * rhs.y + self.e22 * rhs.z,
+        Vec3::<T> {
+            x: self.data[0][0] * rhs.x + self.data[1][0] * rhs.y + self.data[2][0] * rhs.z,
+            y: self.data[0][1] * rhs.x + self.data[1][1] * rhs.y + self.data[2][1] * rhs.z,
+            z: self.data[0][2] * rhs.x + self.data[1][2] * rhs.y + self.data[2][2] * rhs.z,
         }
     }
 }
-
-pub type Vec2f = Vec2<f32>;
-pub type Vec3f = Vec3<f32>;
-pub type Vec4f = Vec4<f32>;
-
-pub type Mat2f = Mat2<f32>;
-pub type Mat3f = Mat3<f32>;
-pub type Mat4f = Mat4<f32>;
-
-impl Vec2f {
-    pub fn zero() -> Self {
-        Self::new(0.0, 0.0)
-    }
-}
-
-impl Vec3f {
-    pub fn zero() -> Self {
-        Self::new(0.0, 0.0, 0.0)
-    }
-}
-
-impl Vec3f {
-    /// Get vector component by index
-    pub fn get<const I: u32>(self) -> f32 {
-        match I {
-            0 => self.x,
-            1 => self.y,
-            2 => self.z,
-            _ => panic!("invalid vector component index \"{}\" (expected number in [0, 2] range)", I),
-        }
-    }
-}
-
-pub struct Mat4<T> {
-    pub data: [[T; 4]; 4],
-}
-
-impl<T: Clone> Clone for Mat4<T> {
-    fn clone(&self) -> Self {
-        Self {
-            data: self.data.clone(),
-        }
-    }
-}
-
-impl<T: Copy> Copy for Mat4<T> {}
 
 // Compile-time for for 4x4 matrix
 macro_rules! mat4_foreach {
@@ -499,10 +381,10 @@ impl Mul<Mat4<f32>> for Mat4<f32> {
                     + othr.data[0][$j] * self.data[$i][0]
                     + othr.data[1][$j] * self.data[$i][1]
                     + othr.data[2][$j] * self.data[$i][2]
-                    + othr.data[3][$j] * self.data[$i][3]
-                ;
+                    + othr.data[3][$j] * self.data[$i][3];
             }
         }
+
         mat4_foreach!(mul);
 
         Self { data }
@@ -510,8 +392,7 @@ impl Mul<Mat4<f32>> for Mat4<f32> {
 }
 
 /// Pack of operators definition module
-impl Mat4<f32>
-{
+impl Mat4<f32> {
     /// Determinant getting function
     /// * Returns determinant of this matrix
     pub fn determinant(&self) -> f32 {
@@ -549,6 +430,28 @@ impl Mat4<f32>
     /// Matrix inversion getting function
     /// * Returns this matrix inersed
     pub fn inversed(&self) -> Self {
+        // // Minor DETerminant
+        // macro_rules! mdet {
+        //     ($i0: expr, $j0: expr) => {
+        //         {
+        //             macro_rules! iskip {
+        //                 ($v: expr, $sk: expr) => {
+        //                     ($v - ($v >= $sk) as usize)
+        //                 };
+        //             }
+
+        //             macro_rules! ind {
+        //                 ($i: expr, $j: expr) => {
+        //                     self.data[iskip!($i, $i0)][iskip!($j, $j0)]
+        //                 };
+        //             }
+
+        //             ind!(0, 0) * ind!(1, 1) * ind!(2, 2) + ind!(0, 1) * ind!(1, 2) * ind!(2, 0) + ind!(0, 2) * ind!(1, 0) * ind!(2, 1)
+        //                 - ind!(0, 0) * ind!(1, 2) * ind!(2, 1) - ind!(0, 1) * ind!(1, 0) * ind!(2, 2) - ind!(0, 2) * ind!(1, 1) * ind!(2, 0)
+        //         }
+        //     };
+        // }
+
         let determ_00 = self.data[1][1] * self.data[2][2] * self.data[3][3]
             + self.data[1][2] * self.data[2][3] * self.data[3][1]
             + self.data[1][3] * self.data[2][1] * self.data[3][2]
@@ -695,8 +598,7 @@ impl Mat4<f32>
 
 /// Default matrices implementation
 impl Mat4<f32> {
-    /// Identity matrix getting function
-    /// * Returns identity matrix
+    /// Construct identity matrix
     pub const fn identity() -> Self {
         Self {
             data: [
@@ -706,14 +608,11 @@ impl Mat4<f32> {
                 [0.0, 0.0, 0.0, 1.0],
             ],
         }
-    } // fn identity
+    }
 
-    /// Rotation matrix getting function
-    /// * `angle` - angle to create rotation matrix on
-    /// * Returns rotation matrix
+    /// Get matrix of rotation along X axis
     pub fn rotate_x(angle: f32) -> Self {
-        let sin = angle.sin();
-        let cos = angle.cos();
+        let (sin, cos) = angle.sin_cos();
 
         Self {
             data: [
@@ -723,14 +622,11 @@ impl Mat4<f32> {
                 [0.0, 0.0, 0.0, 1.0],
             ],
         }
-    } // fn rotate_x
+    }
 
-    /// Rotation matrix getting function
-    /// * `angle` - angle to create rotation matrix on
-    /// * Returns rotation matrix
+    /// Get matrix of rotation along Y axis
     pub fn rotate_y(angle: f32) -> Self {
-        let sin = angle.sin();
-        let cos = angle.cos();
+        let (sin, cos) = angle.sin_cos();
 
         Self {
             data: [
@@ -740,14 +636,11 @@ impl Mat4<f32> {
                 [0.0, 0.0, 0.0, 1.0],
             ],
         }
-    } // fn rotate_y
+    }
 
-    /// Rotation matrix getting function
-    /// * `angle` - angle to create rotation matrix on
-    /// * Returns rotation matrix
+    /// Get matrix of rotation along Z axis
     pub fn rotate_z(angle: f32) -> Self {
-        let sin = angle.sin();
-        let cos = angle.cos();
+        let (sin, cos) = angle.sin_cos();
 
         Self {
             data: [
@@ -757,15 +650,11 @@ impl Mat4<f32> {
                 [0.0, 0.0, 0.0, 1.0],
             ],
         }
-    } // fn rotate_z
-} // impl Mat4x4<f32>
-/// Projection functions implementation
+    }
+}
+
 impl Mat4<f32> {
-    /// Orthographic projection matrix create function
-    /// * `l`, `r` - left and right boundaries
-    /// * `b`, `t` - bottom and top
-    /// * `n`, `f` - near and far
-    /// * Returns projection matrix
+    /// Create orthographic projection matrix
     pub fn projection_ortho(l: f32, r: f32, b: f32, t: f32, n: f32, f: f32) -> Mat4<f32> {
         Self {
             data: [
@@ -780,20 +669,9 @@ impl Mat4<f32> {
                 ],
             ],
         }
-    } // fn projection_ortho
+    }
 
-    /// Frustum projection matrix create function
-    /// # Inputs
-    /// * `l`, `r` - left and right boundaries
-    /// * `b`, `t` - bottom and top
-    /// * `n` - near plane
-    /// 
-    /// # Result
-    /// Projection matrix
-    /// 
-    /// # Note
-    /// Far plane is assumed to be infinite. This
-    /// matrix may be used with inverse z technique.
+    /// Create frustum projection matrix assuming far plane being located on infinity
     pub fn projection_frustum_inf_far(l: f32, r: f32, b: f32, t: f32, n: f32) -> Mat4<f32> {
         Self {
             data: [
@@ -803,13 +681,9 @@ impl Mat4<f32> {
                 [0.0,               0.0,               0.0,  0.0  ],
             ],
         }
-    } // fn projection_frustum
+    }
 
-    /// Frustum projection matrix create function
-    /// * `l`, `r` - left and right boundaries
-    /// * `b`, `t` - bottom and top
-    /// * `n`, `f` - near and far
-    /// * Returns projection matrix
+    /// Create standard frustum projection matrix
     pub fn projection_frustum(l: f32, r: f32, b: f32, t: f32, n: f32, f: f32) -> Mat4<f32> {
         Self {
             data: [
@@ -819,65 +693,59 @@ impl Mat4<f32> {
                 [0.0,               0.0,               -2.0 * n * f / (f - n), 0.0  ],
             ],
         }
-    } // fn projection_frustum
+    }
 
-    /// View projection matrix create function
-    /// `l`, `r` - left and
+    /// Create view matrix
     pub fn view(loc: Vec3<f32>, at: Vec3<f32>, approx_up: Vec3<f32>) -> Mat4<f32> {
         let dir = (at - loc).normalized();
         let right = dir.cross(approx_up).normalized();
         let up = right.cross(dir).normalized();
 
+        let ld = Vec3::new(right, up, dir).map(|v| -v.dot(loc));
+
         Self {
             data: [
-                [ right.x,         up.x,        -dir.x,        0.0],
-                [ right.y,         up.y,        -dir.y,        0.0],
-                [ right.z,         up.z,        -dir.z,        0.0],
-                [-loc.dot(right), -loc.dot(up),  loc.dot(dir), 1.0],
+                [right.x, up.x, -dir.x, 0.0],
+                [right.y, up.y, -dir.y, 0.0],
+                [right.z, up.z, -dir.z, 0.0],
+                [   ld.x, ld.y, - ld.z, 1.0],
             ],
         }
-    } // fn view
-} // impl Mat4x4<f32>
+    }
+}
 
 impl Mat4<f32> {
-    /// Rotation matrix getting function
-    /// * `angle` - angle to create rotation matrix on
-    /// * `axis` - axis to create rotation matrix based on
-    /// * Returns rotation matrix
-    pub fn rotate(angle: f32, mut axis: Vec3<f32>) -> Self {
-        axis = axis.normalized();
-
-        let sina = angle.sin();
-        let cosa = angle.cos();
+    /// Calculate matrix of rotation along any axis
+    pub fn rotate(angle: f32, axis: Vec3<f32>) -> Self {
+        let a = axis.normalized();
+        let (s, c) = angle.sin_cos();
 
         Self {
             data: [
                 [
-                    axis.x * axis.x * (1.0 - cosa) + cosa,
-                    axis.x * axis.y * (1.0 - cosa) - axis.z * sina,
-                    axis.x * axis.z * (1.0 - cosa) + axis.y * sina,
+                    a.x * a.x * (1.0 - c) + c,
+                    a.x * a.y * (1.0 - c) - a.z * s,
+                    a.x * a.z * (1.0 - c) + a.y * s,
                     0.0,
                 ],
                 [
-                    axis.y * axis.x * (1.0 - cosa) + axis.z * sina,
-                    axis.y * axis.y * (1.0 - cosa) + cosa,
-                    axis.y * axis.z * (1.0 - cosa) - axis.x * sina,
+                    a.y * a.x * (1.0 - c) + a.z * s,
+                    a.y * a.y * (1.0 - c) + c,
+                    a.y * a.z * (1.0 - c) - a.x * s,
                     0.0,
                 ],
                 [
-                    axis.z * axis.x * (1.0 - cosa) - axis.y * sina,
-                    axis.z * axis.y * (1.0 - cosa) + axis.x * sina,
-                    axis.z * axis.z * (1.0 - cosa) + cosa,
+                    a.z * a.x * (1.0 - c) - a.y * s,
+                    a.z * a.y * (1.0 - c) + a.x * s,
+                    a.z * a.z * (1.0 - c) + c,
                     0.0,
                 ],
                 [0.0, 0.0, 0.0, 1.0],
             ],
         }
-    } // fn rotate
+    }
 
-    /// Scaling function.
-    /// * `s` - scale vector
-    /// * Returns scale matrix
+    /// Build scale matrix
     pub fn scale(s: Vec3<f32>) -> Self {
         Self {
             data: [
@@ -887,11 +755,9 @@ impl Mat4<f32> {
                 [0.0, 0.0, 0.0, 1.0],
             ],
         }
-    } // fn scale
+    }
 
-    /// Translating function.
-    /// * `t` - translate vector
-    /// * Returns scale matrix
+    /// Build translation matrix
     pub fn translate(t: Vec3<f32>) -> Self {
         Self {
             data: [
@@ -901,10 +767,10 @@ impl Mat4<f32> {
                 [t.x, t.y, t.z, 1.0],
             ],
         }
-    } // fn translate
+    }
 
-    /// Transform interpreting this matrix as 3x3.
-    pub fn transform_vector(&self, v: Vec3<f32>) -> Vec3<f32> {
+    /// Transform vector using affine part only
+    pub fn transform_aff(&self, v: Vec3<f32>) -> Vec3<f32> {
         Vec3 {
             x: v.x * self.data[0][0] + v.y * self.data[1][0] + v.z * self.data[2][0],
             y: v.x * self.data[0][1] + v.y * self.data[1][1] + v.z * self.data[2][1],
@@ -912,8 +778,8 @@ impl Mat4<f32> {
         }
     }
 
-    /// Transform without calculating W coordinate
-    pub fn transform_point(&self, v: Vec3<f32>) -> Vec3<f32> {
+    /// Transform vector using homogeneous part only assuming W=1
+    pub fn transform_hom(&self, v: Vec3<f32>) -> Vec3<f32> {
         Vec3 {
             x: v.x * self.data[0][0] + v.y * self.data[1][0] + v.z * self.data[2][0] + self.data[3][0],
             y: v.x * self.data[0][1] + v.y * self.data[1][1] + v.z * self.data[2][1] + self.data[3][1],
@@ -921,8 +787,19 @@ impl Mat4<f32> {
         }
     }
 
-    /// Standard transformation
-    pub fn transform(&self, v: Vec4<f32>) -> Vec4<f32> {
+    /// Transform vector dividing result by W assuming initial W=1
+    pub fn transform(&self, v: Vec3<f32>) -> Vec3<f32> {
+        let w = v.x * self.data[0][3] + v.y * self.data[1][3] + v.z * self.data[2][3] + self.data[3][3];
+
+        Vec3::new(
+            v.x * self.data[0][0] + v.y * self.data[1][0] + v.z * self.data[2][0] + self.data[3][0],
+            v.x * self.data[0][1] + v.y * self.data[1][1] + v.z * self.data[2][1] + self.data[3][1],
+            v.x * self.data[0][2] + v.y * self.data[1][2] + v.z * self.data[2][2] + self.data[3][2],
+        ) / w.into()
+    }
+
+    /// Multiply matrix by vector
+    pub fn mul_v(&self, v: Vec4<f32>) -> Vec4<f32> {
         Vec4 {
             x: v.x * self.data[0][0] + v.y * self.data[1][0] + v.z * self.data[2][0] + v.w * self.data[3][0],
             y: v.x * self.data[0][1] + v.y * self.data[1][1] + v.z * self.data[2][1] + v.w * self.data[3][1],
@@ -930,30 +807,7 @@ impl Mat4<f32> {
             w: v.x * self.data[0][3] + v.y * self.data[1][3] + v.z * self.data[2][3] + v.w * self.data[3][3],
         }
     }
-
-    pub fn transform_4x4(&self, v: Vec3<f32>) -> Vec3<f32> {
-        let w =
-            v.x * self.data[0][3] + v.y * self.data[1][3] + v.z * self.data[2][3] + self.data[3][3];
-
-        Vec3 {
-            x: (v.x * self.data[0][0]
-                + v.y * self.data[1][0]
-                + v.z * self.data[2][0]
-                + self.data[3][0])
-                / w,
-            y: (v.x * self.data[0][1]
-                + v.y * self.data[1][1]
-                + v.z * self.data[2][1]
-                + self.data[3][1])
-                / w,
-            z: (v.x * self.data[0][2]
-                + v.y * self.data[1][2]
-                + v.z * self.data[2][2]
-                + self.data[3][2])
-                / w,
-        }
-    } // fn transform_4x4
-} // impl Mat4x4
+}
 
 /// Quaternion
 pub struct Quat<T> {

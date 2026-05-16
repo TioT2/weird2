@@ -20,7 +20,7 @@ impl PointLight {
         Self {
             origin,
             intensity,
-            att_distance: (intensity.fold1(f32::max) * 4096.0).sqrt(),
+            att_distance: (intensity.fold1(f32::max) * 1024.0).sqrt(),
         }
     }
 
@@ -29,10 +29,11 @@ impl PointLight {
         if !ent.properties.get("classname")?.starts_with("light") {
             return None;
         }
+
         let light = if let Some(light_s) = ent.properties.get("light") {
             light_s.parse::<f32>().ok()?
         } else {
-            // Default light value (by spec)
+            // Default light value (from spec)
             200.0
         };
         Some(Self::from_origin_intensity(ent.origin()?, light.into()))
@@ -78,7 +79,7 @@ fn bake_volume(
                 // Light collector
                 let mut light_sum = Vec3f::zero();
 
-                // Average by subpixels
+                // Average by 64 subpixels
                 for sy in 0..8 {
                     let ty = y * 8 + sy;
                     let vaxis = surface.v.point_at(uv_int_min.y() as f32 + ty as f32 + 0.5);

@@ -1,4 +1,4 @@
-//! WBSP compiler implementation file
+//! WBSP compiler module
 
 /*
 Compilation: 
@@ -11,23 +11,10 @@ Compilation:
    That's the exact reason why levels must not have 'holes' in their structure)
 */
 
-use std::{collections::{BTreeMap, BTreeSet, HashMap, HashSet}, num::NonZeroU32};
+use std::collections::{HashMap, HashSet};
 use crate::{geom, map, math::{Mat3f, Vec3f}};
 
 use super::Id;
-
-/// Kind of the material
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub enum MaterialKind {
-    /// Just material
-    Default,
-
-    /// Transparent polygon
-    Transparent,
-
-    /// Sky polygon
-    Sky,
-}
 
 /// Brush face identifier
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
@@ -59,7 +46,7 @@ impl VolumeFaceId {
     }
 }
 
-/// Polygon that should be displayed
+/// Polygon that actually is displayed
 #[derive(Clone, Debug)]
 pub struct DisplayPolygon {
     /// Actual polygon
@@ -120,7 +107,7 @@ pub struct HullVolume {
 
 /// Polygon split id
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
-pub struct SplitId(NonZeroU32);
+pub struct SplitId(u32);
 
 /// Reference to certain split
 #[derive(Copy, Clone, Debug)]
@@ -472,7 +459,7 @@ impl Default for BspModelCompileContext {
 impl BspModelCompileContext {
     // Generate new split id
     fn get_next_split_id(&self) -> SplitId {
-        SplitId(NonZeroU32::try_from(self.split_infos.len() as u32 + 1).unwrap())
+        SplitId(self.split_infos.len() as u32 + 1)
     }
 
     fn add_split(&mut self, info: SplitInfo) {
@@ -658,80 +645,52 @@ impl BspModelCompileContext {
         )));
     }
 
-    /// Build resolve tasks
-    /// (mapping between split id and sets of references (volume_id, volume_face_id))
-    fn build_resolve_tasks(&self) -> BTreeMap<SplitId, Vec<VolumeFaceId>> {
-
-        // Construct initial structure
-        let mut tasks = self.split_infos
-            .iter()
-            .map(|split_info| (split_info.id, Vec::new()))
-            .collect::<BTreeMap<SplitId, Vec<VolumeFaceId>>>();
-
-        // Fill volume arrays
-        for (volume_index, volume) in self.volumes.iter().enumerate() {
-            'face_loop: for (face_index, face) in volume.faces.iter().enumerate() {
-                let Some(split_ref) = face.split_reference else {
-                    continue 'face_loop;
-                };
-
-                tasks.get_mut(&split_ref.split_id)
-                    .unwrap()
-                    .push(VolumeFaceId::new(volume_index, face_index));
-            }
-        }
-
-        tasks
-    }
-
     /// Build front and back polygon sets of single portal resolve task
     /// # Returns
     /// Tuple that contains front and back polygon sets
     fn build_task_polygon_sets(
         &self,
-        task: &[VolumeFaceId]
+        task: &[VolumeFaceId],
     ) -> (Vec<SplitTaskPolygon>, Vec<SplitTaskPolygon>) {
-
-        /// Polygon cutting descriptor
+        /// Portal polygon cutting descriptor
         pub struct CutInfo {
-            /// Plane set
+            /// Cut polygon edge plane set
             pub planes: Vec<geom::Plane>,
 
-            /// Cutter boundbox
+            /// Cut polygon bound box
             pub bound_box: geom::BoundBox,
         }
 
-        let cut_info_set = task
-            .iter()
-            .copied()
-            .flat_map(|volume_face_id| self[volume_face_id].display_polygons.iter())
+        // Set of **all** cutting edge planes
+        let cut_info_set = task.iter()
+            .flat_map(|volume_face_id| self[*volume_face_id].display_polygons.iter())
             .filter(|pp| !pp.flags.check(super::SurfaceFlags::TRANSPARENT))
-            .map(|physical_polygon| CutInfo {
-                planes: physical_polygon.polygon.iter_edge_planes().collect(),
-                bound_box: physical_polygon.polygon.build_bound_box(),
+            .map(|dispp| CutInfo {
+                planes: dispp.polygon.iter_edge_planes().collect(),
+                bound_box: dispp.polygon.build_bound_box(),
             })
             .collect::<Vec<_>>();
 
-        // Front polygons to resolve
+        // Front polygons to resolve portals with
         let mut total_front_polygons = Vec::<SplitTaskPolygon>::new();
 
-        // Back polygons to resolve
+        // Back polygons to resolve portals with
         let mut total_back_polygons = Vec::<SplitTaskPolygon>::new();
+
+        let mut portal_polygons = Vec::new();
+        let mut new_portal_polygons = Vec::new();
 
         'task_loop: for vfi in task.iter().copied() {
             let face = &self[vfi];
 
-            // Build potential portal polygon set
-            let mut portal_polygons = vec![(face.polygon.clone(), face.polygon.build_bound_box())];
+            portal_polygons.clear();
+            new_portal_polygons.clear();
+
+            // Portal polygon set. Starts with face polygon, then cutted by all cutinfos.
+            portal_polygons.push((face.polygon.clone(), face.polygon.build_bound_box()));
 
             for cut_info in &cut_info_set {
-                let mut new_portal_polygons = Vec::new();
-
-                // possible improvement:
-                // check if portal_polygon is in front of some of
-                // cut_edge, and only AFTER check perform splitting.
-
-                'portal_polygon_loop: for (mut portal_polygon, mut portal_polygon_bb) in portal_polygons {
+                'portal_polygon_loop: for (mut portal_polygon, mut portal_polygon_bb) in portal_polygons.drain(..) {
                     if !cut_info.bound_box.is_intersecting(&portal_polygon_bb) {
                         new_portal_polygons.push((portal_polygon, portal_polygon_bb));
                         continue 'portal_polygon_loop;
@@ -749,6 +708,7 @@ impl BspModelCompileContext {
                                 // nothing changes
                             }
                             geom::PolygonSplitResult::Intersects { front, back } => {
+                                // Strip current portal polygon to back only
                                 portal_polygon_bb = back.build_bound_box();
                                 portal_polygon = back;
 
@@ -765,7 +725,7 @@ impl BspModelCompileContext {
                     }
                 }
 
-                portal_polygons = new_portal_polygons;
+                std::mem::swap(&mut portal_polygons, &mut new_portal_polygons);
             }
 
             // Check if there's no portal polygons at all
@@ -775,7 +735,7 @@ impl BspModelCompileContext {
 
             // Build split task iterator
             let split_task_iter = portal_polygons
-                .into_iter()
+                .drain(..)
                 .map(|(polygon, polygon_bb)| SplitTaskPolygon {
                     dst: vfi,
                     polygon,
@@ -796,11 +756,21 @@ impl BspModelCompileContext {
     /// Start portal resolve pass
     pub fn start_resolve_portals(&mut self) {
 
-        // Build portal resolution 'tasks'
-        let resolve_tasks = self.build_resolve_tasks();
+        // Build (SplitId -> [VolumeFaceId] mapping)
+        let mut resolve_tasks = HashMap::<SplitId, Vec<VolumeFaceId>>::new();
+
+        for (volume_index, volume) in self.volumes.iter().enumerate() {
+            for (face_index, face) in volume.faces.iter().enumerate() {
+                if let Some(split_ref) = face.split_reference {
+                    resolve_tasks.entry(split_ref.split_id)
+                        .or_insert(Vec::new())
+                        .push(VolumeFaceId::new(volume_index, face_index));
+                }
+            }
+        }
 
         // process tasks into polygon set
-        'task_loop: for (_, task) in resolve_tasks {
+        'task_loop: for (_split_id, task) in resolve_tasks {
             // Build front and back polygon set
             let (front_polygons, back_polygons) = self.build_task_polygon_sets(&task);
 
@@ -824,11 +794,12 @@ impl BspModelCompileContext {
 
                     for edge_plane in front_polygon_edge_planes.iter() {
                         match edge_plane.split_polygon(&portal) {
-                            geom::PolygonSplitResult::Front => {
-                                continue 'back_polygon_loop;
-                            }
-                            geom::PolygonSplitResult::Back => {
-                            }
+                            // Drop portal
+                            geom::PolygonSplitResult::Front => continue 'back_polygon_loop,
+
+                            geom::PolygonSplitResult::Back => {}
+
+                            // Only back part
                             geom::PolygonSplitResult::Intersects { front, back } => {
                                 portal = back;
                                 _ = front;
@@ -841,6 +812,8 @@ impl BspModelCompileContext {
                             }
                         }
                     }
+
+                    // Add polygon to face portal polygon sets
 
                     // Index of polygon in portal set
                     let portal_polygon_index = self.portal_polygons.len();
@@ -860,8 +833,7 @@ impl BspModelCompileContext {
                             dst_volume_index: front_polygon.dst.volume as usize,
                             is_front: true,
                             polygon_set_index: portal_polygon_index,
-                        })
-                        ;
+                        });
                 }
             }
         }
@@ -917,7 +889,7 @@ impl BspModelCompileContext {
                             .map(|portal| portal.polygon_set_index)
                         )
                 })
-                .collect::<BTreeSet<_>>();
+                .collect::<HashSet<_>>();
 
             Self::build_index_map(
                 portal_remove_set.into_iter().collect(),
@@ -1178,40 +1150,29 @@ impl CompileContext {
                 })
                 .collect::<Vec<_>>();
     
-            for (face_id, (f1, mtlid)) in planes.iter().enumerate() {
+            for (f1_ind, (f1, mtlid)) in planes.iter().enumerate() {
 
                 // Disable invisible brush faces
                 if f1.flags.check(map::BrushFaceFlags::INVISIBLE) {
                     continue;
                 }
     
-                let mut points = Vec::<Vec3f>::new();
+                let mut points = Vec::new();
     
-                for (f2, _) in &planes {
-                    if std::ptr::eq(f1, f2) {
+                for (f2_ind, (f2, _)) in planes.iter().enumerate() {
+                    if f1_ind == f2_ind {
                         continue;
                     }
     
-                    for (f3, _) in &planes {
-                        if std::ptr::eq(f1, f3) || std::ptr::eq(f2, f3) {
-                            continue;
-                        }
+                    for (_f3_ind, (f3, _)) in planes.iter().enumerate().skip(f2_ind + 1) {
+                        let mat = Mat3f::from_cols([f1.plane.normal, f2.plane.normal, f3.plane.normal]);
     
-                        let mat = Mat3f::from_rows(
-                            f1.plane.normal,
-                            f2.plane.normal,
-                            f3.plane.normal
-                        );
-    
-                        let inv = match mat.inversed() {
+                        let inv = match mat.transposed().inversed() {
                             Some(m) => m,
                             None => continue,
                         };
-                        let intersection_point = inv * Vec3f::new(
-                            f1.plane.distance,
-                            f2.plane.distance,
-                            f3.plane.distance,
-                        );
+
+                        let intersection_point = inv * Vec3f::new(f1.plane.distance, f2.plane.distance, f3.plane.distance);
     
                         points.push(intersection_point);
                     }
@@ -1246,7 +1207,7 @@ impl CompileContext {
                     v: f1.v,
                     brush_face_id: BrushFaceId {
                         brush: brush_id as u32,
-                        face: face_id as u32,
+                        face: f1_ind as u32,
                     }
                 };
 

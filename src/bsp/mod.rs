@@ -160,9 +160,9 @@ pub struct Volume {
     pub bound_box: geom::BoundBox,
 }
 
-/// Binary Space Partition enumeration
+/// Binary Space Partition
 pub enum Bsp<S> {
-    /// Space partition
+    /// Partition of space
     Partition {
         /// Plane that splits front/back volume sets. Front volume set is located in front of plane.
         splitter_plane: geom::Plane,
@@ -174,48 +174,78 @@ pub enum Bsp<S> {
         back: Box<Self>,
     },
 
-    /// Space itself
+    /// Convex space
+    Space(S),
+}
+
+/// BSP construction command
+pub enum AnaResult<T, S> {
+    /// Continue construction with given plane as splitter
+    Partition(geom::Plane, T, T),
+
+    /// Construct leaf, finish
     Space(S),
 }
 
 impl<S> Bsp<S> {
-
-    /// Use fold but by reference
-    pub fn fold_ref<T>(&self, leaf: impl FnMut(&S, usize) -> T, branch: impl FnMut(T, T) -> T) -> T {
-        /// Traverse helper structure using stack instead of heap
-        struct Tr<Lf, Bf> {
-            leaf: Lf,
-            branch: Bf
-        }
-
-        impl<Lf, Bf> Tr<Lf, Bf> {
-            fn with<L, T>(&mut self, node: &Bsp<L>, depth: usize) -> T
+    /// Construct tree with function
+    pub fn ana<T>(init: T, f: impl FnMut(T) -> AnaResult<T, S>) -> Bsp<S> {
+        struct Ana<F>(F);
+        impl<F> Ana<F> {
+            fn build<T, S>(&mut self, state: T) -> Bsp<S>
             where
-                Lf: FnMut(&L, usize) -> T,
-                Bf: FnMut(T, T) -> T
+                F: FnMut(T) -> AnaResult<T, S>
             {
-                match node {
-                    Bsp::Partition { front, back, .. } => {
-                        let f = self.with(front, depth + 1);
-                        let b = self.with(back, depth + 1);
-                        (self.branch)(f, b)
-                    }
-                    Bsp::Space(l) => (self.leaf)(l, depth),
+                match (self.0)(state) {
+                    AnaResult::Partition(p, f, b) => Bsp::Partition {
+                        splitter_plane: p,
+                        front: Box::new(self.build(f)),
+                        back: Box::new(self.build(b)),
+                    },
+                    AnaResult::Space(s) => Bsp::Space(s),
                 }
             }
         }
 
-        Tr { leaf, branch }.with(self, 0)
+        Ana(f).build(init)
+    }
+
+    /// Collapse tree in single value (by reference)
+    pub fn cata_ref<T>(&self, leaf: impl FnMut(&S) -> T, branch: impl FnMut(T, T) -> T) -> T {
+        struct Tr<Lf, Bf>(Lf, Bf);
+        impl<Lf, Bf> Tr<Lf, Bf> {
+            fn with<L, T>(&mut self, node: &Bsp<L>) -> T
+            where
+                Lf: FnMut(&L) -> T,
+                Bf: FnMut(T, T) -> T
+            {
+                match node {
+                    Bsp::Space(l) => (self.0)(l),
+                    Bsp::Partition { front, back, .. } => {
+                        let f = self.with(front);
+                        let b = self.with(back);
+                        (self.1)(f, b)
+                    }
+                }
+            }
+        }
+
+        Tr(leaf, branch).with(self)
+    }
+
+    /// Use fold but by reference
+    pub fn fold_ref<T>(&self, leaf: impl FnMut(&S) -> T, branch: impl FnMut(T, T) -> T) -> T {
+        self.cata_ref(leaf, branch)
     }
 
     /// Calculate BSP tree depth
     pub fn depth(&self) -> usize {
-        self.fold_ref(|_, d| d, usize::max)
+        self.fold_ref(|_| 1, |l, r| usize::max(l, r) + 1)
     }
 
-    /// Count of BSP elements
+    /// Calculate number of BSP elements
     pub fn size(&self) -> usize {
-        self.fold_ref(|_, _| 1, |l, r| l + r + 1)
+        self.fold_ref(|_| 1, |l, r| l + r + 1)
     }
 
     /// Traverse with some function
@@ -284,7 +314,7 @@ impl TraverseFn for AroundPoint {
     }
 }
 
-/// BSP traverse iterator
+/// BSP immutable iterator
 pub struct BspIter<'t, S, Tf> {
     nodes: Vec<&'t Bsp<S>>,
     tf: Tf,

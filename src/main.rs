@@ -1535,7 +1535,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let map = Arc::new(map);
 
-    // Display some BSP statistics
+    // Display BSP statistics
     {
         pub struct BspStat {
             pub nodes: u64,
@@ -1546,20 +1546,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         let stat = map.get_world_model().get_bsp().fold_ref(
-            |_, curr_depth| BspStat {
+            |_| BspStat {
                 nodes: 1,
                 leafs: 1,
-                leaf_depth_sum: curr_depth as u64,
-                depth_max: curr_depth as u64,
+                leaf_depth_sum: 1,
+                depth_max: 1,
                 total_disbalance: 0,
             },
             |fstat, bstat| BspStat {
                 nodes: fstat.nodes + bstat.nodes + 1,
                 leafs: fstat.leafs + bstat.leafs,
-                leaf_depth_sum: fstat.leaf_depth_sum + bstat.leaf_depth_sum,
-                depth_max: u64::max(fstat.depth_max, bstat.depth_max),
-                total_disbalance: fstat.total_disbalance + bstat.total_disbalance
-                    + u64::abs_diff(fstat.nodes, bstat.nodes)
+                leaf_depth_sum: fstat.leaf_depth_sum + bstat.leaf_depth_sum + fstat.leafs + bstat.leafs,
+                depth_max: u64::max(fstat.depth_max, bstat.depth_max) + 1,
+                total_disbalance: fstat.total_disbalance + bstat.total_disbalance + u64::abs_diff(fstat.nodes, bstat.nodes)
             }
         );
 

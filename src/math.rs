@@ -249,9 +249,15 @@ impl_matn_vecn!(2, Mat2, Vec2 { x, y });
 impl_matn_vecn!(3, Mat3, Vec3 { x, y, z });
 impl_matn_vecn!(4, Mat4, Vec4 { x, y, z, w });
 
-impl<T: Clone + Mul<T, Output = T> + Sub<T, Output = T>> Vec3<T> {
-    pub fn cross(self, rhs: Self) -> Vec3<T> {
-        Vec3::<T> {
+impl<T> Vec3<T> {
+    /// Calculate vector cross product
+    pub fn cross<U, V, W>(self, rhs: Vec3<U>) -> Vec3<W>
+    where
+        T: Clone + Mul<U, Output = V>,
+        U: Clone,
+        V: Sub<V, Output = W>
+    {
+        Vec3::<W> {
             x: self.y.clone() * rhs.z.clone() - self.z.clone() * rhs.y.clone(),
             y: self.z * rhs.x.clone() - self.x.clone() * rhs.z,
             z: self.x * rhs.y - self.y * rhs.x,
@@ -259,10 +265,15 @@ impl<T: Clone + Mul<T, Output = T> + Sub<T, Output = T>> Vec3<T> {
     }
 }
 
-impl<T: Clone + Mul<T, Output = T> + Sub<T, Output = T>> Rem for Vec3<T> {
-    type Output = Self;
+impl<T, U, V, W> Rem<Vec3<U>> for Vec3<T>
+where
+    T: Clone + Mul<U, Output = V>,
+    U: Clone,
+    V: Sub<V, Output = W>
+{
+    type Output = Vec3<W>;
  
-    fn rem(self, rhs: Self) -> Self::Output {
+    fn rem(self, rhs: Vec3<U>) -> Vec3<W> {
         self.cross(rhs)
     }
 }
@@ -270,6 +281,17 @@ impl<T: Clone + Mul<T, Output = T> + Sub<T, Output = T>> Rem for Vec3<T> {
 impl<T: Clone + Mul<T, Output = T> + Sub<T, Output = T>> RemAssign for Vec3<T> {
     fn rem_assign(&mut self, rhs: Self) {
         *self = self.clone() % rhs;
+    }
+}
+
+impl<T> Vec2<T> {
+    /// Calculate 2-component vector cross product
+    pub fn cross<U, V, W>(self, othr: Vec2<U>) -> W
+    where
+        T: Mul<U, Output = V>,
+        V: Sub<V, Output = W>
+    {
+        self.x * othr.y - self.y * othr.x
     }
 }
 
@@ -407,6 +429,10 @@ impl Mat4<f32> {
 
     /// Calculate inverse matrix
     pub fn inversed(&self) -> Self {
+        // let determ_00 = self.minor_det::<0, 0>();
+        // let determ_01 = self.minor_det::<0, 1>();
+        // let determ_02 = self.minor_det::<0, 2>();
+        // let determ_03 = self.minor_det::<0, 3>();
         let determ_00 = self.data[1][1] * self.data[2][2] * self.data[3][3]
             + self.data[1][2] * self.data[2][3] * self.data[3][1]
             + self.data[1][3] * self.data[2][1] * self.data[3][2]
@@ -548,8 +574,8 @@ impl Mat4<f32> {
                 ],
             ],
         }
-    } // fn inversed
-} // impl Mat4<f32>
+    }
+}
 
 /// Default matrices implementation
 impl Mat4<f32> {

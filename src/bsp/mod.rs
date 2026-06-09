@@ -253,6 +253,27 @@ impl<S> Bsp<S> {
         BspIter { nodes: vec![self], tf }
     }
 
+    /// Map BSP to another type
+    pub fn map<T>(self, f: impl FnMut(S) -> T) -> Bsp<T> {
+        struct Mp<F>(F);
+        impl<F> Mp<F> {
+            fn map<S, T>(&mut self, bsp: Bsp<S>) -> Bsp<T>
+                where F: FnMut(S) -> T
+            {
+                match bsp {
+                    Bsp::Partition { splitter_plane, front, back } => Bsp::<T>::Partition {
+                        splitter_plane,
+                        front: Box::new(self.map(*front)),
+                        back: Box::new(self.map(*back)),
+                    },
+                    Bsp::Space(l) => Bsp::<T>::Space((self.0)(l)),
+                }
+            }
+        }
+
+        Mp(f).map(self)
+    }
+
     /// Descend using traverse function
     pub fn descend<T: TraverseFn>(&self, mut tf: T) -> &S {
         let mut curr = self;

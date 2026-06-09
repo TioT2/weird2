@@ -15,7 +15,7 @@ Compilation:
 use std::collections::{HashMap, HashSet};
 use thiserror::Error;
 
-use crate::{geom, map, math::{Mat3f, Vec3f}};
+use crate::{bsp::Bsp, geom, map, math::{Mat3f, Vec3f}};
 
 use super::Id;
 
@@ -125,27 +125,10 @@ pub struct SplitReference {
     pub edge_is_front: bool,
 }
 
-/// Volume BSP
-/// # Note
-/// Child notes are optional because some volumes can be destroyed during invisible surface removal pass.
-pub enum VolumeBsp {
-    /// Volume BSP node, corresponds to some split
-    Node {
-        /// Splitter plane
-        plane: geom::Plane,
+/// BSP used for volumes
+pub type VolumeBsp = Bsp<Option<usize>>;
 
-        /// Volume bsp leaf to go to in case if point is in front of plane
-        front: Option<Box<VolumeBsp>>,
-
-        /// Volume bsp leaf to go to in case if point is in back of plane
-        back: Option<Box<VolumeBsp>>,
-    },
-
-    /// Volume BSP leaf, corresponds to final index
-    Leaf(usize),
-}
-
-/// Statistics for splitter
+/// Splitter statistics
 #[derive(Copy, Clone, Default)]
 pub struct SplitStat {
     /// Count of polygons in front of splitter plane
@@ -429,7 +412,7 @@ pub struct BspModelCompileContext {
     pub split_infos: Vec<SplitInfo>,
 
     /// Volume
-    pub volume_bsp: Option<Box<VolumeBsp>>,
+    pub volume_bsp: Box<VolumeBsp>,
 
     /// Set of portal polygons (They should be shared to optimize total memory consume)
     pub portal_polygons: Vec<geom::Polygon>,
@@ -458,7 +441,7 @@ impl Default for BspModelCompileContext {
             volumes: Vec::new(),
             split_infos: Vec::new(),
             portal_polygons: Vec::new(),
-            volume_bsp: None,
+            volume_bsp: Box::new(Bsp::Space(None)),
             bound_box: geom::BoundBox::empty(),
         }
     }
@@ -479,7 +462,7 @@ impl BspModelCompileContext {
         // final polygon, insert hull in volume set and finish
         if display_polygons.is_empty() {
             self.volumes.push(volume);
-            return VolumeBsp::Leaf(self.volumes.len() - 1);
+            return VolumeBsp::Space(Some(self.volumes.len() - 1));
         }
 
         // Just for safety #N+1
@@ -530,7 +513,7 @@ impl BspModelCompileContext {
         // Check case where there's no splitter at
         let Some(best_splitter_index) = best_splitter_index else {
             self.volumes.push(volume);
-            return VolumeBsp::Leaf(self.volumes.len() - 1);
+            return VolumeBsp::Space(Some(self.volumes.len() - 1));
         };
 
         // use splitter to...split!
@@ -602,17 +585,17 @@ impl BspModelCompileContext {
                 let back_bsp = self.build_volume(back_volume, back_polygons);
 
                 // Create new BSP
-                VolumeBsp::Node {
-                    front: Some(Box::new(front_bsp)),
-                    back: Some(Box::new(back_bsp)),
-                    plane: splitter_plane,
+                VolumeBsp::Partition {
+                    splitter_plane,
+                    front: Box::new(front_bsp),
+                    back: Box::new(back_bsp),
                 }
             }
             // Split failed by some unknown reasons
             Err(old_volume) => {
                 self.volumes.push(old_volume);
 
-                VolumeBsp::Leaf(self.volumes.len() - 1)
+                VolumeBsp::Space(Some(self.volumes.len() - 1))
             }
         }
     }
@@ -626,10 +609,10 @@ impl BspModelCompileContext {
             .extend(Vec3f::broadcast(10.0));
 
         // Build BSP
-        self.volume_bsp = Some(Box::new(self.build_volume(
+        self.volume_bsp = Box::new(self.build_volume(
             HullVolume::from_bound_box(self.bound_box),
             physical_polygons
-        )));
+        ));
     }
 
     /// Build front and back polygon sets of single portal resolve task
@@ -940,28 +923,27 @@ impl BspModelCompileContext {
             .collect();
 
         // Map volume BSP
-
-        fn map_volume_bsp(old_volume_bsp: VolumeBsp, index_map: &[Option<usize>]) -> Option<Box<VolumeBsp>> {
+        fn map_volume_bsp(old_volume_bsp: VolumeBsp, index_map: &[Option<usize>]) -> VolumeBsp {
             match old_volume_bsp {
-                VolumeBsp::Node { plane, front, back } => {
-                    let front = map_volume_bsp(*front.unwrap(), index_map);
-                    let back = map_volume_bsp(*back.unwrap(), index_map);
+                VolumeBsp::Partition { splitter_plane, mut front, mut back } => {
+                    // No reallocations
+                    *front = map_volume_bsp(*front, index_map);
+                    *back = map_volume_bsp(*back, index_map);
 
-                    if front.is_none() && back.is_none() {
-                        None
-                    } else {
-                        Some(Box::new(VolumeBsp::Node { plane, front, back }))
+                    match (front.as_ref(), back.as_ref()) {
+                        (Bsp::Space(None), Bsp::Space(None)) => Bsp::Space(None),
+                        _ => Bsp::Partition { splitter_plane, front, back }
                     }
                 },
-                VolumeBsp::Leaf(index) => {
-                    index_map[index].map(|new_index| Box::new(VolumeBsp::Leaf(new_index)))
-                },
+                VolumeBsp::Space(None) => VolumeBsp::Space(None),
+                VolumeBsp::Space(Some(index)) => VolumeBsp::Space(index_map[index]),
             }
         }
 
-        if let Some(bsp) = std::mem::take(&mut self.volume_bsp) {
-            self.volume_bsp = map_volume_bsp(*bsp, &volume_index_map);
-        }
+        // Do not do reallocation
+        let mut bsp = std::mem::replace(self.volume_bsp.as_mut(), Bsp::Space(None));
+        bsp = map_volume_bsp(bsp, &volume_index_map);
+        *self.volume_bsp = bsp;
     }
 
     /// Build sets of potentially-visible volumes
@@ -1007,67 +989,18 @@ impl BspModelCompileContext {
 
     /// Get set of actually used brush faces
     pub fn get_used_brush_faces(&self) -> HashSet<BrushFaceId> {
-        let mut result = HashSet::new();
-
-        let Some(root) = self.volume_bsp.as_ref() else {
-            return result;
-        };
-
-        let mut stack = vec![root.as_ref()];
-
-        while let Some(node) = stack.pop() {
-            match node {
-                VolumeBsp::Node { plane: _, front, back } => {
-                    if let Some(front) = front.as_ref() {
-                        stack.push(front.as_ref());
-                    }
-                    if let Some(back) = back.as_ref() {
-                        stack.push(back.as_ref());
-                    }
-                }
-                VolumeBsp::Leaf(vol) => {
-                    let bfii = self.volumes[*vol].faces.iter()
-                        .flat_map(|f| f.display_polygons.iter())
-                        .map(|dp| dp.brush_face_id);
-                    result.extend(bfii);
-                }
-            }
-        }
-
-        result
-    }
-
-    /// Find volume point belongs to
-    pub fn find_point_volume(&self, pt: Vec3f) -> Option<usize> {
-        let mut node = self.volume_bsp.as_ref()?.as_ref();
-
-        loop {
-            match node {
-                VolumeBsp::Node { plane, front, back } => {
-                    let next_node = match plane.get_point_relation(pt) {
-                        geom::PointRelation::Front | geom::PointRelation::OnPlane => front,
-                        geom::PointRelation::Back => back,
-                    };
-                    node = next_node.as_ref()?.as_ref();
-                }
-                VolumeBsp::Leaf(id) => return Some(*id),
-            }
-        }
+        self.volume_bsp
+            .traverse(super::FrontToBack)
+            .filter_map(|v| *v)
+            .flat_map(|vol| self.volumes[vol].faces.iter()
+                .flat_map(|f| f.display_polygons.iter())
+                .map(|dp| dp.brush_face_id)
+            )
+            .collect::<HashSet<BrushFaceId>>()
     }
 
     /// Run invisible volume removal pass
     pub fn start_remove_invisible(&mut self, visible_from: &[Vec3f]) {
-
-
-        // let visible_volumes = visible_from.iter()
-        //     .filter_map(|p| self.find_point_volume(*p))
-        //     .collect::<HashSet::<_>>();
-        // let conn_components = self.get_volume_connectivity_components();
-        // let removed_index_set = conn_components.into_iter()
-        //     .filter(|cc| cc.is_disjoint(&visible_volumes))
-        //     .flat_map(|cc| cc.into_iter())
-        //     .collect();
-
         let removed_index_set = self
             .get_volume_connectivity_components()
             .into_iter()
@@ -1232,24 +1165,21 @@ impl CompileContext {
 
     /// Add model to final BSP
     pub fn add_model(&mut self, ctx: BspModelCompileContext) -> usize {
-        fn map_bsp(vbsp: Option<Box<VolumeBsp>>, offset: usize) -> super::Bsp<Option<super::VolumeId>> {
-            let Some(bsp) = vbsp else {
-                return super::Bsp::Space(None);
-            };
-
-            match *bsp {
-                VolumeBsp::Node {
-                    plane,
+        fn map_bsp(vbsp: VolumeBsp, offset: usize) -> super::Bsp<Option<super::VolumeId>> {
+            match vbsp {
+                VolumeBsp::Partition {
+                    splitter_plane,
                     front,
                     back
                 } => super::Bsp::Partition {
-                    splitter_plane: plane,
-                    front: Box::new(map_bsp(front, offset)),
-                    back: Box::new(map_bsp(back, offset)),
+                    splitter_plane,
+                    front: Box::new(map_bsp(*front, offset)),
+                    back: Box::new(map_bsp(*back, offset)),
                 },
-                VolumeBsp::Leaf(index) => super::Bsp::Space(
+                VolumeBsp::Space(Some(index)) => super::Bsp::Space(
                     Some(super::VolumeId::from_index(index + offset))
                 ),
+                VolumeBsp::Space(None) => Bsp::Space(None),
             }
         }
 
@@ -1260,7 +1190,7 @@ impl CompileContext {
         let volume_index_offset = self.volume_set.len();
 
         // Build BSP
-        let bsp = Box::new(map_bsp(ctx.volume_bsp, volume_index_offset));
+        let bsp = Box::new(map_bsp(*ctx.volume_bsp, volume_index_offset));
 
         // Extend polygon set with portals
         self.polygon_set.extend_from_slice(ctx.portal_polygons.as_slice());

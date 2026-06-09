@@ -706,8 +706,8 @@ impl BoundOct {
     pub fn extend(&self, x: f32, y: f32, y_s_x: f32, y_a_x: f32) -> Self {
         let v = Vec4f::new(x, y, y_s_x, y_a_x);
         Self {
-            min: self.min - v, // Vec4f::zip(self.min, v, f32::min),
-            max: self.max + v, // Vec4f::zip(self.max, v, f32::max),
+            min: self.min - v,
+            max: self.max + v,
         }
     }
 }

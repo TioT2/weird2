@@ -427,7 +427,7 @@ pub fn load(data: &[u8]) -> Result<super::Map, LoadError> {
     }
 
     /// Build BSP starting from kind of array
-    fn bsp_from(elems: &[BspElement], volumes: &[Volume], start: u32) -> Result<(Box<super::Bsp<Option<super::VolumeId>>>, u32), LoadError> {
+    fn bsp_from(elems: &[BspElement], volumes: &[Volume], start: u32) -> Result<(Box<super::VolumeBsp>, u32), LoadError> {
         let elem = elems
             .get(start as usize)
             .ok_or(LoadError::InvalidIndex {

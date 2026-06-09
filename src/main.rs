@@ -889,8 +889,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
         camera: &RenderCamera,
     ) -> Vec<(bsp::VolumeId, geom::BoundOct)> {
         // Render set itself
-        let mut inv_render_set_value = Vec::new();
-        let inv_render_set = &mut inv_render_set_value;
+        let mut inv_render_set = Vec::new();
 
         // Potentially Visible volume (with corresponding clip octagon) Set
         let mut pvs = HashMap::<bsp::VolumeId, geom::BoundOct>::new();
@@ -901,9 +900,9 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
         let mut polygon_points = Vec::with_capacity(32);
         let mut proj_polygon_points = Vec::with_capacity(32);
 
-        let traverse_fn = move |volume_id| {
+        'traverse: for volume_id in bsp_root.traverse_around_pt(camera.location).filter_map(|x| *x) {
             let Some(volume_clip_oct) = pvs.get(&volume_id) else {
-                return;
+                continue 'traverse;
             };
 
             let volume_clip_oct = *volume_clip_oct;
@@ -993,44 +992,9 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                     }
                 }
             }
-        };
-
-        self.traverse_bsp(
-            bsp_root,
-            camera.location,
-            traverse_fn,
-        );
-
-        inv_render_set_value
-    }
-
-    /// Traverse BSP in order dictated by camera_location
-    pub fn traverse_bsp<TraverseFn: FnMut(bsp::VolumeId)>(
-        &self,
-        bsp_root: &bsp::Bsp<Option<bsp::VolumeId>>,
-        camera_location: Vec3f,
-        mut volume_fn: TraverseFn,
-    ) {
-        let mut visit_stack = vec![bsp_root];
-
-        while let Some(bsp) = visit_stack.pop() {
-            match bsp {
-                bsp::Bsp::Partition { splitter_plane, front, back } => {
-                    match splitter_plane.get_point_relation(camera_location) {
-                        geom::PointRelation::Front | geom::PointRelation::OnPlane => {
-                            visit_stack.push(back);
-                            visit_stack.push(front);
-                        }
-                        geom::PointRelation::Back => {
-                            visit_stack.push(front);
-                            visit_stack.push(back);
-                        }
-                    }
-                }
-                bsp::Bsp::Space(Some(vol)) => volume_fn(*vol),
-                bsp::Bsp::Space(None) => {},
-            }
         }
+
+        inv_render_set
     }
 
     pub fn render(&mut self) {
@@ -1054,16 +1018,11 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                         .map(|(id, _)| id)
                         .collect::<HashSet<bsp::VolumeId>>();
 
-                    // Reorder render set again
-                    self.traverse_bsp(
-                        world_bsp,
-                        self.camera.location,
-                        |volume_id| {
-                            if unordered_render_set.remove(&volume_id) {
-                                render_set.push((volume_id, screen_clip_oct));
-                            }
-                        },
-                    );
+                    for volume_id in world_bsp.traverse_around_pt(self.camera.location).filter_map(|x| *x) {
+                        if unordered_render_set.remove(&volume_id) {
+                            render_set.push((volume_id, screen_clip_oct));
+                        }
+                    }
 
                     render_set
                 })
@@ -1085,14 +1044,9 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                 let mut render_set = Vec::new();
                 let render_set_ref = &mut render_set;
 
-                self.traverse_bsp(
-                    world_bsp,
-                    self.camera.location,
-                    // Move is used to move screen_clip_oct here
-                    move |volume_id| {
-                        render_set_ref.push((volume_id, screen_clip_oct));
-                    },
-                );
+                for volume_id in world_bsp.traverse_around_pt(self.camera.location).filter_map(|x| *x) {
+                    render_set_ref.push((volume_id, screen_clip_oct));
+                }
 
                 render_set
             });

@@ -180,8 +180,9 @@ pub enum Bsp<S> {
 
 impl<S> Bsp<S> {
 
-    /// 'Fold' bsp by reference
+    /// Use fold but by reference
     pub fn fold_ref<T>(&self, leaf: impl FnMut(&S, usize) -> T, branch: impl FnMut(T, T) -> T) -> T {
+        /// Traverse helper structure using stack instead of heap
         struct Tr<Lf, Bf> {
             leaf: Lf,
             branch: Bf
@@ -207,37 +208,108 @@ impl<S> Bsp<S> {
         Tr { leaf, branch }.with(self, 0)
     }
 
-    /// Descend through BSP
-    pub fn descend(&self, mut go_front: impl FnMut(geom::Plane) -> bool) -> &S {
-        let mut curr = self;
-        loop {
-            curr = match curr {
-                Self::Partition { splitter_plane, front, back } => if go_front(*splitter_plane) {
-                    front
-                } else {
-                    back
-                }
-                Self::Space(l) => return l,
-            };
-        }
-    }
-
-    /// Find BSP cell that contains the point
-    pub fn find(&self, point: Vec3f) -> &S {
-        self.descend(move |pl| match pl.get_point_relation(point) {
-            geom::PointRelation::Front | geom::PointRelation::OnPlane => true,
-            geom::PointRelation::Back => false,
-        })
-    }
-
     /// Calculate BSP tree depth
     pub fn depth(&self) -> usize {
-        self.fold_ref(|_, d| d, |l, r| usize::max(l, r))
+        self.fold_ref(|_, d| d, usize::max)
     }
 
     /// Count of BSP elements
     pub fn size(&self) -> usize {
         self.fold_ref(|_, _| 1, |l, r| l + r + 1)
+    }
+
+    /// Traverse with some function
+    pub fn traverse<'t, T: TraverseFn>(&'t self, tf: T) -> BspIter<'t, S, T> {
+        BspIter { nodes: vec![self], tf }
+    }
+
+    /// Descend using traverse function
+    pub fn descend<T: TraverseFn>(&self, mut tf: T) -> &S {
+        let mut curr = self;
+        loop {
+            curr = match curr {
+                Self::Partition { splitter_plane, front, back } => if tf.qualify(*splitter_plane) {
+                    front
+                } else {
+                    back
+                },
+                Self::Space(s) => return s,
+            };
+        }
+    }
+
+    /// Traverse around point
+    pub fn traverse_around_pt<'t>(&'t self, pt: Vec3f) -> BspIter<'t, S, AroundPoint> {
+        self.traverse(AroundPoint(pt))
+    }
+
+    /// Find BSP cell that contains the point
+    pub fn find(&self, point: Vec3f) -> &S {
+        self.descend(AroundPoint(point))
+    }
+}
+
+/// BSP traverse trait
+pub trait TraverseFn {
+    fn qualify(&mut self, plane: geom::Plane) -> bool;
+}
+
+impl<T: FnMut(geom::Plane) -> bool> TraverseFn for T {
+    fn qualify(&mut self, plane: geom::Plane) -> bool {
+        (self)(plane)
+    }
+}
+
+pub struct FrontToBack;
+impl TraverseFn for FrontToBack {
+    fn qualify(&mut self, _plane: geom::Plane) -> bool {
+        true
+    }
+}
+
+pub struct BackToFront;
+impl TraverseFn for BackToFront {
+    fn qualify(&mut self, _plane: geom::Plane) -> bool {
+        false
+    }
+}
+
+pub struct AroundPoint(Vec3f);
+impl TraverseFn for AroundPoint {
+    fn qualify(&mut self, plane: geom::Plane) -> bool {
+        match plane.get_point_relation(self.0) {
+            geom::PointRelation::Front | geom::PointRelation::OnPlane => true,
+            geom::PointRelation::Back => false,
+        }
+    }
+}
+
+/// BSP traverse iterator
+pub struct BspIter<'t, S, Tf> {
+    nodes: Vec<&'t Bsp<S>>,
+    tf: Tf,
+}
+
+impl<'t, S, Tf: TraverseFn> Iterator for BspIter<'t, S, Tf> {
+    type Item = &'t S;
+
+    fn next(&mut self) -> Option<&'t S> {
+        let mut node = self.nodes.pop()?;
+
+        'descend: loop {
+            match node {
+                Bsp::Partition { splitter_plane, front, back } => {
+                    let stn;
+                    (node, stn) = if self.tf.qualify(*splitter_plane) {
+                        (front, back)
+                    } else {
+                        (back, front)
+                    };
+                    self.nodes.push(stn);
+                }
+                Bsp::Space(l) => break 'descend Some(l),
+            };
+        }
     }
 }
 

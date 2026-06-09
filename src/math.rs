@@ -2,22 +2,12 @@
 
 use std::ops::{Add, BitXor, Div, Mul, Neg, Rem, RemAssign, Sub};
 
-macro_rules! operator_on_variadic {
-    ($operator: tt, $first: expr) => {
-        $first
-    };
-
-    ($operator: tt, $first: expr, $($rest: expr),*) => {
-        $first $operator operator_on_variadic!($operator, $($rest),*)
-    };
-}
-
-macro_rules! cfoldl1 {
+macro_rules! reduce_impl {
     ($f: expr, $head: expr, $($tail: expr),*) => {
         {
-            let mut _r = $head;
-            $( _r = $f(_r, $tail); )*
-            _r
+            let mut res = $head;
+            $( res = $f(res, $tail); )*
+            res
         }
     };
 }
@@ -89,8 +79,8 @@ macro_rules! impl_matn_vecn {
             }
 
             /// Perform left fold without first element
-            pub fn fold1<F: FnMut(T, T) -> T>(self, mut f: F) -> T {
-                cfoldl1!(f, $(self.$x),*)
+            pub fn reduce<F: FnMut(T, T) -> T>(self, mut f: F) -> T {
+                reduce_impl!(f, $(self.$x),*)
             }
 
             $(
@@ -141,7 +131,7 @@ macro_rules! impl_matn_vecn {
                 V: std::ops::Add<V, Output = V>,
                 T: std::ops::Mul<U, Output = V>
             {
-                operator_on_variadic!(+, $(self.$x * othr.$x),*)
+                self.zip(othr, std::ops::Mul::mul).reduce(std::ops::Add::add)
             }
         }
 

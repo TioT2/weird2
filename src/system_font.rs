@@ -85,6 +85,7 @@ pub struct FrameWriter<'t> {
 }
 
 impl<'t> FrameWriter<'t> {
+    /// Create new frame writer
     pub fn new(fs: FrameSliceMut<'t, u32>) -> Self {
         Self {
             fs,
@@ -93,6 +94,7 @@ impl<'t> FrameWriter<'t> {
         }
     }
 
+    /// Jump to certain coordinates
     pub fn jump(&mut self, x: usize, y: usize) {
         self.x = x;
         self.y = y;
@@ -131,7 +133,7 @@ impl<'t> FrameWriter<'t> {
         }
     }
 
-    /// Write single character
+    /// Write string
     pub fn write_str(&mut self, str: &str) {
         for ch in str.chars() {
             self.write_char(ch);

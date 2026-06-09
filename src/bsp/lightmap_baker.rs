@@ -20,7 +20,7 @@ impl PointLight {
         Self {
             origin,
             intensity,
-            att_distance: (intensity.fold1(f32::max) * 1024.0).sqrt(),
+            att_distance: (intensity.reduce(f32::max) * 1024.0).sqrt(),
         }
     }
 
@@ -121,7 +121,7 @@ fn bake_volume(
 /// Bake BSP node
 fn bake_bsp(
     bsp: &mut bsp::Map,
-    node: &bsp::Bsp,
+    node: &bsp::Bsp<Option<bsp::VolumeId>>,
     lights: &[PointLight],
     idx: &mut Vec<u32>,
 ) {
@@ -151,8 +151,8 @@ fn bake_bsp(
 
             bake_bsp(bsp, front, lights, idx);
         }
-        bsp::Bsp::Volume(id) => bake_volume(bsp, lights, idx, *id),
-        bsp::Bsp::Void => {
+        bsp::Bsp::Space(Some(id)) => bake_volume(bsp, lights, idx, *id),
+        bsp::Bsp::Space(None) => {
         }
     }
 }
@@ -168,7 +168,7 @@ pub fn bake(bsp: &mut bsp::Map, map: &map::Map) {
 
     let world = bsp.bsp_models.get_mut(bsp.world_model_id.into_index()).unwrap();
 
-    let world_bsp = std::mem::replace(world.bsp.as_mut(), bsp::Bsp::Void);
+    let world_bsp = std::mem::replace(world.bsp.as_mut(), bsp::Bsp::Space(None));
 
     let mut idx = (0..point_lights.len() as u32).collect::<Vec<_>>();
 

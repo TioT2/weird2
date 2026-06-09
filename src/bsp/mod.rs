@@ -19,15 +19,27 @@ pub trait Id: Copy + Clone + Eq + PartialEq + std::hash::Hash + std::fmt::Debug 
 
 /// Generic id implementation
 macro_rules! impl_id {
-    ($name: ident) => {
-        /// Unique identifier
+    ($Id: ident) => {
+        /// Some unique identifier
         #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug, Ord, PartialOrd)]
-        pub struct $name(NonZeroU32);
+        pub struct $Id(NonZeroU32);
 
-        impl Id for $name {
+        impl From<usize> for $Id {
+            fn from(v: usize) -> $Id {
+                Self::from_index(v)
+            }
+        }
+
+        impl From<$Id> for usize {
+            fn from(v: $Id) -> usize {
+                v.into_index()
+            }
+        }
+
+        impl Id for $Id {
             /// Build id from index
             fn from_index(index: usize) -> Self {
-                $name(NonZeroU32::try_from(!(index as u32)).unwrap())
+                $Id(NonZeroU32::try_from(!(index as u32)).unwrap())
             }
     
             /// Get index by id
@@ -148,69 +160,94 @@ pub struct Volume {
     pub bound_box: geom::BoundBox,
 }
 
-/// Binary Space Partition structure
-pub enum Bsp {
+/// Binary Space Partition enumeration
+pub enum Bsp<S> {
     /// Space partition
     Partition {
         /// Plane that splits front/back volume sets. Front volume set is located in front of plane.
         splitter_plane: geom::Plane,
 
         /// Pointer to front polygon part
-        front: Box<Bsp>,
+        front: Box<Self>,
 
         /// Pointer to back polygon part
-        back: Box<Bsp>,
+        back: Box<Self>,
     },
 
-    /// BSP tree leaf
-    Volume(VolumeId),
-
-    /// Nothing there
-    Void,
+    /// Space itself
+    Space(S),
 }
 
-impl Bsp {
-    /// Find BSP cell that contains the point
-    pub fn find_volume(&self, point: Vec3f) -> Option<VolumeId> {
-        let mut curr = self;
+impl<S> Bsp<S> {
 
-        loop {
-            match curr {
-                Bsp::Partition { splitter_plane, front, back } => {
-                    curr = match splitter_plane.get_point_relation(point) {
-                        geom::PointRelation::Front | geom::PointRelation::OnPlane => front,
-                        geom::PointRelation::Back => back,
-                    };
+    /// 'Fold' bsp by reference
+    pub fn fold_ref<T>(&self, leaf: impl FnMut(&S, usize) -> T, branch: impl FnMut(T, T) -> T) -> T {
+        struct Tr<Lf, Bf> {
+            leaf: Lf,
+            branch: Bf
+        }
+
+        impl<Lf, Bf> Tr<Lf, Bf> {
+            fn with<L, T>(&mut self, node: &Bsp<L>, depth: usize) -> T
+            where
+                Lf: FnMut(&L, usize) -> T,
+                Bf: FnMut(T, T) -> T
+            {
+                match node {
+                    Bsp::Partition { front, back, .. } => {
+                        let f = self.with(front, depth + 1);
+                        let b = self.with(back, depth + 1);
+                        (self.branch)(f, b)
+                    }
+                    Bsp::Space(l) => (self.leaf)(l, depth),
                 }
-                Bsp::Volume(volume_id) => return Some(*volume_id),
-                Bsp::Void => return None,
             }
         }
+
+        Tr { leaf, branch }.with(self, 0)
+    }
+
+    /// Descend through BSP
+    pub fn descend(&self, mut go_front: impl FnMut(geom::Plane) -> bool) -> &S {
+        let mut curr = self;
+        loop {
+            curr = match curr {
+                Self::Partition { splitter_plane, front, back } => if go_front(*splitter_plane) {
+                    front
+                } else {
+                    back
+                }
+                Self::Space(l) => return l,
+            };
+        }
+    }
+
+    /// Find BSP cell that contains the point
+    pub fn find(&self, point: Vec3f) -> &S {
+        self.descend(move |pl| match pl.get_point_relation(point) {
+            geom::PointRelation::Front | geom::PointRelation::OnPlane => true,
+            geom::PointRelation::Back => false,
+        })
     }
 
     /// Calculate BSP tree depth
     pub fn depth(&self) -> usize {
-        match self {
-            Bsp::Partition { splitter_plane: _, front, back }
-                => usize::max(front.depth(), back.depth()) + 1,
-            _
-                => 1,
-        }
+        self.fold_ref(|_, d| d, |l, r| usize::max(l, r))
     }
 
     /// Count of BSP elements
     pub fn size(&self) -> usize {
-        match self {
-            Bsp::Partition { splitter_plane: _, front, back } => front.size() + back.size() + 1,
-            _ => 1,
-        }
+        self.fold_ref(|_, _| 1, |l, r| l + r + 1)
     }
 }
+
+/// Bsp of volumes
+pub type VolumeBsp = Bsp<Option<VolumeId>>;
 
 /// Static model
 pub struct BspModel {
     /// Model BSP
-    bsp: Box<Bsp>,
+    bsp: Box<Bsp<Option<VolumeId>>>,
 
     /// (Simple) Bounding volume, used during split process
     bound_box: geom::BoundBox,
@@ -218,7 +255,7 @@ pub struct BspModel {
 
 impl BspModel {
     /// Get BSP 
-    pub fn get_bsp(&self) -> &Bsp {
+    pub fn get_bsp(&self) -> &Bsp<Option<VolumeId>> {
         &self.bsp
     }
 
@@ -261,13 +298,22 @@ pub struct Map {
     world_model_id: BspModelId,
 }
 
-impl std::ops::Index<VolumeId> for Map {
-    type Output = Volume;
+macro_rules! impl_map_index {
+    ($Id: ty, $Val: ty, $get: ident) => {
+        impl std::ops::Index<$Id> for Map {
+            type Output = $Val;
 
-    fn index(&self, id: VolumeId) -> &Volume {
-        self.get_volume(id).unwrap()
+            fn index(&self, id: $Id) -> &$Val {
+                self.$get(id).unwrap()
+            }
+        }
     }
 }
+
+impl_map_index!(PolygonId, geom::Polygon, get_polygon);
+impl_map_index!(VolumeId, Volume, get_volume);
+impl_map_index!(BspModelId, BspModel, get_bsp_model);
+impl_map_index!(DynamicModelId, DynamicModel, get_dynamic_model);
 
 impl Map {
     /// Get volume by id

@@ -1231,9 +1231,9 @@ impl CompileContext {
 
     /// Add model to final BSP
     pub fn add_model(&mut self, ctx: BspModelCompileContext) -> usize {
-        fn map_bsp(vbsp: Option<Box<VolumeBsp>>, offset: usize) -> super::Bsp {
+        fn map_bsp(vbsp: Option<Box<VolumeBsp>>, offset: usize) -> super::Bsp<Option<super::VolumeId>> {
             let Some(bsp) = vbsp else {
-                return super::Bsp::Void;
+                return super::Bsp::Space(None);
             };
 
             match *bsp {
@@ -1246,8 +1246,9 @@ impl CompileContext {
                     front: Box::new(map_bsp(front, offset)),
                     back: Box::new(map_bsp(back, offset)),
                 },
-                VolumeBsp::Leaf(index) =>
-                    super::Bsp::Volume(super::VolumeId::from_index(index + offset)),
+                VolumeBsp::Leaf(index) => super::Bsp::Space(
+                    Some(super::VolumeId::from_index(index + offset))
+                ),
             }
         }
 

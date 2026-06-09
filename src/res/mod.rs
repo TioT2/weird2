@@ -34,7 +34,7 @@ impl Default for Texture {
 }
 
 impl Texture {
-    /// Get 2x2 checker texture ([`even`] is color at even corodinate sum)
+    /// Get 2x2 checker texture (`even` is color at even corodinate sum)
     pub fn new_checker(even: u32, odd: u32) -> Self {
         Self {
             uv_scale: 32.0,

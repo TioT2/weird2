@@ -570,7 +570,7 @@ macro_rules! impl_bb {
                 let min = <$Vec>::zip(self.min, othr.min, f32::max);
 
                 <$Vec>::zip(min, max, |l, r| l <= r)
-                    .fold1(|x, y| x && y)
+                    .reduce(|x, y| x && y)
                     .then_some(Self { min, max })
             }
 
@@ -585,16 +585,16 @@ macro_rules! impl_bb {
             /// Check if boundbox intersection isn't empty
             pub fn is_intersecting(&self, another: &$BoundBox) -> bool {
                 true
-                    && <$Vec>::zip(self.max, another.min, |l, r| l >= r).fold1(|x, y| x && y)
-                    && <$Vec>::zip(self.min, another.max, |l, r| l <= r).fold1(|x, y| x && y)
+                    && <$Vec>::zip(self.max, another.min, |l, r| l >= r).reduce(|x, y| x && y)
+                    && <$Vec>::zip(self.min, another.max, |l, r| l <= r).reduce(|x, y| x && y)
             }
 
             /// Check if boundbox contains point
             pub fn contains_point(&self, point: &$Pt) -> bool {
                 let v = $pt2v(*point);
                 true
-                    && <$Vec>::zip(self.max, v, |l, r| l >= r).fold1(|x, y| x && y)
-                    && <$Vec>::zip(self.min, v, |l, r| l <= r).fold1(|x, y| x && y)
+                    && <$Vec>::zip(self.max, v, |l, r| l >= r).reduce(|x, y| x && y)
+                    && <$Vec>::zip(self.min, v, |l, r| l <= r).reduce(|x, y| x && y)
             }
         }
     };

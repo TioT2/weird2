@@ -111,8 +111,8 @@ pub struct Vertex {
 
 impl Vertex {
     /// Get vertex XZUV (used during rasterization process)
-    pub fn xzuv(self) -> math::Vec4f {
-        math::Vec4f::new(
+    pub fn xzuv(self) -> Vec4f {
+        Vec4f::new(
             self.position.x(),
             self.position.z(),
             self.tex_coord.x(),
@@ -369,11 +369,11 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
         #[derive(Copy, Clone, Default)]
         struct LineContext {
             index: usize,
-            prev_xzuv: math::Vec4f,
-            curr_xzuv: math::Vec4f,
+            prev_xzuv: Vec4f,
+            curr_xzuv: Vec4f,
             prev_y: f32,
             curr_y: f32,
-            d_xzuv: math::Vec4f,
+            d_xzuv: Vec4f,
         }
 
         impl LineContext {
@@ -394,7 +394,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
 
                 // Check if edge is flat
                 self.d_xzuv = if dy <= DY_EPSILON {
-                    math::Vec4f::zero()
+                    Vec4f::zero()
                 } else {
                     (self.curr_xzuv - self.prev_xzuv) / dy.into()
                 };
@@ -431,15 +431,15 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                 right.next_point::<false>(vertices);
             }
 
-            let left_xzuv = math::Vec4f::mul_add(
+            let left_xzuv = Vec4f::mul_add(
                 left.d_xzuv,
-                math::Vec4f::broadcast(y - left.prev_y),
+                Vec4f::broadcast(y - left.prev_y),
                 left.prev_xzuv,
             );
 
-            let right_xzuv = math::Vec4f::mul_add(
+            let right_xzuv = Vec4f::mul_add(
                 right.d_xzuv,
-                math::Vec4f::broadcast(y - right.prev_y),
+                Vec4f::broadcast(y - right.prev_y),
                 right.prev_xzuv,
             );
 
@@ -449,7 +449,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
             let dx = right_x - left_x;
 
             let d_xzuv = if dx <= DY_EPSILON {
-                math::Vec4f::zero()
+                Vec4f::zero()
             } else {
                 (right_xzuv - left_xzuv) / dx.into()
             };
@@ -470,9 +470,9 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
             let pixel_off = left_x.fract() - 0.5;
 
             for (x, p) in pixel_row_slice.iter_mut().enumerate() {
-                pixel_fn(p, math::Vec4f::mul_add(
+                pixel_fn(p, Vec4f::mul_add(
                     d_xzuv,
-                    math::Vec4f::broadcast(x as f32 - pixel_off),
+                    Vec4f::broadcast(x as f32 - pixel_off),
                     left_xzuv
                 ));
             }
@@ -650,7 +650,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
         vertices_dst: &mut Vec<Vertex>,
         surface_texture_data: &mut Vec<u64>,
     ) {
-        let polygon = self.map.get_polygon(surface.polygon_id).unwrap();
+        let polygon = &self.map[surface.polygon_id];
 
         // Perform backface culling with shadow camera
         if let Some(shadow_camera) = self.shadow_camera.as_ref()
@@ -740,8 +740,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
         // Calculate color from light and material color
         let static_color = {
             let [r, g, b, _] = if matches!(self.rasterization_mode, RasterizationMode::MonochromePolygon) {
-                let i = surface.polygon_id.into_index() as u64;
-                rand::xorshift32(((i | (i >> 32)) & 0xFFFF_FFFF) as u32)
+                rand::xorshift32(surface.polygon_id.into_index() as u32)
             } else {
                 self.material_table.get_color(surface.material_id).unwrap()
             }.to_le_bytes();
@@ -827,7 +826,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
             };
 
             build_surface_texture(
-                texture.reborrow(),
+                texture.reborrow_mut(),
                 lighting,
                 color
             );
@@ -884,7 +883,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
     /// and previous clipping octagons.
     pub fn build_render_set(
         &self,
-        bsp_root: &bsp::Bsp,
+        bsp_root: &bsp::Bsp<Option<bsp::VolumeId>>,
         start_volume_id: bsp::VolumeId,
         start_clip_oct: &geom::BoundOct,
         camera: &RenderCamera,
@@ -1008,7 +1007,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
     /// Traverse BSP in order dictated by camera_location
     pub fn traverse_bsp<TraverseFn: FnMut(bsp::VolumeId)>(
         &self,
-        bsp_root: &bsp::Bsp,
+        bsp_root: &bsp::Bsp<Option<bsp::VolumeId>>,
         camera_location: Vec3f,
         mut volume_fn: TraverseFn,
     ) {
@@ -1028,21 +1027,19 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                         }
                     }
                 }
-                bsp::Bsp::Volume(vol) => volume_fn(*vol),
-                bsp::Bsp::Void => {},
+                bsp::Bsp::Space(Some(vol)) => volume_fn(*vol),
+                bsp::Bsp::Space(None) => {},
             }
         }
     }
 
     pub fn render(&mut self) {
-        let world_bsp = self.map
-            .get_world_model()
-            .get_bsp();
+        let world_bsp = self.map.get_world_model().get_bsp();
         let screen_clip_oct = geom::BoundOct::from_clip_rect(self.get_screen_clip_rect());
 
         let partial_render_set_opt = if let Some(shadow_camera) = self.shadow_camera.as_ref() {
             world_bsp
-                .find_volume(shadow_camera.location)
+                .find(shadow_camera.location)
                 .map(|start_volume_id| {
                     let mut render_set = self.build_render_set(
                         world_bsp,
@@ -1072,7 +1069,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                 })
         } else {
             world_bsp
-                .find_volume(self.camera.location)
+                .find(self.camera.location)
                 .map(|start_volume_id| {
                     self.build_render_set(
                         world_bsp,
@@ -1594,35 +1591,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             pub total_disbalance: u64,
         }
 
-        fn mk_bsp_stat(bsp: &bsp::Bsp, curr_depth: u64) -> BspStat {
-            match bsp {
-                bsp::Bsp::Partition { front, back, .. } => {
-                    let fstat = mk_bsp_stat(front, curr_depth + 1);
-                    let bstat = mk_bsp_stat(back, curr_depth + 1);
-
-                    BspStat {
-                        nodes: fstat.nodes + bstat.nodes + 1,
-                        leafs: fstat.leafs + bstat.leafs,
-                        leaf_depth_sum: fstat.leaf_depth_sum + bstat.leaf_depth_sum,
-                        depth_max: u64::max(fstat.depth_max, bstat.depth_max),
-                        total_disbalance: fstat.total_disbalance + bstat.total_disbalance
-                            + u64::abs_diff(fstat.nodes, bstat.nodes)
-                    }
-                }
-                bsp::Bsp::Volume(_) | bsp::Bsp::Void => {
-                    BspStat {
-                        nodes: 1,
-                        leafs: 1,
-                        leaf_depth_sum: curr_depth,
-                        depth_max: curr_depth,
-                        total_disbalance: 0,
-                    }
-                }
+        let stat = map.get_world_model().get_bsp().fold_ref(
+            |_, curr_depth| BspStat {
+                nodes: 1,
+                leafs: 1,
+                leaf_depth_sum: curr_depth as u64,
+                depth_max: curr_depth as u64,
+                total_disbalance: 0,
+            },
+            |fstat, bstat| BspStat {
+                nodes: fstat.nodes + bstat.nodes + 1,
+                leafs: fstat.leafs + bstat.leafs,
+                leaf_depth_sum: fstat.leaf_depth_sum + bstat.leaf_depth_sum,
+                depth_max: u64::max(fstat.depth_max, bstat.depth_max),
+                total_disbalance: fstat.total_disbalance + bstat.total_disbalance
+                    + u64::abs_diff(fstat.nodes, bstat.nodes)
             }
-        }
-
-        let bsp = map.get_world_model().get_bsp();
-        let stat = mk_bsp_stat(bsp, 0);
+        );
 
         println!("nodes           : {}", stat.nodes);
         println!("leafs           : {}", stat.leafs);
@@ -1790,7 +1775,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let mut ldr_frame = FrameSliceMut::new(width as usize, height as usize, stride as usize, &mut ldr_frame_buffer);
 
                 // Display statistics
-                let mut fw = system_font::writer(ldr_frame.reborrow());
+                let mut fw = system_font::writer(ldr_frame.reborrow_mut());
                 writeln!(fw)?;
                 writeln!(fw, " FPS: {} ({}ms)", timer.get_fps(), 1000.0 / timer.get_fps())?;
                 writeln!(fw, " SC={}, RM={}", shadow_camera.is_some() as u32, rasterization_mode as u32)?;
@@ -1799,7 +1784,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 // Present rendered frame
                 match window.surface(&event_pump) {
-                    Ok(mut window_surface) => present_frame(ldr_frame.reborrow(), &mut window_surface),
+                    Ok(mut window_surface) => present_frame(ldr_frame.reborrow_mut(), &mut window_surface),
                     Err(err) => eprintln!("Cannot get window surface: {}", err),
                 };
 

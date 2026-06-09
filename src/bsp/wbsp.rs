@@ -427,7 +427,7 @@ pub fn load(data: &[u8]) -> Result<super::Map, LoadError> {
     }
 
     /// Build BSP starting from kind of array
-    fn bsp_from(elems: &[BspElement], volumes: &[Volume], start: u32) -> Result<(Box<super::Bsp>, u32), LoadError> {
+    fn bsp_from(elems: &[BspElement], volumes: &[Volume], start: u32) -> Result<(Box<super::Bsp<Option<super::VolumeId>>>, u32), LoadError> {
         let elem = elems
             .get(start as usize)
             .ok_or(LoadError::InvalidIndex {
@@ -457,10 +457,10 @@ pub fn load(data: &[u8]) -> Result<super::Map, LoadError> {
                 let volume = unsafe { &elem.data.volume };
                 let id: super::VolumeId = get_id(volume.volume.volume_index, volumes, "volume")?;
 
-                (Box::new(super::Bsp::Volume(id)), start + 1)
+                (Box::new(super::Bsp::Space(Some(id))), start + 1)
             }
             BspType::Void => {
-                (Box::new(super::Bsp::Void), start + 1)
+                (Box::new(super::Bsp::Space(None)), start + 1)
             }
         })
     }
@@ -638,7 +638,7 @@ pub enum SaveError {
 
 /// Save .WBSP to map
 pub fn save(map: &super::Map, dst: &mut dyn std::io::Write) -> Result<(), SaveError> {
-    fn write_bsp(dst: &mut Vec<BspElement>, bsp: &super::Bsp) {
+    fn write_bsp(dst: &mut Vec<BspElement>, bsp: &super::Bsp<Option<super::VolumeId>>) {
         match bsp {
             super::Bsp::Partition {
                 splitter_plane,
@@ -657,7 +657,7 @@ pub fn save(map: &super::Map, dst: &mut dyn std::io::Write) -> Result<(), SaveEr
                 write_bsp(dst, front);
                 write_bsp(dst, back);
             }
-            super::Bsp::Volume(id) => {
+            super::Bsp::Space(Some(id)) => {
                 dst.push(BspElement {
                     ty: BspType::Volume as u8,
                     _pad: [0; _],
@@ -671,7 +671,7 @@ pub fn save(map: &super::Map, dst: &mut dyn std::io::Write) -> Result<(), SaveEr
                     },
                 });
             }
-            super::Bsp::Void => {
+            super::Bsp::Space(None) => {
                 dst.push(BspElement {
                     ty: BspType::Void as u8,
                     _pad: [0; _],

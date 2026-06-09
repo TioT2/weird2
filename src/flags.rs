@@ -60,7 +60,7 @@ pub trait Flags: Sized {
         Self::from_bits(((b ^ fb) & fb) | (b & !fb))
     }
 
-    /// Check [`flag`] for being enabled
+    /// Check `flag` for being enabled
     fn check(self, flag: Self) -> bool {
         let fb = flag.into_bits();
 
@@ -141,7 +141,7 @@ macro_rules! flags {
                 Self(((self.0 ^ mask.0) & mask.0) | (self.0 & !mask.0))
             }
 
-            /// Check [`flag`] for being enabled
+            /// Check `flag` for being enabled
             pub const fn check(self, flag: Self) -> bool {
                 self.0 & flag.0 == flag.0
             }

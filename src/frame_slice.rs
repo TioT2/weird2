@@ -1,4 +1,4 @@
-//! 2D image slice common structure implementation module
+//! 2D image slice implementation library
 
 use std::{marker::PhantomData, ptr::NonNull};
 
@@ -113,7 +113,7 @@ impl<'t, T> FrameSlice<'t, T> {
 
     /// Construct new for raw structures
     /// # Safety
-    /// [`ptr`] must point to start of WxH frame with S stride (W rows of size S where first H elements are borrowed for 't by resulting [`FrameSlice`]).
+    /// `ptr` must point to start of WxH frame with S stride (W rows of size S where first H elements are borrowed for 't by resulting [`FrameSlice`]).
     pub const unsafe fn from_raw_parts(width: usize, height: usize, stride: usize, ptr: *const T) -> Self {
         assert!(width <= stride, "Slice width must be less or equal to frame stride");
         Self {
@@ -142,7 +142,7 @@ impl<'t, T> FrameSlice<'t, T> {
         self.height
     }
 
-    /// Get frame stride (in size_of::<T>())
+    /// Get frame stride (in `std::mem::size_of::<T>()` units)
     #[inline]
     pub fn stride(&self) -> usize {
         self.stride
@@ -201,7 +201,7 @@ impl<'t, T> FrameSlice<'t, T> {
 
     /// Unchecked get function
     /// # Safety
-    /// [`y`] must be less, than [`height`][FrameSlice::height]
+    /// `y` must be less, than [`height`][FrameSlice::height]
     pub unsafe fn get_unchecked(&self, y: usize) -> &'t [T] {
         unsafe {
             std::slice::from_raw_parts(
@@ -218,8 +218,8 @@ impl<'t, T> FrameSlice<'t, T> {
 
     /// 2-dimensional unchecked access
     /// # Safety
-    /// [`y`] must be less, than [`height`][FrameSlice::height] and
-    /// [`x`] must be less, than [`width`][FrameSlice::width]
+    /// `y` must be less, than [`height`][FrameSlice::height] and
+    /// `x` must be less, than [`width`][FrameSlice::width]
     pub unsafe fn get2_unchecked(&self, y: usize, x: usize) -> &'t T {
         unsafe { self.data.add(y * self.stride + x).as_ref() }
     }
@@ -282,7 +282,7 @@ impl<'t, T> FrameSliceMut<'t, T> {
 
     /// Construct new for raw structures
     /// # Safety
-    /// [`ptr`] must point to start of WxH frame with S stride (W rows of size S where first H elements are mutably borrowed for 't by resulting [`FrameSlice`]).
+    /// `ptr` must point to start of WxH frame with S stride (W rows of size S where first H elements are mutably borrowed for 't by resulting [`FrameSlice`]).
     pub const unsafe fn from_raw_parts(width: usize, height: usize, stride: usize, ptr: *mut T) -> Self {
         assert!(width <= stride, "Slice width must be less or equal to frame stride");
         Self {
@@ -301,30 +301,41 @@ impl<'t, T> FrameSliceMut<'t, T> {
 
     /// Get frame width
     #[inline]
-    pub fn width(&self) -> usize {
+    pub const fn width(&self) -> usize {
         self.width
     }
 
     /// Get frame height
     #[inline]
-    pub fn height(&self) -> usize {
+    pub const fn height(&self) -> usize {
         self.height
     }
 
-    /// Get frame stride (in size_of::<T>())
+    /// Get frame stride (in `std::mem::size_of::<T>()` units)
     #[inline]
-    pub fn stride(&self) -> usize {
+    pub const fn stride(&self) -> usize {
         self.stride
     }
 
     /// Get data mutable pointer
     #[inline]
-    pub fn as_mut_ptr(&self) -> *mut T {
+    pub const fn as_mut_ptr(&self) -> *mut T {
         self.data.as_ptr()
     }
 
-    /// Reborrow frame slice contents from some shorter lifetime
-    pub fn reborrow<'r>(&'r mut self) -> FrameSliceMut<'r, T> {
+    /// Reborrow frame slice contents
+    pub const fn reborrow<'r>(&'r self) -> FrameSlice<'r, T> {
+        FrameSlice::<'r> {
+            width: self.width,
+            height: self.height,
+            stride: self.stride,
+            data: self.data,
+            _phantom: PhantomData,
+        }
+    }
+
+    /// Mutably reborrow frame slice contents
+    pub fn reborrow_mut<'r>(&'r mut self) -> FrameSliceMut<'r, T> {
         FrameSliceMut::<'r> {
             width: self.width,
             height: self.height,
@@ -380,7 +391,7 @@ impl<'t, T> FrameSliceMut<'t, T> {
 
     /// Get mutable line reference without check
     /// # Safety
-    /// [`y`] must be less, than [`height`][FrameSliceMut::height]
+    /// `y` must be less, than [`height`][FrameSliceMut::height]
     pub unsafe fn get_unchecked_mut(&mut self, y: usize) -> &mut [T] {
         unsafe {
             std::slice::from_raw_parts_mut(
@@ -397,7 +408,7 @@ impl<'t, T> FrameSliceMut<'t, T> {
 
     /// Get constant line reference without check
     /// # Safety
-    /// [`y`] must be less, than [`height`][FrameSliceMut::height]
+    /// `y` must be less, than [`height`][FrameSliceMut::height]
     pub unsafe fn get_unchecked(&self, y: usize) -> &[T] {
         unsafe {
             std::slice::from_raw_parts(
@@ -415,8 +426,8 @@ impl<'t, T> FrameSliceMut<'t, T> {
 
     /// 2-dimensional unchecked mutable get
     /// # Safety
-    /// [`y`] must be less than [`height`][FrameSliceMut::height] and
-    /// [`x`] must be less than [`width`][FrameSliceMut::width]
+    /// `y` must be less than [`height`][FrameSliceMut::height] and
+    /// `x` must be less than [`width`][FrameSliceMut::width]
     pub unsafe fn get2_unchecked_mut(&mut self, y: usize, x: usize) -> &mut T {
         unsafe { self.data.add(y * self.stride + x).as_mut() }
     }
@@ -428,8 +439,8 @@ impl<'t, T> FrameSliceMut<'t, T> {
 
     /// 2-dimensional unchecked get
     /// # Safety
-    /// [`y`] must be less than [`height`][FrameSliceMut::height] and
-    /// [`x`] must be less than [`width`][FrameSliceMut::width]
+    /// `y` must be less than [`height`][FrameSliceMut::height] and
+    /// `x` must be less than [`width`][FrameSliceMut::width]
     pub unsafe fn get2_unchecked(&self, y: usize, x: usize) -> &T {
         unsafe { self.data.add(y * self.stride + x).as_ref() }
     }

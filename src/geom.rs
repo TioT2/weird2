@@ -1,5 +1,7 @@
 //! Standard geometry primitive implementation module
 
+use std::{cell::{Cell}, collections::{HashMap}, rc::Rc};
+
 use crate::math::{Vec2f, Vec3f, Vec4f};
 
 /// Geometric epsilon (1 cm)
@@ -162,11 +164,7 @@ impl PartialEq for Plane {
 impl Plane {
     /// Build plane for point triple (normal is calculated as if triple is CCW-oriented)
     pub fn from_points(p1: Vec3f, p2: Vec3f, p3: Vec3f) -> Self {
-        let normal = Vec3f::cross(
-            (p3 - p2).normalized(),
-            (p1 - p2).normalized()
-        ).normalized();
-
+        let normal = Vec3f::cross(p3 - p2, p1 - p2).normalized();
         let distance = p2 ^ normal;
 
         Self { normal, distance }
@@ -740,4 +738,314 @@ impl BoundRect {
             max: self.max + v,
         }
     }
+}
+
+/// Total-ordered f32
+#[derive(Copy, Clone)]
+struct TotalF32(f32);
+
+impl TotalF32 {
+    /// Compare total-ordered f32
+    pub fn cmp(self, othr: TotalF32) -> std::cmp::Ordering {
+        f32::total_cmp(&self.0, &othr.0)
+    }
+}
+
+impl std::cmp::PartialEq for TotalF32 {
+    fn eq(&self, othr: &Self) -> bool {
+        self.cmp(othr).is_eq()
+    }
+}
+
+impl std::cmp::Eq for TotalF32 {}
+
+impl std::cmp::PartialOrd for TotalF32 {
+    fn partial_cmp(&self, othr: &Self) -> Option<std::cmp::Ordering> {
+        Some(TotalF32::cmp(*self, *othr))
+    }
+}
+
+impl std::cmp::Ord for TotalF32 {
+    fn cmp(&self, othr: &Self) -> std::cmp::Ordering {
+        TotalF32::cmp(*self, *othr)
+    }
+}
+
+/// Convex hull construction error
+pub enum ConvexHullError {
+    /// Initial set does not form any simplex, e.g. there's no 3d convex hull for this set
+    NoInitSimplex,
+}
+
+/// Jarvis convex hull edge helper
+struct JEdge {
+    /// First vertex index
+    v0: usize,
+
+    /// Second vertex index
+    v1: usize,
+
+    /// First triangle vertex
+    _t_init: usize,
+
+    /// Second triangle vertex
+    t_next: Cell<Option<usize>>,
+}
+
+impl JEdge {
+    // /// Get neighbour of some index
+    // fn neighbour_of(&self, ind: usize) -> Option<usize> {
+    //     if self.t_init != ind {
+    //         Some(self.t_init)
+    //     } else if let Some(i) = self.t_next.get() && i != ind {
+    //         Some(i)
+    //     } else {
+    //         None
+    //     }
+    // }
+
+    /// Get vertex indices considering edge swap flag
+    fn indices(&self, do_swap: bool) -> (usize, usize) {
+        if do_swap {
+            (self.v1, self.v0)
+        } else {
+            (self.v0, self.v1)
+        }
+    }
+}
+
+/// Jarvis convex hull triangle
+struct JTriangle {
+    /// Array of triangle edges. Contains edge reference and swap flag.
+    edges: [(Rc<JEdge>, bool); 3],
+
+    /// Triangle plane
+    plane: Plane,
+}
+
+/// Jarvis convex hull builder
+struct JBuilder<'t> {
+
+    /// Set of points we're building convex hull for
+    pts: &'t [Vec3f],
+
+    /// Array of hull triangles
+    tris: Vec<JTriangle>,
+
+    /// Map for searching for edges
+    edges: HashMap<(usize, usize), Rc<JEdge>>,
+
+    /// Point set average, used for plane orientation validation
+    center: Vec3f,
+
+    /// Hull building stack. Contains edge point pair, excluded point, and target normal.
+    edge_stack: Vec<(usize, usize, usize, Vec3f)>,
+}
+
+impl<'t> JBuilder<'t> {
+    /// Create new jarvis hull builder
+    pub fn new(pts: &'t [Vec3f]) -> Self {
+        Self {
+            pts,
+            center: pts.iter().copied().sum::<Vec3f>() / (pts.len() as f32).into(),
+            tris: Vec::new(),
+            edges: HashMap::new(),
+            edge_stack: Vec::new(),
+        }
+    }
+
+    /// Find edge by indices for triangle by index
+    fn find_edge(&mut self, tri: usize, mut v0: usize, mut v1: usize) -> (Rc<JEdge>, bool) {
+        let do_swap = v0 > v1;
+        if do_swap {
+            std::mem::swap(&mut v0, &mut v1);
+        }
+
+        let edge = match self.edges.entry((v0, v1)) {
+            std::collections::hash_map::Entry::Occupied(occ) => {
+                let edge = occ.get().clone();
+                edge.t_next.set(Some(tri));
+                edge
+            },
+            std::collections::hash_map::Entry::Vacant(vac) => {
+                let edge = Rc::new(JEdge {
+                    v0,
+                    v1,
+                    _t_init: tri,
+                    t_next: Cell::new(None),
+                });
+                vac.insert(edge).clone()
+            }
+        };
+
+        (edge, do_swap)
+    }
+
+    /// Find point maximizing certain floating-point parameter
+    fn find_max_point(&self, mut cond: impl FnMut(usize, Vec3f) -> Option<f32>) -> usize {
+        self.pts.iter().copied().enumerate()
+            .max_by_key(|(i, p)| cond(*i, *p).map(TotalF32))
+            .unwrap()
+            .0
+    }
+
+    /// Insert triangle in triangle stack
+    fn insert_triangle(&mut self, v0: usize, v1: usize, v2: usize) {
+        let plane = Plane::from_points(
+            self.pts[v0],
+            self.pts[v1],
+            self.pts[v2]
+        );
+
+        // PARANOID
+        if plane.normal.dot(self.pts[v0] - self.center).is_sign_negative() {
+            panic!("Invalid triangle orientation");
+        }
+
+        let ti = self.tris.len();
+        let edges = [
+            self.find_edge(ti, v0, v1),
+            self.find_edge(ti, v1, v2),
+            self.find_edge(ti, v2, v0),
+        ];
+
+        let mut push_edge = |i: usize, v_exc: usize| {
+            if edges[i].0.t_next.get().is_none() {
+                let (e0, e1) = edges[i].0.indices(edges[i].1);
+                self.edge_stack.push((e1, e0, v_exc, plane.normal));
+            }
+        };
+        push_edge(0, v2);
+        push_edge(1, v0);
+        push_edge(2, v1);
+
+        self.tris.push(JTriangle { edges, plane });
+
+    }
+
+    /// Add first triangle and first edges to edge stack
+    fn init(&mut self) {
+        let v0 = self.find_max_point(|_, p| Some(p.x()));
+        let p0 = self.pts[v0];
+
+        let v0_xy = Vec2f::new(self.pts[v0].x(), self.pts[v0].y());
+        let v1 = self.find_max_point(|i, p| (i != v0).then(|| (Vec2f::new(p.x(), p.y()) - v0_xy).normalized().x()));
+        let p1 = self.pts[v1];
+
+        let part_normal = {
+            let d = p1 - p0;
+            let mut pn = d.cross(Vec3f::new(1.0, 0.0, 0.0)).cross(d).normalized();
+            if pn.dot(p0 - self.center).is_sign_negative() {
+                pn = -pn;
+            }
+            pn
+        };
+        let v2 = self.find_max_point(|i, p| {
+            if i == v0 || i == v1 {
+                return None;
+            }
+
+            let mut normal = (p0 - p) % (p1 - p);
+            if normal.dot(p - self.center).is_sign_negative() {
+                normal = -normal;
+            }
+
+            Some(part_normal.dot(normal))
+        });
+        let p2 = self.pts[v2];
+
+        // Fix orientation
+        let (v0, v1, v2) = if Plane::from_points(p0, p1, p2).normal.dot(p0 - self.center).is_sign_negative() {
+            (v2, v1, v0)
+        } else {
+            (v0, v1, v2)
+        };
+
+        self.insert_triangle(v0, v1, v2);
+    }
+
+    /// Perform building step
+    fn step(&mut self, v0: usize, v1: usize, v_exclude: usize, normal: Vec3f) {
+        // Find new point with minimum angle compared to
+        let (p0, p1) = (self.pts[v0], self.pts[v1]);
+
+        let v2 = self.find_max_point(|v2, p2| {
+            if v2 == v0 || v2 == v1 || v2 == v_exclude {
+                return None;
+            }
+            let plane = Plane::from_points(p0, p1, p2);
+
+            if plane.normal.dot(p0 - self.center).is_sign_negative() {
+                panic!("Something went wrong");
+            }
+
+            Some(plane.normal.dot(normal))
+        });
+
+        self.insert_triangle(v0, v1, v2);
+    }
+
+    /// Finish building without coplanar polygon merge step
+    fn finish_no_merge(&mut self) -> Vec<Polygon> {
+        let mut polygons = Vec::new();
+
+        for tri in self.tris.iter() {
+            let pt = |i: usize| self.pts[tri.edges[i].0.indices(tri.edges[i].1).0];
+            polygons.push(Polygon {
+                points: vec![pt(0), pt(1), pt(2)],
+                plane: tri.plane,
+            })
+        }
+
+        polygons
+    }
+
+    // /// Build final polygon set
+    // fn finish(&mut self) -> Vec<Polygon> {
+    //     let mut polygons = Vec::new();
+    //     let mut tri_inds = BTreeSet::from_iter(0..self.tris.len());
+
+    //     while let Some(tri_ind) = tri_inds.pop_first() {
+    //         // Try to merge triangle with all its neighbours
+    //         let tri = &self.tris[tri_ind];
+
+    //         // Plane all edges are merged with
+    //         let merge_plane = tri.plane;
+
+    //         for (edge, e_do_swap) in tri.edges.iter() {
+    //             let n_ind = edge.neighbour_of(tri_ind).unwrap();
+
+    //             // Triangle is already removed from triangle stack and is not needed to be checked
+    //             if !tri_inds.contains(&n_ind) {
+    //                 continue;
+    //             }
+    //             let n = &self.tris[n_ind];
+
+    //             // Obviously not neighbour
+    //             if n.plane.normal.dot(tri.plane.normal) <= 0.9 {
+    //                 continue;
+    //             }
+    //         }
+    //     }
+
+    //     polygons
+    // }
+
+    /// Build convex hull
+    pub fn build(&mut self) -> Vec<Polygon> {
+        self.init();
+        while let Some((v0, v1, v_exc, normal)) = self.edge_stack.pop() {
+            self.step(v0, v1, v_exc, normal);
+        }
+        self.finish_no_merge()
+    }
+}
+
+/// Build convex hull for point set
+pub fn convex_hull(pts: &[Vec3f]) -> Result<Vec<Polygon>, ConvexHullError> {
+    if pts.len() < 4 {
+        return Err(ConvexHullError::NoInitSimplex);
+    }
+
+    Ok(JBuilder::new(pts).build())
 }

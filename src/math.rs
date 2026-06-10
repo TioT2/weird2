@@ -20,10 +20,10 @@ macro_rules! impl_matn_vecn {
             $($x: T),*
         }
 
-        impl<T: Clone + From<i8>> $Vec<T> {
+        impl<T: From<u8>> $Vec<T> {
             /// Produce vector filled with zeros.
             pub fn zero() -> Self {
-                Self::broadcast(From::from(0))
+                Self { $($x: From::from(0)),* }
             }
         }
 
@@ -139,6 +139,12 @@ macro_rules! impl_matn_vecn {
             /// Vector squared length
             pub fn length2(self) -> T {
                 self.clone() ^ self.clone()
+            }
+        }
+
+        impl<T: From<u8> + std::ops::Add<T, Output = T>> std::iter::Sum for $Vec<T> {
+            fn sum<I: Iterator<Item = Self>>(iter: I) -> $Vec<T> {
+                iter.fold(Self::zero(), std::ops::Add::add)
             }
         }
 

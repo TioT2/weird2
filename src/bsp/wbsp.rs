@@ -201,7 +201,7 @@ pub struct Portal {
     pub _pad: [u8; 3],
 }
 
-/// Volume (BSP leaf) structure
+/// Volume (rendering BSP leaf) structure
 #[repr(C)]
 #[derive(Copy, Clone, FromBytes, IntoBytes, Immutable)]
 pub struct Volume {
@@ -218,37 +218,11 @@ pub struct Volume {
     pub bound_box_max: [f32; 3],
 }
 
-/// BSP entry type
-#[repr(C)]
-pub enum BspType {
-    /// Partitions, BspPartition strucutre and two Bsp's (left and right children) are written after
-    Partition = 1,
-
-    /// Volume, BspVolume strucutre is written after
-    Volume = 2,
-
-    /// Void, nothing is written after
-    Void = 3,
-}
-
-impl TryFrom<u8> for BspType {
-    type Error = u8;
-
-    fn try_from(value: u8) -> Result<Self, Self::Error> {
-        Ok(match value {
-            1 => Self::Partition,
-            2 => Self::Volume,
-            3 => Self::Void,
-            _ => return Err(value),
-        })
-    }
-}
-
 #[repr(C)]
 #[derive(Copy, Clone, FromBytes, IntoBytes, Immutable)]
 pub struct BspElement {
-    /// Element type byte
-    pub ty: u8,
+    /// Space flag
+    pub is_space: u8,
 
     /// Padding bytes
     pub _pad: [u8; 3],
@@ -257,35 +231,23 @@ pub struct BspElement {
     pub data: BspElementData,
 }
 
+/// Render BSP void signal value
+pub const RENDER_BSP_SPACE_VOID: u32 = !0;
+
+/// BSP space structure
+#[repr(C)]
+#[derive(Copy, Clone, FromBytes, IntoBytes, Immutable)]
+pub struct BspSpace(u32, u32, u32, u32);
+
 /// BSP element data
 #[repr(C)]
 #[derive(Copy, Clone, FromBytes, IntoBytes, Immutable)]
 pub union BspElementData {
-    /// Volume contents
-    pub volume: BspElementVolume,
-
     /// Partition contents
     pub partition: BspPartition,
 
-    /// Void contents
-    pub void: BspElementVoid,
-}
-
-#[repr(C)]
-#[derive(Copy, Clone, FromBytes, IntoBytes, Immutable)]
-pub struct BspElementVolume {
-    /// Exact volume
-    pub volume: BspVolume,
-
-    /// Default padding
-    pub _pad: [u8; 12],
-}
-
-#[repr(C)]
-#[derive(Copy, Clone, FromBytes, IntoBytes, Immutable)]
-pub struct BspElementVoid {
-    /// Void element
-    pub _pad: [u8; 16],
+    /// Space
+    pub space: BspSpace,
 }
 
 /// BSP helper structure
@@ -294,14 +256,6 @@ pub struct BspElementVoid {
 pub struct BspPartition {
     /// Partition plane's distance
     pub plane: Plane,
-}
-
-/// BSP helper structure
-#[repr(C)]
-#[derive(Copy, Clone, FromBytes, IntoBytes, Immutable)]
-pub struct BspVolume {
-    /// Destination volume index
-    pub volume_index: u32,
 }
 
 #[repr(C)]
@@ -335,8 +289,6 @@ pub struct DynamicModel {
 
 
 // Implementation
-
-
 
 
 /// Map from file loading error
@@ -424,45 +376,6 @@ pub fn load(data: &[u8]) -> Result<super::Map, LoadError> {
         }
 
         Ok(T::from_index(index as usize))
-    }
-
-    /// Build BSP starting from kind of array
-    fn bsp_from(elems: &[BspElement], volumes: &[Volume], start: u32) -> Result<(Box<super::VolumeBsp>, u32), LoadError> {
-        let elem = elems
-            .get(start as usize)
-            .ok_or(LoadError::InvalidIndex {
-                kind: "bsp element",
-                count: elems.len(),
-                index: start,
-            })?;
-
-        let ty = match BspType::try_from(elem.ty) {
-            Ok(ty) => ty,
-            Err(err) => {
-                return Err(LoadError::InvalidBspType(err));
-            }
-        };
-
-        Ok(match ty {
-            BspType::Partition => {
-                let partition = unsafe { &elem.data.partition };
-                let splitter_plane: geom::Plane = partition.plane.into();
-
-                let (front, front_end) = bsp_from(elems, volumes, start + 1)?;
-                let (back, back_end) = bsp_from(elems, volumes, front_end)?;
-
-                (Box::new(super::Bsp::Partition { splitter_plane, front, back }), back_end)
-            }
-            BspType::Volume => {
-                let volume = unsafe { &elem.data.volume };
-                let id: super::VolumeId = get_id(volume.volume.volume_index, volumes, "volume")?;
-
-                (Box::new(super::Bsp::Space(Some(id))), start + 1)
-            }
-            BspType::Void => {
-                (Box::new(super::Bsp::Space(None)), start + 1)
-            }
-        })
     }
 
     fn get_slice<'t, E>(
@@ -591,6 +504,11 @@ pub fn load(data: &[u8]) -> Result<super::Map, LoadError> {
         })
         .collect::<Result<Vec<_>, LoadError>>()?;
 
+    let mut bsp_reader = BspReader::new(bsp_elements, |space| Ok(if space.0 == RENDER_BSP_SPACE_VOID {
+        None
+    } else {
+        Some(get_id::<super::VolumeId, Volume>(space.0, volumes, "volume")?)
+    }));
     let map = super::Map {
         polygon_set: map_polygon_set,
         material_name_set: map_material_name_set,
@@ -604,7 +522,7 @@ pub fn load(data: &[u8]) -> Result<super::Map, LoadError> {
                         model.bound_box_min.into(),
                         model.bound_box_max.into(),
                     ),
-                    bsp: bsp_from(bsp_elements, volumes, model.bsp_root_index)?.0,
+                    bsp: Box::new(bsp_reader.read(model.bsp_root_index)?.0),
                 })
             })
             .collect::<Result<Vec<_>, LoadError>>()?,
@@ -624,6 +542,99 @@ pub fn load(data: &[u8]) -> Result<super::Map, LoadError> {
     Ok(map)
 }
 
+/// Structure that 
+pub struct BspReader<'t, S, SFn: FnMut(BspSpace) -> Result<S, LoadError>> {
+    /// Array of elements
+    data: &'t [BspElement],
+
+    /// `BspSpace` to space type converter
+    space_func: SFn,
+}
+
+impl<'t, S, SFn: FnMut(BspSpace) -> Result<S, LoadError>> BspReader<'t, S, SFn> {
+    /// Create new BSP reader
+    pub fn new(data: &'t [BspElement], space_func: SFn) -> Self {
+        Self {
+            data,
+            space_func
+        }
+    }
+
+    /// Read BSP from starting from index
+    pub fn read(&mut self, index: u32) -> Result<(super::Bsp<S>, u32), LoadError> {
+        let elem = self.data
+            .get(index as usize)
+            .ok_or(LoadError::InvalidIndex {
+                kind: "bsp element",
+                count: self.data.len(),
+                index,
+            })?;
+
+        Ok(if elem.is_space != 0 {
+            (super::Bsp::Space((self.space_func)(unsafe { elem.data.space })?), index + 1)
+        } else {
+            let partition = unsafe { &elem.data.partition };
+            let splitter_plane: geom::Plane = partition.plane.into();
+
+            let (front, front_end) = self.read(index + 1)?;
+            let (back, back_end) = self.read(front_end)?;
+
+            (super::Bsp::Partition { splitter_plane, front: Box::new(front), back: Box::new(back) }, back_end)
+        })
+    }
+}
+
+/// Bsp writer
+pub struct BspWriter<'t, S, SFn: FnMut(&S) -> BspSpace> {
+    /// Write stack
+    stack: Vec<&'t super::Bsp<S>>,
+
+    /// Space storage function
+    space_func: SFn,
+}
+
+impl<'t, S, SFn: FnMut(&S) -> BspSpace> BspWriter<'t, S, SFn> {
+    /// Create new bsp writer
+    pub fn new(bsp: &'t super::Bsp<S>, space_func: SFn) -> Self {
+        Self {
+            stack: vec![bsp],
+            space_func,
+        }
+    }
+}
+
+impl<'t, S, Tf: FnMut(&S) -> BspSpace> Iterator for BspWriter<'t, S, Tf> {
+    type Item = BspElement;
+
+    fn next(&mut self) -> Option<BspElement> {
+        let elt = self.stack.pop()?;
+
+        Some(match elt {
+            super::Bsp::Partition { splitter_plane, front, back } => {
+                self.stack.push(back);
+                self.stack.push(front);
+
+                BspElement {
+                    is_space: 0,
+                    _pad: [0; _],
+                    data: BspElementData {
+                        partition: BspPartition {
+                            plane: (*splitter_plane).into(),
+                        },
+                    }
+                }
+            }
+            super::Bsp::Space(s) => BspElement {
+                is_space: 1,
+                _pad: [0; _],
+                data: BspElementData {
+                    space: (self.space_func)(s),
+                },
+            }
+        })
+    }
+}
+
 /// Error occured during map saving
 #[derive(Debug, Error)]
 pub enum SaveError {
@@ -638,53 +649,6 @@ pub enum SaveError {
 
 /// Save .WBSP to map
 pub fn save(map: &super::Map, dst: &mut dyn std::io::Write) -> Result<(), SaveError> {
-    fn write_bsp(dst: &mut Vec<BspElement>, bsp: &super::Bsp<Option<super::VolumeId>>) {
-        match bsp {
-            super::Bsp::Partition {
-                splitter_plane,
-                front,
-                back
-            } => {
-                dst.push(BspElement {
-                    ty: BspType::Partition as u8,
-                    _pad: [0; _],
-                    data: BspElementData {
-                        partition: BspPartition {
-                            plane: (*splitter_plane).into(),
-                        },
-                    }
-                });
-                write_bsp(dst, front);
-                write_bsp(dst, back);
-            }
-            super::Bsp::Space(Some(id)) => {
-                dst.push(BspElement {
-                    ty: BspType::Volume as u8,
-                    _pad: [0; _],
-                    data: BspElementData {
-                        volume: BspElementVolume {
-                            volume: BspVolume {
-                                volume_index: id.into_index() as u32,
-                            },
-                            _pad: [0; _],
-                        }
-                    },
-                });
-            }
-            super::Bsp::Space(None) => {
-                dst.push(BspElement {
-                    ty: BspType::Void as u8,
-                    _pad: [0; _],
-                    data: BspElementData {
-                        void: BspElementVoid {
-                            _pad: [0; _],
-                        }
-                    },
-                });
-            }
-        }
-    }
-
     // Precalculate chunks
     let mut chars = Vec::<u8>::new();
     let mut lightmaps = Vec::<u64>::new();
@@ -774,7 +738,11 @@ pub fn save(map: &super::Map, dst: &mut dyn std::io::Write) -> Result<(), SaveEr
     for model in &map.bsp_models {
         let bsp_root_index = bsp_elements.len() as u32;
 
-        write_bsp(&mut bsp_elements, &model.bsp);
+        // Write world BSP
+        bsp_elements.extend(BspWriter::new(&model.bsp, |space| match space {
+            Some(id) => BspSpace(id.into_index() as u32, 0, 0, 0),
+            None => BspSpace(RENDER_BSP_SPACE_VOID, 0, 0, 0),
+        }));
 
         bsp_models.push(BspModel {
             bsp_root_index,

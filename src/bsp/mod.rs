@@ -72,7 +72,7 @@ crate::flags! {
     }
 }
 
-/// Surface lightmap structure
+/// Lightmap contents
 pub struct SurfaceLightmap {
     /// Lightmap data bytes
     pub data: Box<[u64]>,
@@ -91,13 +91,13 @@ pub struct SurfaceLightmap {
 }
 
 impl SurfaceLightmap {
-    /// Get lightmap image slice
+    /// Lightmap bits as slice
     pub fn as_slice<'t>(&'t self) -> FrameSlice<'t, u64> {
         FrameSlice::new(self.width, self.height, self.width, &self.data)
     }
 }
 
-/// Volume face convex visible part.
+/// Volume face homogeneous rendered subset
 pub struct Surface {
     /// Polygon material identifier
     pub material_id: MaterialId,
@@ -160,7 +160,7 @@ pub struct Volume {
     pub bound_box: geom::BoundBox,
 }
 
-/// Binary Space Partition
+/// Binary space partition
 pub enum Bsp<S> {
     /// Partition of space
     Partition {
@@ -178,7 +178,7 @@ pub enum Bsp<S> {
     Space(S),
 }
 
-/// BSP construction command
+/// Anamorphism (BSP construction command) result
 pub enum AnaResult<T, S> {
     /// Continue construction with given plane as splitter
     Partition(geom::Plane, T, T),
@@ -233,7 +233,7 @@ impl<S> Bsp<S> {
         Tr(leaf, branch).with(self)
     }
 
-    /// Use fold but by reference
+    /// `cata_ref` function alias
     pub fn fold_ref<T>(&self, leaf: impl FnMut(&S) -> T, branch: impl FnMut(T, T) -> T) -> T {
         self.cata_ref(leaf, branch)
     }
@@ -300,8 +300,9 @@ impl<S> Bsp<S> {
     }
 }
 
-/// BSP traverse trait
+/// Traverse function trait. Used for tree iteration and descend
 pub trait TraverseFn {
+    /// Qualify partition plane traverse order. True result means front-first.
     fn qualify(&mut self, plane: geom::Plane) -> bool;
 }
 
@@ -311,21 +312,27 @@ impl<T: FnMut(geom::Plane) -> bool> TraverseFn for T {
     }
 }
 
+/// Front-to-back traverse function type
 pub struct FrontToBack;
+
 impl TraverseFn for FrontToBack {
     fn qualify(&mut self, _plane: geom::Plane) -> bool {
         true
     }
 }
 
+/// Back-to-front traverse function type
 pub struct BackToFront;
+
 impl TraverseFn for BackToFront {
     fn qualify(&mut self, _plane: geom::Plane) -> bool {
         false
     }
 }
 
-pub struct AroundPoint(Vec3f);
+/// Point-relative traverse (e.g. front-to-back if point is in front of plane, back-to-front otherwise)
+pub struct AroundPoint(pub Vec3f);
+
 impl TraverseFn for AroundPoint {
     fn qualify(&mut self, plane: geom::Plane) -> bool {
         match plane.get_point_relation(self.0) {
@@ -335,9 +342,12 @@ impl TraverseFn for AroundPoint {
     }
 }
 
-/// BSP immutable iterator
+/// `Bsp` iterator
 pub struct BspIter<'t, S, Tf> {
+    /// BSP node visit stack
     nodes: Vec<&'t Bsp<S>>,
+
+    /// Traverse function
     tf: Tf,
 }
 
@@ -364,22 +374,35 @@ impl<'t, S, Tf: TraverseFn> Iterator for BspIter<'t, S, Tf> {
     }
 }
 
-/// Bsp of volumes
-pub type VolumeBsp = Bsp<Option<VolumeId>>;
+/// Rendering BSP type alias
+pub type RenderBsp = Bsp<Option<VolumeId>>;
 
-/// Static model
+/// Collision BSP type alias
+pub type PhysicsBsp = Bsp<Medium>;
+
+/// BSP medium type
+#[derive(Copy, Clone, PartialEq, Eq)]
+pub enum Medium {
+    /// Just air, space where entity can move
+    Air,
+
+    /// Solid area, does not permits entities to be inside
+    Solid,
+}
+
+/// `Bsp`-based model
 pub struct BspModel {
-    /// Model BSP
-    bsp: Box<Bsp<Option<VolumeId>>>,
+    /// Rendered BSP
+    bsp: Box<RenderBsp>,
 
-    /// (Simple) Bounding volume, used during split process
+    /// Model bounding volume
     bound_box: geom::BoundBox,
 }
 
 impl BspModel {
-    /// Get BSP 
+    /// Get render BSP
     pub fn get_bsp(&self) -> &Bsp<Option<VolumeId>> {
-        &self.bsp
+        self.bsp.as_ref()
     }
 
     /// Get bounding volume
@@ -388,7 +411,7 @@ impl BspModel {
     }
 }
 
-/// Dynamic BSP element
+/// Dynamic `Bsp`-based model
 pub struct DynamicModel {
     /// Model translation
     pub origin: Vec3f,
@@ -400,9 +423,9 @@ pub struct DynamicModel {
     pub model_id: BspModelId,
 }
 
-/// Map
+/// World map structure
 pub struct Map {
-    /// Set of map polygons
+    /// Polygon set (used for polygon share (portal polygons, for example))
     polygon_set: Vec<geom::Polygon>,
 
     /// Set of map materials
@@ -454,17 +477,17 @@ impl Map {
         (0..self.dynamic_models.len()).map(DynamicModelId::from_index)
     }
 
-    /// Get material name by it's id
-    pub fn get_material_name(&self, id: MaterialId) -> Option<&str> {
-        self.material_name_set.get(id.into_index()).map(|s| s.as_str())
-    }
-
     /// Iterate by material names
     pub fn all_material_names(&self) -> impl Iterator<Item = (MaterialId, &str)> {
         self.material_name_set
             .iter()
             .enumerate()
             .map(|(index, name)| (MaterialId::from_index(index), name.as_ref()))
+    }
+
+    /// Get material name by it's id
+    pub fn get_material_name(&self, id: MaterialId) -> Option<&str> {
+        self.material_name_set.get(id.into_index()).map(|s| s.as_str())
     }
 
     /// Get dynamic model by id
@@ -477,45 +500,18 @@ impl Map {
         self.polygon_set.get(id.into_index())
     }
 
-    /// Get ID of the world BSP model
-    pub fn get_world_model_id(&self) -> BspModelId {
-        self.world_model_id
-    }
-
-    /// Get root BSP model
-    pub fn get_world_model(&self) -> &BspModel {
-        self.bsp_models.get(self.world_model_id.into_index()).unwrap()
-    }
-
     /// Get BSP model by id
     pub fn get_bsp_model(&self, id: BspModelId) -> Option<&BspModel> {
         self.bsp_models.get(id.into_index())
     }
 
-    /// Test if volume contains point or not
-    pub fn volume_contains_point(&self, id: VolumeId, point: Vec3f) -> Option<bool> {
-        let volume = self.get_volume(id)?;
+    /// Get ID of the world BSP model
+    pub fn get_world_model_id(&self) -> BspModelId {
+        self.world_model_id
+    }
 
-        for portal in &volume.portals {
-            let mut plane = self.polygon_set[portal.polygon_id.into_index()].plane;
-
-            if !portal.is_facing_front {
-                plane = plane.negate_direction();
-            }
-
-            if plane.get_point_relation(point) == geom::PointRelation::Back {
-                return Some(false);
-            }
-        }
-
-        for surface in &volume.surfaces {
-            let plane = self.polygon_set[surface.polygon_id.into_index()].plane;
-
-            if plane.get_point_relation(point) == geom::PointRelation::Back {
-                return Some(false);
-            }
-        }
-
-        Some(true)
+    /// Get world `BspModel`
+    pub fn get_world_model(&self) -> &BspModel {
+        self.get_bsp_model(self.world_model_id).unwrap()
     }
 }

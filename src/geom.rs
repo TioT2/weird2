@@ -1,8 +1,8 @@
 //! Standard geometry primitive implementation module
 
-use std::{cell::{Cell}, collections::{HashMap}, rc::Rc};
+use std::{cell::Cell, collections::HashMap, rc::Rc};
 
-use crate::math::{Vec2f, Vec3f, Vec4f};
+use crate::math::{Mat3f, Vec2f, Vec3f, Vec4f};
 
 /// Geometric epsilon (1 cm)
 pub const GEOM_EPSILON: f32 = 0.01;
@@ -186,6 +186,14 @@ impl Plane {
         ) / (1.0 - dot * dot).into();
 
         Line { base, direction }
+    }
+
+    /// Intersect one plane with two other planes
+    pub fn intersect_two_planes(&self, othr: &Plane, thrd: &Plane) -> Option<Vec3f> {
+        Mat3f::from_cols([self.normal, othr.normal, thrd.normal])
+            .transposed()
+            .inversed()
+            .map(|m| m * Vec3f::new(self.distance, othr.distance, thrd.distance))
     }
 
     /// Get intersection line of plane and the polygon
@@ -761,7 +769,7 @@ impl std::cmp::Eq for TotalF32 {}
 
 impl std::cmp::PartialOrd for TotalF32 {
     fn partial_cmp(&self, othr: &Self) -> Option<std::cmp::Ordering> {
-        Some(TotalF32::cmp(*self, *othr))
+        Some(self.cmp(othr))
     }
 }
 
@@ -976,7 +984,7 @@ impl<'t> JBuilder<'t> {
             let plane = Plane::from_points(p0, p1, p2);
 
             if plane.normal.dot(p0 - self.center).is_sign_negative() {
-                panic!("Something went wrong");
+                panic!("Something went very wrong");
             }
 
             Some(plane.normal.dot(normal))
@@ -999,6 +1007,19 @@ impl<'t> JBuilder<'t> {
 
         polygons
     }
+
+    // fn finish(&mut self) -> Vec<Polygon> {
+    //     let mut polygons = Vec::new();
+    //     let mut rest_tris = (0..self.tris.len()).collect::<HashSet<_>>();
+
+    //     for tri in 0..self.tris.len() {
+    //         if !rest_tris.remove(&tri) {
+    //             continue;
+    //         }
+    //     }
+
+    //     polygons
+    // }
 
     // /// Build final polygon set
     // fn finish(&mut self) -> Vec<Polygon> {

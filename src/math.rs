@@ -78,6 +78,16 @@ macro_rules! impl_matn_vecn {
                 u
             }
 
+            /// Cast vector component to other type
+            pub fn cast<U: From<T>>(self) -> $Vec<U> {
+                $Vec::<U> { $($x: U::from(self.$x)),* }
+            }
+
+            /// Per-coordinate select using boolean flag vector
+            pub fn select(self, othr: Self, flag: $Vec<bool>) -> Self {
+                Self { $($x: if flag.$x { self.$x } else { othr.$x }),* }
+            }
+
             /// Perform left fold without first element
             pub fn reduce<F: FnMut(T, T) -> T>(self, mut f: F) -> T {
                 reduce_impl!(f, $(self.$x),*)

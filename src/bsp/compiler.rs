@@ -15,7 +15,7 @@ Compilation:
 use std::collections::{HashMap, HashSet};
 use thiserror::Error;
 
-use crate::{bsp::Bsp, geom, map, math::{Mat3f, Vec3f}};
+use crate::{bsp::{Bsp, Medium, PhysicsBsp}, geom, map, math::Vec3f};
 
 use super::Id;
 
@@ -47,6 +47,12 @@ impl VolumeFaceId {
             face: face as u32,
         }
     }
+}
+
+/// Polygon used during collision resolution
+pub struct CollisionPolygon {
+    /// Polygon
+    pub polygon: geom::Polygon,
 }
 
 /// Polygon that actually is displayed
@@ -414,6 +420,9 @@ pub struct BspModelCompileContext {
     /// Volume
     pub volume_bsp: Box<VolumeBsp>,
 
+    /// BSP for collision
+    pub physics_bsp: Box<PhysicsBsp>,
+
     /// Set of portal polygons (They should be shared to optimize total memory consume)
     pub portal_polygons: Vec<geom::Polygon>,
 
@@ -442,6 +451,7 @@ impl Default for BspModelCompileContext {
             split_infos: Vec::new(),
             portal_polygons: Vec::new(),
             volume_bsp: Box::new(Bsp::Space(None)),
+            physics_bsp: Box::new(Bsp::Space(Medium::Air)),
             bound_box: geom::BoundBox::empty(),
         }
     }
@@ -455,6 +465,28 @@ impl BspModelCompileContext {
 
     fn add_split(&mut self, info: SplitInfo) {
         self.split_infos.push(info);
+    }
+
+    /// Build BSP for physics process
+    fn _build_physics_bsp(&mut self, collision_polygons: Vec<CollisionPolygon>, is_front: bool) -> PhysicsBsp {
+        if collision_polygons.is_empty() {
+            return PhysicsBsp::Space(if is_front {
+                Medium::Air
+            } else {
+                Medium::Solid
+            })
+        }
+
+        // let best_splitter_rate: f32 = f32::MAX;
+        // let best_splitter_index: Option<usize> = None;
+
+        // Choose splitter
+        todo!()
+    }
+
+    /// Start physics BSP building pass
+    fn _start_build_physics_bsp(&mut self, collision_polygons: Vec<CollisionPolygon>) {
+        *self.physics_bsp = self._build_physics_bsp(collision_polygons, true);
     }
 
     fn build_volume(&mut self, volume: HullVolume, display_polygons: Vec<DisplayPolygon>) -> VolumeBsp {
@@ -609,10 +641,10 @@ impl BspModelCompileContext {
             .extend(Vec3f::broadcast(10.0));
 
         // Build BSP
-        self.volume_bsp = Box::new(self.build_volume(
+        *self.volume_bsp = self.build_volume(
             HullVolume::from_bound_box(self.bound_box),
             physical_polygons
-        ));
+        );
     }
 
     /// Build front and back polygon sets of single portal resolve task
@@ -1041,6 +1073,122 @@ pub struct CompileContext {
 }
 
 impl CompileContext {
+    /// Polygonize single brush face
+    fn polygonize_brush_face(brush: &map::Brush, f1_ind: usize) -> Option<geom::Polygon> {
+        let f1 = &brush.faces[f1_ind];
+        let mut points = Vec::new();
+
+        // Iterate through all (f2, f3) unique combinations
+        for (f2_ind, f2) in brush.faces.iter().enumerate() {
+            if f2_ind == f1_ind {
+                continue;
+            }
+
+            for (f3_ind, f3) in brush.faces.iter().enumerate().skip(f2_ind + 1) {
+                if f3_ind == f1_ind {
+                    continue;
+                }
+
+                let Some(intp) = f1.plane.intersect_two_planes(&f2.plane, &f3.plane) else {
+                    continue;
+                };
+
+                if brush.faces.iter().any(|f| f.plane.get_point_relation(intp) == geom::PointRelation::Front) {
+                    continue;
+                }
+
+                // Filter nonfront point out
+                points.push(intp);
+            }
+        }
+
+        // Polygon intersection point
+        points = geom::deduplicate_points(points);
+
+        if points.len() < 3 {
+            return None;
+        }
+
+        // Insert final polygon
+        Some(geom::Polygon {
+            points: geom::sort_points_by_angle(points, f1.plane.normal),
+            plane: f1.plane,
+        })
+    }
+
+    /// Implementation. `ext` paramaeter is ignored if not `EXTEND`
+    fn build_entity_collision_polygons_impl<const EXTEND: bool>(
+        entity: &map::Entity,
+        ext: Vec3f
+    ) -> Vec<CollisionPolygon> {
+        let mut collision_polygons = Vec::<CollisionPolygon>::new();
+
+        'brush_polygon_building: for brush in entity.brushes.iter() {
+            if brush.flags.check(map::BrushFlags::WATER) {
+                continue 'brush_polygon_building;
+            }
+
+            if EXTEND {
+                // Perform brush extension and convex hull buildig
+                let bfi = brush.faces.iter().enumerate();
+                let mut sum_points =
+
+                    // Iterate unique plane triples
+                    bfi.clone()
+                    .flat_map(|(f1i, f1)| bfi.clone().skip(f1i + 1).map(move |(f2i, f2)| (f1, f2i, f2)))
+                    .flat_map(|(f1, f2i, f2)| bfi.clone().skip(f2i + 1).map(move |(_f3i, f3)| (f1, f2, f3)))
+
+                    // Build intersection points
+                    .filter_map(|(f1, f2, f3)| f1.plane.intersect_two_planes(&f2.plane, &f3.plane))
+
+                    // Filter back points
+                    .filter(|pt| bfi.clone().all(|(_, f)| f.plane.get_point_relation(*pt) != geom::PointRelation::Front))
+
+                    // Iterate point sums
+                    .flat_map(move |pt| (0..8).map(move |i| pt + ext * Vec3f::new(
+                        if i & 1 == 0 { -0.5 } else { 0.5 },
+                        if i & 2 == 0 { -0.5 } else { 0.5 },
+                        if i & 4 == 0 { -0.5 } else { 0.5 },
+                    )))
+                    .collect::<Vec<Vec3f>>();
+
+                // Just for safety
+                sum_points = geom::deduplicate_points(sum_points);
+
+                let Ok(polygons) = geom::convex_hull(&sum_points) else {
+                    continue 'brush_polygon_building;
+                };
+
+                collision_polygons.extend(polygons
+                    .into_iter()
+                    .map(|polygon| CollisionPolygon { polygon })
+                );
+            } else {
+                // Just use polygonized brush faces
+                let pi = (0..brush.faces.len())
+                    .filter_map(|f1i| Self::polygonize_brush_face(brush, f1i))
+                    .map(|polygon| CollisionPolygon { polygon });
+
+                collision_polygons.extend(pi);
+            }
+
+        }
+
+        collision_polygons
+    }
+
+    /// Build collision polygons for entity.
+    pub fn build_entity_collision_polygons(
+        entity: &map::Entity,
+        extend: Option<Vec3f>,
+    ) -> Vec<CollisionPolygon> {
+        if let Some(ext) = extend {
+            Self::build_entity_collision_polygons_impl::<true>(entity, ext)
+        } else {
+            Self::build_entity_collision_polygons_impl::<false>(entity, Vec3f::zero())
+        }
+    }
+
     // Build entity physical polygon set
     pub fn build_entity_display_polygons(&mut self, entity: &map::Entity) -> Vec<DisplayPolygon> {
 
@@ -1052,94 +1200,46 @@ impl CompileContext {
                 continue 'brush_polygon_building;
             }
     
-            let planes = brush.faces
-                .iter()
-                .map(|face| {
-                    let mtlid = self.material_name_table
-                        .get(&face.mtl_name)
-                        .copied()
-                        .unwrap_or_else(|| {
-                            let mtlid = self.material_name_set.len();
-                            self.material_name_table.insert(face.mtl_name.clone(), mtlid);
-                            self.material_name_set.push(face.mtl_name.clone());
-    
-                            mtlid
-                        });
-    
-                    (face, mtlid)
-                })
-                .collect::<Vec<_>>();
-    
-            for (f1_ind, (f1, mtlid)) in planes.iter().enumerate() {
-
+            for (face_ind, face) in brush.faces.iter().enumerate() {
                 // Disable invisible brush faces
-                if f1.flags.check(map::BrushFaceFlags::INVISIBLE) {
-                    continue;
-                }
-    
-                let mut points = Vec::new();
-    
-                for (f2_ind, (f2, _)) in planes.iter().enumerate() {
-                    if f1_ind == f2_ind {
-                        continue;
-                    }
-    
-                    for (_f3_ind, (f3, _)) in planes.iter().enumerate().skip(f2_ind + 1) {
-                        let mat = Mat3f::from_cols([f1.plane.normal, f2.plane.normal, f3.plane.normal]);
-    
-                        let inv = match mat.transposed().inversed() {
-                            Some(m) => m,
-                            None => continue,
-                        };
-
-                        let intersection_point = inv * Vec3f::new(f1.plane.distance, f2.plane.distance, f3.plane.distance);
-    
-                        points.push(intersection_point);
-                    }
-                }
-    
-                points = points
-                    .into_iter()
-                    .filter(|point| planes
-                        .iter()
-                        .all(|(face, _)| face.plane.get_point_relation(*point) != geom::PointRelation::Front)
-                    )
-                    .collect::<Vec<_>>();
-
-                points = geom::deduplicate_points(points);
-
-                if points.len() < 3 {
-                    // It's not even a polygon, actually
+                if face.flags.check(map::BrushFaceFlags::INVISIBLE) {
                     continue;
                 }
 
-                let points = geom::sort_points_by_angle(points, f1.plane.normal);
+                // Polygonize face
+                let Some(polygon) = Self::polygonize_brush_face(brush, face_ind) else {
+                    continue;
+                };
+
+                let mtlid = self.material_name_table
+                    .get(&face.mtl_name)
+                    .copied()
+                    .unwrap_or_else(|| {
+                        let mtlid = self.material_name_set.len();
+                        self.material_name_table.insert(face.mtl_name.clone(), mtlid);
+                        self.material_name_set.push(face.mtl_name.clone());
+
+                        mtlid
+                    });
 
                 // Add display polygon
                 let display_polygon = DisplayPolygon {
-                    polygon: geom::Polygon {
-                        points,
-                        plane: f1.plane,
-                    },
-                    material_index: *mtlid,
-                    flags: map_brush_face_flags(f1.flags),
-                    u: f1.u,
-                    v: f1.v,
+                    polygon,
+                    material_index: mtlid,
+                    flags: map_brush_face_flags(face.flags),
+                    u: face.u,
+                    v: face.v,
                     brush_face_id: BrushFaceId {
                         brush: brush_id as u32,
-                        face: f1_ind as u32,
+                        face: face_ind as u32,
                     },
                     is_optimized_out: false,
                 };
 
                 // Insert reversed polygon for transparent surfaces
-                if f1.flags.check(map::BrushFaceFlags::TRANSPARENT) {
+                if face.flags.check(map::BrushFaceFlags::TRANSPARENT) {
                     display_polygons.push(DisplayPolygon {
-                        polygon: {
-                            let mut p = display_polygon.polygon.clone();
-                            p.negate_orientation();
-                            p
-                        },
+                        polygon: display_polygon.polygon.clone().negated_orientation(),
                         ..display_polygon
                     });
                 }
@@ -1165,24 +1265,6 @@ impl CompileContext {
 
     /// Add model to final BSP
     pub fn add_model(&mut self, ctx: BspModelCompileContext) -> usize {
-        fn map_bsp(vbsp: VolumeBsp, offset: usize) -> super::Bsp<Option<super::VolumeId>> {
-            match vbsp {
-                VolumeBsp::Partition {
-                    splitter_plane,
-                    front,
-                    back
-                } => super::Bsp::Partition {
-                    splitter_plane,
-                    front: Box::new(map_bsp(*front, offset)),
-                    back: Box::new(map_bsp(*back, offset)),
-                },
-                VolumeBsp::Space(Some(index)) => super::Bsp::Space(
-                    Some(super::VolumeId::from_index(index + offset))
-                ),
-                VolumeBsp::Space(None) => Bsp::Space(None),
-            }
-        }
-
         // Portal polygon index offset
         let portal_index_offset = self.polygon_set.len();
 
@@ -1190,7 +1272,8 @@ impl CompileContext {
         let volume_index_offset = self.volume_set.len();
 
         // Build BSP
-        let bsp = Box::new(map_bsp(*ctx.volume_bsp, volume_index_offset));
+        let bsp = Box::new(ctx.volume_bsp.map(|i_opt|
+            i_opt.map(|i| super::VolumeId::from_index(i + volume_index_offset))));
 
         // Extend polygon set with portals
         self.polygon_set.extend_from_slice(ctx.portal_polygons.as_slice());
@@ -1304,6 +1387,7 @@ pub fn compile(map: &map::Map) -> Result<super::Map, Error> {
         let mut model_compile_context = BspModelCompileContext::default();
 
         let display_polygons = context.build_entity_display_polygons(entity);
+        // let collision_polygons = context.build_entity_collision_polygons(entity, Vec3f::new(32.0, 32.0, 48.0));
 
         if is_worldspawn && !map_origins.is_empty() {
             let mut marked_display_polygons = display_polygons.clone();

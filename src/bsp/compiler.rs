@@ -1,4 +1,4 @@
-//! WBSP compiler module
+//! BSP Compiler. Turns convex polyhedra (brushes) into map.
 
 
 /*
@@ -16,8 +16,6 @@ use std::collections::{HashMap, HashSet};
 use thiserror::Error;
 
 use crate::{bsp::{Bsp, Medium, PhysicsBsp}, geom, map, math::Vec3f};
-
-use super::Id;
 
 /// Brush face identifier
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]

@@ -1,13 +1,12 @@
-//! Resource format
+//! Resource storage format implementation
 
-/// Quake 1 WAD2 file format
 pub mod q1_wad2;
 
 use std::{collections::BTreeMap, ffi::CStr};
 use thiserror::Error;
 use zerocopy::FromBytes;
 
-use crate::{bsp::{self, Id}, frame_slice::FrameSlice};
+use crate::{bsp, frame_slice::FrameSlice};
 
 /// Mipmapped texture
 pub struct Texture {

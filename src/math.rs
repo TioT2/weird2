@@ -692,12 +692,8 @@ impl Mat4<f32> {
         }
     }
 
-    /// Create view matrix
-    pub fn view(loc: Vec3<f32>, at: Vec3<f32>, approx_up: Vec3<f32>) -> Mat4<f32> {
-        let dir = (at - loc).normalized();
-        let right = dir.cross(approx_up).normalized();
-        let up = right.cross(dir).normalized();
-
+    /// Compute view matrix from basis
+    pub fn view_from_basis(loc: Vec3<f32>, dir: Vec3<f32>, right: Vec3<f32>, up: Vec3<f32>) -> Mat4<f32> {
         let ld = Vec3::new(right, up, dir).map(|v| -v.dot(loc));
 
         Self {
@@ -706,8 +702,17 @@ impl Mat4<f32> {
                 [right.y, up.y, -dir.y, 0.0],
                 [right.z, up.z, -dir.z, 0.0],
                 [   ld.x, ld.y, - ld.z, 1.0],
-            ],
+            ]
         }
+    }
+
+    /// Build view matrix
+    pub fn view(loc: Vec3<f32>, dir: Vec3<f32>, approx_up: Vec3<f32>) -> Mat4<f32> {
+        let dir = dir.normalized();
+        let right = dir.cross(approx_up).normalized();
+        let up = right.cross(dir).normalized();
+
+        Self::view_from_basis(loc, dir, right, up)
     }
 }
 

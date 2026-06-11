@@ -1,4 +1,4 @@
-//! Bit flags implementation file
+//! Custom bitflag type implementation.
 
 use std::ops::{BitAnd, BitOr, BitXor, Not};
 

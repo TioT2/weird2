@@ -1062,7 +1062,7 @@ impl<'t> JBuilder<'t> {
     }
 }
 
-/// Build convex hull for point set
+/// Build point set convex hull
 pub fn convex_hull(pts: &[Vec3f]) -> Result<Vec<Polygon>, ConvexHullError> {
     if pts.len() < 4 {
         return Err(ConvexHullError::NoInitSimplex);

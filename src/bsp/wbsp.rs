@@ -1,4 +1,4 @@
-//! WBSP file format implementation module
+//! BSP binary storage (.WBSP) file format reader and writer.
 
 use zerocopy::{FromBytes, Immutable, IntoBytes};
 use thiserror::Error;
@@ -366,7 +366,7 @@ pub fn load(data: &[u8]) -> Result<super::Map, LoadError> {
             })
     }
 
-    fn get_id<T: super::Id, E>(index: u32, arr: &[E], kind: &'static str) -> Result<T, LoadError> {
+    fn get_id<I, E>(index: u32, arr: &[E], kind: &'static str) -> Result<Id<I>, LoadError> {
         if index as usize >= arr.len() {
             return Err(LoadError::InvalidIndex {
                 kind,
@@ -375,7 +375,7 @@ pub fn load(data: &[u8]) -> Result<super::Map, LoadError> {
             });
         }
 
-        Ok(T::from_index(index as usize))
+        Ok(Id::<I>::from_index(index as usize))
     }
 
     fn get_slice<'t, E>(
@@ -507,7 +507,7 @@ pub fn load(data: &[u8]) -> Result<super::Map, LoadError> {
     let mut bsp_reader = BspReader::new(bsp_elements, |space| Ok(if space.0 == RENDER_BSP_SPACE_VOID {
         None
     } else {
-        Some(get_id::<super::VolumeId, Volume>(space.0, volumes, "volume")?)
+        Some(get_id::<super::Volume, Volume>(space.0, volumes, "volume")?)
     }));
     let map = super::Map {
         polygon_set: map_polygon_set,

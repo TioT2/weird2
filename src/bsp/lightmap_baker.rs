@@ -1,6 +1,6 @@
-//! BSP lightmap baker implementation
+//! BSP Lightmap builder. Computes statically-known lighting for map rendered objects.
 
-use crate::{bsp::{self, Id, SurfaceLightmap}, geom, map, math::{Vec2f, Vec3f}, u64_from_u16};
+use crate::{bsp::{self, SurfaceLightmap}, geom, map, math::{Vec2f, Vec3f}, u64_from_u16};
 
 /// Point light structure
 struct PointLight {

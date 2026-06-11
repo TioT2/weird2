@@ -1,4 +1,4 @@
-//! 2D image slice implementation library
+//! 2D image slice implementation
 
 use std::{marker::PhantomData, ptr::NonNull};
 

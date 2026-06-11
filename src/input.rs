@@ -37,6 +37,7 @@ const KEY_NUMBER: usize = sdl2::keyboard::Scancode::Num as usize;
 
 /// Keyboard state holder
 pub struct Input {
+    /// Key state array
     states: Box<[KeyState; KEY_NUMBER]>,
 }
 
@@ -48,17 +49,17 @@ impl Default for Input {
 
 impl Input {
     /// Get state of some key
-    pub fn get_key_state(&self, key: Key) -> KeyState {
+    pub const fn get_key_state(&self, key: Key) -> KeyState {
         self.states[key as usize]
     }
 
     /// Check key for being pressed
-    pub fn is_key_pressed(&self, key: Key) -> bool {
+    pub const fn is_key_pressed(&self, key: Key) -> bool {
         self.get_key_state(key).pressed()
     }
 
     /// Check key for being clicked
-    pub fn is_key_clicked(&self, key: Key) -> bool {
+    pub const fn is_key_clicked(&self, key: Key) -> bool {
         let key = self.get_key_state(key);
         key.pressed() && key.changed()
     }

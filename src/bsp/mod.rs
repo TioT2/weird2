@@ -1,6 +1,6 @@
-//! BSP (Binary Space Partition) run-time type, compiler and lightmapper implementation module
+//! Map run-time format implementation module. Uses BSP (Binary Space Partition) data structure as it's core.
 
-use std::num::NonZeroU32;
+use std::{hash::Hash, marker::PhantomData, num::NonZeroU32};
 
 use crate::{frame_slice::FrameSlice, geom, math::{Vec2, Vec3f}};
 
@@ -8,54 +8,60 @@ pub mod compiler;
 pub mod wbsp;
 pub mod lightmap_baker;
 
-/// Id type
-pub trait Id: Copy + Clone + Eq + PartialEq + std::hash::Hash + std::fmt::Debug + Ord + PartialOrd {
-    /// Construct Id from index
-    fn from_index(index: usize) -> Self;
+/// Identifier type
+pub struct Id<T>(NonZeroU32, PhantomData<fn(T) -> T>);
 
-    /// Build Id into index
-    fn into_index(self) -> usize;
+impl<T> Clone for Id<T> {
+    fn clone(&self) -> Self {
+        Self(self.0, PhantomData)
+    }
 }
 
-/// Generic id implementation
-macro_rules! impl_id {
-    ($Id: ident) => {
-        /// Some unique identifier
-        #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug, Ord, PartialOrd)]
-        pub struct $Id(NonZeroU32);
+impl<T> Copy for Id<T> {}
 
-        impl From<usize> for $Id {
-            fn from(v: usize) -> $Id {
-                Self::from_index(v)
-            }
-        }
-
-        impl From<$Id> for usize {
-            fn from(v: $Id) -> usize {
-                v.into_index()
-            }
-        }
-
-        impl Id for $Id {
-            /// Build id from index
-            fn from_index(index: usize) -> Self {
-                $Id(NonZeroU32::try_from(!(index as u32)).unwrap())
-            }
-    
-            /// Get index by id
-            fn into_index(self) -> usize {
-                (!self.0.get()) as usize
-            }
-        }
-    };
+impl<T> PartialEq for Id<T> {
+    fn eq(&self, othr: &Self) -> bool {
+        self.0 == othr.0
+    }
 }
 
-impl_id!(VolumeId);
-impl_id!(PolygonId);
-impl_id!(MaterialId);
-impl_id!(BspModelId);
-impl_id!(DynamicModelId);
-impl_id!(SurfaceId);
+impl<T> Eq for Id<T> {}
+
+impl<T> Hash for Id<T> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        state.write_u32(self.0.get());
+    }
+}
+
+impl<T> std::fmt::Display for Id<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
+        write!(f, "Id<{}>", std::any::type_name::<T>())
+    }
+}
+
+impl<T> Id<T> {
+    /// Create Id for type from index
+    pub const fn from_index(i: usize) -> Self {
+        Self(NonZeroU32::new(!(i as u32)).unwrap(), PhantomData)
+    }
+
+    /// Convert type-generic Id into index
+    pub const fn into_index(self) -> usize {
+        !self.0.get() as usize
+    }
+}
+
+impl<T> From<usize> for Id<T> {
+    fn from(v: usize) -> Self {
+        Self::from_index(v)
+    }
+}
+
+impl<T> From<Id<T>> for usize {
+    fn from(v: Id<T>) -> usize {
+        v.into_index()
+    }
+}
 
 crate::flags! {
     /// Surface property bits
@@ -160,30 +166,30 @@ pub struct Volume {
     pub bound_box: geom::BoundBox,
 }
 
-/// Binary space partition
+/// Binary Space Partition, core map structure.
 pub enum Bsp<S> {
-    /// Partition of space
+    /// Space partition
     Partition {
-        /// Plane that splits front/back volume sets. Front volume set is located in front of plane.
+        /// Plane splitting front and back subspaces
         splitter_plane: geom::Plane,
 
-        /// Pointer to front polygon part
+        /// Front subspace bsp
         front: Box<Self>,
 
-        /// Pointer to back polygon part
+        /// Back subspace bsp
         back: Box<Self>,
     },
 
-    /// Convex space
+    /// Convex space subregion, tree leaf
     Space(S),
 }
 
-/// Anamorphism (BSP construction command) result
+/// Anamorphism (kind of BSP construction command) result
 pub enum AnaResult<T, S> {
     /// Continue construction with given plane as splitter
     Partition(geom::Plane, T, T),
 
-    /// Construct leaf, finish
+    /// Finish subtree construction (emit leaf)
     Space(S),
 }
 
@@ -210,7 +216,7 @@ impl<S> Bsp<S> {
         Ana(f).build(init)
     }
 
-    /// Collapse tree in single value (by reference)
+    /// Collapse tree in single value (without actual modification)
     pub fn cata_ref<T>(&self, leaf: impl FnMut(&S) -> T, branch: impl FnMut(T, T) -> T) -> T {
         struct Tr<Lf, Bf>(Lf, Bf);
         impl<Lf, Bf> Tr<Lf, Bf> {
@@ -312,7 +318,7 @@ impl<T: FnMut(geom::Plane) -> bool> TraverseFn for T {
     }
 }
 
-/// Front-to-back traverse function type
+/// Front-to-back `Bsp` traverse
 pub struct FrontToBack;
 
 impl TraverseFn for FrontToBack {
@@ -321,7 +327,7 @@ impl TraverseFn for FrontToBack {
     }
 }
 
-/// Back-to-front traverse function type
+/// Back-to-front `Bsp` traverse
 pub struct BackToFront;
 
 impl TraverseFn for BackToFront {
@@ -330,7 +336,7 @@ impl TraverseFn for BackToFront {
     }
 }
 
-/// Point-relative traverse (e.g. front-to-back if point is in front of plane, back-to-front otherwise)
+/// Point-relative `Bsp` traverse (e.g. front-to-back if point is in front of plane, back-to-front otherwise)
 pub struct AroundPoint(pub Vec3f);
 
 impl TraverseFn for AroundPoint {
@@ -343,7 +349,7 @@ impl TraverseFn for AroundPoint {
 }
 
 /// `Bsp` iterator
-pub struct BspIter<'t, S, Tf> {
+pub struct BspIter<'t, S, Tf: TraverseFn> {
     /// BSP node visit stack
     nodes: Vec<&'t Bsp<S>>,
 
@@ -460,6 +466,13 @@ impl_map_index!(PolygonId, geom::Polygon, get_polygon);
 impl_map_index!(VolumeId, Volume, get_volume);
 impl_map_index!(BspModelId, BspModel, get_bsp_model);
 impl_map_index!(DynamicModelId, DynamicModel, get_dynamic_model);
+
+pub type VolumeId = Id<Volume>;
+pub type PolygonId = Id<geom::Polygon>;
+pub type MaterialId = Id<String>;
+pub type BspModelId = Id<BspModel>;
+pub type DynamicModelId = Id<DynamicModel>;
+pub type SurfaceId = Id<Surface>;
 
 impl Map {
     /// Get volume by id

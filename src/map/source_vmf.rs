@@ -1,4 +1,4 @@
-//! Source engine VMF format parser
+//! Source engine VMF reader implementation
 
 use std::collections::{BTreeMap, HashMap};
 

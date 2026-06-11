@@ -1,4 +1,4 @@
-//! Project root module
+//! Hardware-acceleration-free 3D engine
 
 // Resources:
 // [WMAP -> WBSP], WRES -> WDAT/WRES
@@ -12,7 +12,7 @@ use std::{collections::{HashMap, HashSet}, io::{Read, Write}, sync::{Arc, mpsc}}
 use zerocopy::IntoBytes;
 
 use crate::{
-    bsp::Id, frame_slice::{FrameSlice, FrameSliceMut}, math::{Vec4f, Mat4f, Vec2, Vec2f, Vec3f}
+    frame_slice::{FrameSlice, FrameSliceMut}, math::{Vec4f, Mat4f, Vec2, Vec2f, Vec3f}
 };
 
 pub mod math;
@@ -1411,15 +1411,15 @@ fn init_render_thread(
                     // Very long function call, actually
                     let mut render_context = RenderContext {
                         camera: RenderCamera {
-                            view_projection: camera.compute_view_matrix() * projection_matrix,
-                            location: camera.location,
+                            view_projection: camera.view() * projection_matrix,
+                            location: camera.location(),
                             half_fw: width as f32 * 0.5,
                             half_fh: height as f32 * 0.5,
                         },
 
                         shadow_camera: shadow_camera.map(|shadow_camera| RenderCamera {
-                            view_projection: shadow_camera.compute_view_matrix() * projection_matrix,
-                            location: shadow_camera.location,
+                            view_projection: shadow_camera.view() * projection_matrix,
+                            location: shadow_camera.location(),
                             half_fw: width as f32 * 0.5,
                             half_fh: height as f32 * 0.5,
                         }),

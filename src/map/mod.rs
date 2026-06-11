@@ -1,12 +1,9 @@
-//! Map (BSP collection) format implementation
+//! Map (format used during map editing) implementation
 
 use std::collections::HashMap;
 use crate::{geom, math::Vec3f};
 
-/// Quake 1 map
 pub mod q1_map;
-
-/// Source map
 pub mod source_vmf;
 
 crate::flags! {

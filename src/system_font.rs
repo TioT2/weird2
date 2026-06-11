@@ -2,7 +2,7 @@
 
 use crate::frame_slice::FrameSliceMut;
 
-/// System font data (256 8x8 1bit images)
+/// System font data (256 8x8 1bit images representing individual characters)
 const FONT: &[u64; 256] = &[
     0x0000000000000000, 0x7E81A581BD99817E, 0x7EFFDBFFC3E7FF7E, 0x6CFEFEFE7C381000,
     0x10387CFE7C381000, 0x387C38FEFED61038, 0x10387CFEFE7C1038, 0x0000183C3C180000,
@@ -100,6 +100,7 @@ impl<'t> FrameWriter<'t> {
         self.y = y;
     }
 
+    /// Print single character at current pointer location
     fn print_char(&mut self, ch: char) {
         let img = FONT.get(ch as usize).copied().unwrap_or(FONT[1]);
 
@@ -133,7 +134,7 @@ impl<'t> FrameWriter<'t> {
         }
     }
 
-    /// Write string
+    /// Write string slice to frame
     pub fn write_str(&mut self, str: &str) {
         for ch in str.chars() {
             self.write_char(ch);
@@ -148,6 +149,14 @@ impl<'t> std::io::Write for FrameWriter<'t> {
         }
 
         Ok(buf.len())
+    }
+
+    fn write_all(&mut self, buf: &[u8]) -> std::io::Result<()> {
+        for ch in buf {
+            self.write_char(*ch as char);
+        }
+
+        Ok(())
     }
 
     fn flush(&mut self) -> std::io::Result<()> {

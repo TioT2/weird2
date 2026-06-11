@@ -1,4 +1,4 @@
-//! Quake 1 WAD2 resource format
+//! Quake 1 WAD2 resource format reader
 
 use zerocopy::{FromBytes, Immutable};
 

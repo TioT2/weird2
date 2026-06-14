@@ -1727,7 +1727,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 let mut ldr_frame = FrameSliceMut::new(width as usize, height as usize, stride as usize, &mut ldr_frame_buffer);
 
-                // Display statistics
+                // Display frame statistics
                 let mut fw = system_font::writer(ldr_frame.reborrow_mut());
                 writeln!(fw)?;
                 writeln!(fw, " FPS: {} ({}ms)", timer.get_fps(), 1000.0 / timer.get_fps())?;

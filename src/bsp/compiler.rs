@@ -15,7 +15,7 @@ Compilation:
 use std::collections::{HashMap, HashSet};
 use thiserror::Error;
 
-use crate::{bsp::{Bsp, Medium, PhysicsBsp}, geom, map, math::Vec3f};
+use crate::{bsp::{Bsp, CollisionBsp, Medium, PhysicsBsp}, geom, map, math::Vec3f};
 
 /// Brush face identifier
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
@@ -47,9 +47,9 @@ impl VolumeFaceId {
     }
 }
 
-/// Polygon used during collision resolution
+/// Polygon used for collision resolution
 pub struct CollisionPolygon {
-    /// Polygon
+    /// Polygon itself
     pub polygon: geom::Polygon,
 }
 
@@ -407,7 +407,7 @@ pub struct SplitTaskPolygon {
     pub polygon: geom::Polygon,
 }
 
-/// Single BSP model compilation context
+/// Context of BSP model compilation
 pub struct BspModelCompileContext {
     /// 'Final' volumes
     pub volumes: Vec<HullVolume>,
@@ -418,14 +418,13 @@ pub struct BspModelCompileContext {
     /// Volume
     pub volume_bsp: Box<VolumeBsp>,
 
-    /// BSP for collision
-    pub physics_bsp: Box<PhysicsBsp>,
-
     /// Set of portal polygons (They should be shared to optimize total memory consume)
     pub portal_polygons: Vec<geom::Polygon>,
 
     /// Global bounding box
     pub bound_box: geom::BoundBox,
+
+    pub collision: CollisionBsp,
 }
 
 impl std::ops::Index<VolumeFaceId> for BspModelCompileContext {
@@ -449,7 +448,7 @@ impl Default for BspModelCompileContext {
             split_infos: Vec::new(),
             portal_polygons: Vec::new(),
             volume_bsp: Box::new(Bsp::Space(None)),
-            physics_bsp: Box::new(Bsp::Space(Medium::Air)),
+            collision: CollisionBsp::default(),
             bound_box: geom::BoundBox::empty(),
         }
     }
@@ -482,9 +481,9 @@ impl BspModelCompileContext {
         todo!()
     }
 
-    /// Start physics BSP building pass
-    fn _start_build_physics_bsp(&mut self, collision_polygons: Vec<CollisionPolygon>) {
-        *self.physics_bsp = self._build_physics_bsp(collision_polygons, true);
+    /// Build physics BSP
+    fn _start_build_physics_bsp(&mut self, _collision_polygons: Vec<CollisionPolygon>) {
+        // *self.physics_bsp = self._build_physics_bsp(collision_polygons, true);
     }
 
     fn build_volume(&mut self, volume: HullVolume, display_polygons: Vec<DisplayPolygon>) -> VolumeBsp {
@@ -1150,9 +1149,10 @@ impl CompileContext {
                     )))
                     .collect::<Vec<Vec3f>>();
 
-                // Just for safety
+                // Just for safety, it's actually not really possible
                 sum_points = geom::deduplicate_points(sum_points);
 
+                // Build final hull polygons
                 let Ok(polygons) = geom::convex_hull(&sum_points) else {
                     continue 'brush_polygon_building;
                 };

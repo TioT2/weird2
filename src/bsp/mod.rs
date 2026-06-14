@@ -13,7 +13,7 @@ pub struct Id<T>(NonZeroU32, PhantomData<fn(T) -> T>);
 
 impl<T> Clone for Id<T> {
     fn clone(&self) -> Self {
-        Self(self.0, PhantomData)
+        *self
     }
 }
 
@@ -184,6 +184,12 @@ pub enum Bsp<S> {
     Space(S),
 }
 
+impl<S: Default> Default for Bsp<S> {
+    fn default() -> Self {
+        Self::Space(S::default())
+    }
+}
+
 /// Anamorphism (kind of BSP construction command) result
 pub enum AnaResult<T, S> {
     /// Continue construction with given plane as splitter
@@ -304,6 +310,83 @@ impl<S> Bsp<S> {
     pub fn find(&self, point: Vec3f) -> &S {
         self.descend(AroundPoint(point))
     }
+
+    /// Trace line inside space to some space border
+    pub fn trace_space_border<'t>(&'t self, line: geom::Line) -> Option<TraceStep<'t, S>> {
+        let mut node = self;
+        let mut best_noff: Option<(Vec3f, f32)> = None;
+
+        loop {
+            match node {
+                Bsp::Partition { splitter_plane, front, back } => {
+                    let off = splitter_plane.intersect_line_coef(line);
+
+                    if off.is_sign_positive() {
+                        let (normal, offset) = best_noff.get_or_insert_default();
+                        if off < *offset {
+                            *offset = off;
+                            *normal = splitter_plane.normal;
+                        }
+                    }
+
+                    node = match splitter_plane.get_point_relation(line.origin) {
+                        geom::PointRelation::Front | geom::PointRelation::OnPlane => front,
+                        geom::PointRelation::Back => back,
+                    };
+                }
+                Bsp::Space(space) => return best_noff.map(|(normal, offset)| TraceStep {
+                    normal,
+                    offset,
+                    space
+                })
+            }
+        }
+    }
+
+    /// Trace BSP along line
+    pub fn trace<'t>(&'t self, line: geom::Line) -> BspTraceIter<'t, S> {
+        BspTraceIter {
+            line,
+            offset: 0.0,
+            bsp: self,
+        }
+    }
+}
+
+/// BSP tracing iterator
+pub struct BspTraceIter<'t, S> {
+    /// Traced line (remains unchanged)
+    line: geom::Line,
+
+    /// Current line offset
+    offset: f32,
+
+    /// Traced BSP root
+    bsp: &'t Bsp<S>,
+}
+
+/// Trace step descriptor
+#[derive(Copy, Clone)]
+pub struct TraceStep<'t, S> {
+    /// Hit normal
+    pub normal: Vec3f,
+
+    /// Hit offset
+    pub offset: f32,
+
+    /// Hit space reference
+    pub space: &'t S,
+}
+
+impl<'t, S> Iterator for BspTraceIter<'t, S> {
+    type Item = TraceStep<'t, S>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let mut hit = self.bsp.trace_space_border(self.line.offset(self.offset))?;
+        hit.offset += self.offset;
+        self.offset = hit.offset;
+        Some(hit)
+    }
 }
 
 /// Traverse function trait. Used for tree iteration and descend
@@ -387,13 +470,39 @@ pub type RenderBsp = Bsp<Option<VolumeId>>;
 pub type PhysicsBsp = Bsp<Medium>;
 
 /// BSP medium type
-#[derive(Copy, Clone, PartialEq, Eq)]
+#[derive(Copy, Clone, PartialEq, Eq, Default)]
 pub enum Medium {
     /// Just air, space where entity can move
+    #[default]
     Air,
 
     /// Solid area, does not permits entities to be inside
     Solid,
+}
+
+/// Traced object size
+pub enum ObjectSize {
+    /// Point object
+    Point,
+
+    /// Medium-sized object
+    Medium,
+
+    /// Large object
+    Large,
+}
+
+/// Set of BSPs used for collisions of different object types
+#[derive(Default)]
+pub struct CollisionBsp {
+    /// Map-size hull, 0x0x0
+    pub point: Box<PhysicsBsp>,
+
+    /// Medium-size hull, 32x32x56
+    pub medium: Box<PhysicsBsp>,
+
+    /// Large hull, 64x64x88
+    pub large: Box<PhysicsBsp>,
 }
 
 /// `Bsp`-based model

@@ -1,6 +1,6 @@
 //! Standard analytic geometry primitive module
 
-use std::ops::{Add, BitXor, Div, Mul, Neg, Rem, RemAssign, Sub};
+use std::{iter::Sum, ops::{Add, BitXor, Div, Mul, Neg, Rem, RemAssign, Sub, AddAssign, SubAssign, MulAssign, DivAssign}};
 
 macro_rules! reduce_impl {
     ($f: expr, $head: expr, $($tail: expr),*) => {
@@ -138,10 +138,10 @@ macro_rules! impl_matn_vecn {
             /// Calculate dot product of two vectors
             pub fn dot<U, V>(self, othr: $Vec<U>) -> V
             where
-                V: std::ops::Add<V, Output = V>,
-                T: std::ops::Mul<U, Output = V>
+                V: Add<V, Output = V>,
+                T: Mul<U, Output = V>
             {
-                self.zip(othr, std::ops::Mul::mul).reduce(std::ops::Add::add)
+                self.zip(othr, Mul::mul).reduce(Add::add)
             }
         }
 
@@ -152,9 +152,9 @@ macro_rules! impl_matn_vecn {
             }
         }
 
-        impl<T: From<u8> + std::ops::Add<T, Output = T>> std::iter::Sum for $Vec<T> {
+        impl<T: From<u8> + Add<T, Output = T>> Sum for $Vec<T> {
             fn sum<I: Iterator<Item = Self>>(iter: I) -> $Vec<T> {
-                iter.fold(Self::zero(), std::ops::Add::add)
+                iter.fold(Self::zero(), Add::add)
             }
         }
 
@@ -185,23 +185,23 @@ macro_rules! impl_matn_vecn {
 
         macro_rules! binary_operator {
             ($Op: ident, $op: ident, $AOp: ident, $aop: ident) => {
-                impl<T, U, V> std::ops::$Op<$Vec<U>> for $Vec<T>
+                impl<T, U, V> $Op<$Vec<U>> for $Vec<T>
                 where
-                    T: std::ops::$Op<U, Output = V>
+                    T: $Op<U, Output = V>
                 {
                     type Output = $Vec<V>;
 
                     fn $op(self, othr: $Vec<U>) -> $Vec<V> {
-                        $Vec::<V> { $($x: std::ops::$Op::$op(self.$x, othr.$x)),* }
+                        $Vec::<V> { $($x: $Op::$op(self.$x, othr.$x)),* }
                     }
                 }
 
-                impl<T, U> std::ops::$AOp<$Vec<U>> for $Vec<T>
+                impl<T, U> $AOp<$Vec<U>> for $Vec<T>
                 where
-                    T: std::ops::$AOp<U>
+                    T: $AOp<U>
                 {
                     fn $aop(&mut self, othr: $Vec<U>) {
-                        $( std::ops::$AOp::$aop(&mut self.$x, othr.$x); )*
+                        $( $AOp::$aop(&mut self.$x, othr.$x); )*
                     }
                 }
             };
@@ -212,9 +212,9 @@ macro_rules! impl_matn_vecn {
         binary_operator!(Mul, mul, MulAssign, mul_assign);
         binary_operator!(Div, div, DivAssign, div_assign);
 
-        impl<T, U> std::ops::Neg for $Vec<T>
+        impl<T, U> Neg for $Vec<T>
         where
-            T: std::ops::Neg<Output = U>
+            T: Neg<Output = U>
         {
             type Output = $Vec<U>;
 
@@ -240,6 +240,11 @@ macro_rules! impl_matn_vecn {
         impl<T: Copy> Copy for $Mat<T> {}
 
         impl<T> $Mat<T> {
+            /// Create new matrix from raw data
+            pub const fn new(data: [[T; $DIM]; $DIM]) -> Self {
+                Self { data }
+            }
+
             /// Construct matrix from column vector array
             pub fn from_cols(cols: [$Vec<T>; $DIM]) -> Self {
                 Self { data: cols.map($Vec::into_array)  }
@@ -811,10 +816,114 @@ impl Mat4<f32> {
     }
 }
 
-/// Quaternion
+/// Quaternion structure
 pub struct Quat<T> {
-    pub w: T,
-    pub x: T,
-    pub y: T,
-    pub z: T,
+    /// Scalar part
+    s: T,
+
+    /// Vector part
+    v: Vec3<T>,
+}
+
+impl<T> Quat<T> {
+    /// Construct new quaternion
+    pub const fn new(a: T, v: Vec3<T>) -> Self {
+        Self { s: a, v }
+    }
+
+    /// Extract scalar part
+    pub fn s(self) -> T {
+        self.s
+    }
+
+    /// Extract vector part
+    pub fn v(self) -> Vec3<T> {
+        self.v
+    }
+
+    /// Calculate conjugate quaternion
+    pub fn conj(self) -> Self
+    where T: Neg<Output = T>
+    {
+        Self { s: self.s, v: -self.v }
+    }
+
+    /// Calculate squared quaternion norm
+    pub fn norm2(self) -> T
+    where T: Clone + Mul<T, Output = T> + Add<T, Output = T>
+    {
+        self.s.clone() * self.s + self.v.length2()
+    }
+
+    /// Transform vector by quaternion
+    pub fn transform(self, p: Vec3<T>) -> Vec3<T>
+    where T: Clone + Mul<Output = T> + Sub<Output = T> + Add<Output = T> + Div<Output = T>
+    {
+        (self.v.clone() * Vec3::dot(self.v.clone(), p.clone()).into()
+         + Into::<Vec3<T>>::into(self.s.clone() * self.s.clone()) * p.clone()
+         + Into::<Vec3<T>>::into(self.s.clone() + self.s.clone()) * Vec3::cross(self.v.clone(), p)
+        ) / self.norm2().into()
+    }
+}
+
+impl Quat<f32> {
+    /// Calculate norm
+    pub fn norm(self) -> f32 {
+        self.norm2().sqrt()
+    }
+}
+
+impl Quat<f64> {
+    /// Calculate norm
+    pub fn norm(self) -> f64 {
+        self.norm2().sqrt()
+    }
+}
+
+impl<T: Clone> Clone for Quat<T> {
+    fn clone(&self) -> Self {
+        Self {
+            s: self.s.clone(),
+            v: self.v.clone(),
+        }
+    }
+}
+
+impl<T: Copy> Copy for Quat<T> {}
+
+impl<T: Add<T, Output = T>> Add<Self> for Quat<T> {
+    type Output = Self;
+
+    fn add(self, othr: Self) -> Self {
+        Self {
+            s: self.s + othr.s,
+            v: self.v + othr.v,
+        }
+    }
+}
+
+impl<T: Sub<T, Output = T>> Sub<Self> for Quat<T> {
+    type Output = Self;
+
+    fn sub(self, othr: Self) -> Self {
+        Self {
+            s: self.s - othr.s,
+            v: self.v - othr.v,
+        }
+    }
+}
+
+impl<T> Mul<Self> for Quat<T>
+where T: Clone + Add<T, Output = T> + Sub<T, Output = T> + Mul<T, Output = T>
+{
+    type Output = Self;
+
+    fn mul(self, othr: Self) -> Self {
+        Self {
+            s: self.s.clone() * othr.s.clone() - Vec3::dot(self.v.clone(), othr.v.clone()),
+            v: Into::<Vec3<T>>::into(self.s) * othr.v.clone()
+                + Into::<Vec3<T>>::into(othr.s) * self.v.clone()
+                + Vec3::cross(self.v, othr.v)
+        }
+    }
 }

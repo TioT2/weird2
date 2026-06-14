@@ -1,6 +1,6 @@
 //! Standard geometry primitive implementation module
 
-use std::{cell::Cell, collections::HashMap, rc::Rc};
+use std::{cell::Cell, collections::{HashMap, HashSet}, rc::Rc};
 
 use crate::math::{Mat3f, Vec2f, Vec3f, Vec4f};
 
@@ -78,7 +78,7 @@ pub struct Line {
     pub direction: Vec3f,
 
     /// Line origin
-    pub base: Vec3f,
+    pub origin: Vec3f,
 }
 
 impl Line {
@@ -86,7 +86,20 @@ impl Line {
     pub fn from_points(first: Vec3f, second: Vec3f) -> Self {
         Self {
             direction: (second - first).normalized(),
-            base: first,
+            origin: first,
+        }
+    }
+
+    /// Get line value at certain point
+    pub fn at(&self, x: f32) -> Vec3f {
+        self.origin + self.direction * x.into()
+    }
+
+    /// Offset line to other line point
+    pub fn offset(&self, off: f32) -> Line {
+        Self {
+            direction: self.direction,
+            origin: self.at(off),
         }
     }
 }
@@ -185,7 +198,7 @@ impl Plane {
             (self.normal *  rhs.distance.into() + rhs.normal * self.distance.into()) * dot.into()
         ) / (1.0 - dot * dot).into();
 
-        Line { base, direction }
+        Line { origin: base, direction }
     }
 
     /// Intersect one plane with two other planes
@@ -291,9 +304,14 @@ impl Plane {
         }
     }
 
+    /// Coefficent of plane-line intersection
+    pub fn intersect_line_coef(&self, line: Line) -> f32 {
+        (self.distance - (line.origin ^ self.normal)) / (line.direction ^ self.normal)
+    }
+
     // Get intersection of the plane and line
     pub fn intersect_line(&self, line: Line) -> Vec3f {
-        line.base + line.direction * ((self.distance - (line.base ^ self.normal)) / (line.direction ^ self.normal)).into()
+        line.at(self.intersect_line_coef(line))
     }
 
     /// Split polygon by the plane
@@ -748,16 +766,9 @@ impl BoundRect {
     }
 }
 
-/// Total-ordered f32
+/// Float-point type with comparison replaced with [`f32::total_cmp`]
 #[derive(Copy, Clone)]
-struct TotalF32(f32);
-
-impl TotalF32 {
-    /// Compare total-ordered f32
-    pub fn cmp(self, othr: TotalF32) -> std::cmp::Ordering {
-        f32::total_cmp(&self.0, &othr.0)
-    }
-}
+pub struct TotalF32(pub f32);
 
 impl std::cmp::PartialEq for TotalF32 {
     fn eq(&self, othr: &Self) -> bool {
@@ -775,7 +786,7 @@ impl std::cmp::PartialOrd for TotalF32 {
 
 impl std::cmp::Ord for TotalF32 {
     fn cmp(&self, othr: &Self) -> std::cmp::Ordering {
-        TotalF32::cmp(*self, *othr)
+        f32::total_cmp(&self.0, &othr.0)
     }
 }
 
@@ -794,24 +805,13 @@ struct JEdge {
     v1: usize,
 
     /// First triangle vertex
-    _t_init: usize,
+    t_init: usize,
 
     /// Second triangle vertex
     t_next: Cell<Option<usize>>,
 }
 
 impl JEdge {
-    // /// Get neighbour of some index
-    // fn neighbour_of(&self, ind: usize) -> Option<usize> {
-    //     if self.t_init != ind {
-    //         Some(self.t_init)
-    //     } else if let Some(i) = self.t_next.get() && i != ind {
-    //         Some(i)
-    //     } else {
-    //         None
-    //     }
-    // }
-
     /// Get vertex indices considering edge swap flag
     fn indices(&self, do_swap: bool) -> (usize, usize) {
         if do_swap {
@@ -829,6 +829,17 @@ struct JTriangle {
 
     /// Triangle plane
     plane: Plane,
+}
+
+impl JTriangle {
+    /// Extract vertex indices
+    pub fn vertices(&self) -> [usize; 3] {
+        [
+            self.edges[0].0.indices(self.edges[0].1).0,
+            self.edges[1].0.indices(self.edges[1].1).0,
+            self.edges[2].0.indices(self.edges[2].1).0,
+        ]
+    }
 }
 
 /// Jarvis convex hull builder
@@ -879,7 +890,7 @@ impl<'t> JBuilder<'t> {
                 let edge = Rc::new(JEdge {
                     v0,
                     v1,
-                    _t_init: tri,
+                    t_init: tri,
                     t_next: Cell::new(None),
                 });
                 vac.insert(edge).clone()
@@ -993,64 +1004,96 @@ impl<'t> JBuilder<'t> {
         self.insert_triangle(v0, v1, v2);
     }
 
-    /// Finish building without coplanar polygon merge step
-    fn finish_no_merge(&mut self) -> Vec<Polygon> {
-        let mut polygons = Vec::new();
+    // /// Finish building without coplanar polygon merge step
+    // fn finish_no_merge(&mut self) -> Vec<Polygon> {
+    //     let mut polygons = Vec::new();
 
-        for tri in self.tris.iter() {
-            let pt = |i: usize| self.pts[tri.edges[i].0.indices(tri.edges[i].1).0];
+    //     for tri in self.tris.iter() {
+    //         let pt = |i: usize| self.pts[tri.edges[i].0.indices(tri.edges[i].1).0];
+    //         polygons.push(Polygon {
+    //             points: vec![pt(0), pt(1), pt(2)],
+    //             plane: tri.plane,
+    //         })
+    //     }
+
+    //     polygons
+    // }
+
+    /// Convert triangles to polygons merging coplanar ones.
+    fn finish(&mut self) -> Vec<Polygon> {
+        let mut polygons = Vec::new();
+        let mut rest_tris = vec![true; self.tris.len()];
+
+        // Shared resources
+        let mut face_point_set = HashSet::new();
+        let mut border_edge_set = HashMap::new();
+        let mut explored_edge_set = HashSet::new();
+
+        for tri_ind in 0..self.tris.len() {
+            if !rest_tris[tri_ind] {
+                continue;
+            }
+            rest_tris[tri_ind] = false;
+            let tri = &self.tris[tri_ind];
+
+
+            border_edge_set.clear();
+            border_edge_set.extend(tri.edges.iter()
+                .cloned()
+                .map(|(edge, swapflag)| ((edge.v0, edge.v1), (edge, swapflag)))
+            );
+            explored_edge_set.clear();
+            explored_edge_set.extend(tri.edges.iter().map(|(e, _)| (e.v0, e.v1)));
+
+            loop {
+                // Remove random edge from border edge set
+                let edge_opt = border_edge_set.keys().next().copied()
+                    .map(|k| border_edge_set.remove(&k).unwrap());
+                let Some((edge, _swapflag)) = edge_opt else {
+                    break;
+                };
+
+                // Remove edge because target triangle is disabled
+                let target_tri_ind = if edge.t_init == tri_ind {
+                    edge.t_next.get().unwrap()
+                } else {
+                    edge.t_init
+                };
+
+                let target_tri = &self.tris[target_tri_ind];
+
+                let not_face_part = target_tri.plane.normal.dot(tri.plane.normal) < 0.9
+                    || target_tri.vertices()
+                        .into_iter()
+                        .any(|v| tri.plane.get_point_relation(self.pts[v]) != PointRelation::OnPlane);
+
+                // Insert triangle to final face if it's not part of merged triangle
+                if not_face_part {
+                    face_point_set.insert(edge.v0);
+                    face_point_set.insert(edge.v1);
+                    continue;
+                }
+
+                // Remove target triangle from merge process
+                rest_tris[target_tri_ind] = false;
+
+                // Add rest edges to explore border
+                for (target_edge, swapflag) in target_tri.edges.iter() {
+                    if !explored_edge_set.insert((target_edge.v0, target_edge.v1)) {
+                        border_edge_set.insert((target_edge.v0, target_edge.v1), (target_edge.clone(), *swapflag));
+                    }
+                }
+            }
+
+            // Insert polygon
             polygons.push(Polygon {
-                points: vec![pt(0), pt(1), pt(2)],
+                points: sort_points_by_angle(face_point_set.drain().map(|v| self.pts[v]).collect(), tri.plane.normal),
                 plane: tri.plane,
-            })
+            });
         }
 
         polygons
     }
-
-    // fn finish(&mut self) -> Vec<Polygon> {
-    //     let mut polygons = Vec::new();
-    //     let mut rest_tris = (0..self.tris.len()).collect::<HashSet<_>>();
-
-    //     for tri in 0..self.tris.len() {
-    //         if !rest_tris.remove(&tri) {
-    //             continue;
-    //         }
-    //     }
-
-    //     polygons
-    // }
-
-    // /// Build final polygon set
-    // fn finish(&mut self) -> Vec<Polygon> {
-    //     let mut polygons = Vec::new();
-    //     let mut tri_inds = BTreeSet::from_iter(0..self.tris.len());
-
-    //     while let Some(tri_ind) = tri_inds.pop_first() {
-    //         // Try to merge triangle with all its neighbours
-    //         let tri = &self.tris[tri_ind];
-
-    //         // Plane all edges are merged with
-    //         let merge_plane = tri.plane;
-
-    //         for (edge, e_do_swap) in tri.edges.iter() {
-    //             let n_ind = edge.neighbour_of(tri_ind).unwrap();
-
-    //             // Triangle is already removed from triangle stack and is not needed to be checked
-    //             if !tri_inds.contains(&n_ind) {
-    //                 continue;
-    //             }
-    //             let n = &self.tris[n_ind];
-
-    //             // Obviously not neighbour
-    //             if n.plane.normal.dot(tri.plane.normal) <= 0.9 {
-    //                 continue;
-    //             }
-    //         }
-    //     }
-
-    //     polygons
-    // }
 
     /// Build convex hull
     pub fn build(&mut self) -> Vec<Polygon> {
@@ -1058,7 +1101,7 @@ impl<'t> JBuilder<'t> {
         while let Some((v0, v1, v_exc, normal)) = self.edge_stack.pop() {
             self.step(v0, v1, v_exc, normal);
         }
-        self.finish_no_merge()
+        self.finish()
     }
 }
 

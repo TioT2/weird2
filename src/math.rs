@@ -1,4 +1,4 @@
-//! Standard analytic geometry primitive module
+//! Math primitive implementations
 
 use std::{iter::Sum, ops::{Add, BitXor, Div, Mul, Neg, Rem, RemAssign, Sub, AddAssign, SubAssign, MulAssign, DivAssign}};
 

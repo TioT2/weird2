@@ -222,9 +222,10 @@ impl<S> Bsp<S> {
         Ana(f).build(init)
     }
 
-    /// Collapse tree in single value (without actual modification)
-    pub fn cata_ref<T>(&self, leaf: impl FnMut(&S) -> T, branch: impl FnMut(T, T) -> T) -> T {
+    /// Collapse tree taking values by reference
+    pub fn fold_ref<T>(&self, leaf: impl FnMut(&S) -> T, branch: impl FnMut(T, T) -> T) -> T {
         struct Tr<Lf, Bf>(Lf, Bf);
+
         impl<Lf, Bf> Tr<Lf, Bf> {
             fn with<L, T>(&mut self, node: &Bsp<L>) -> T
             where
@@ -243,11 +244,6 @@ impl<S> Bsp<S> {
         }
 
         Tr(leaf, branch).with(self)
-    }
-
-    /// `cata_ref` function alias
-    pub fn fold_ref<T>(&self, leaf: impl FnMut(&S) -> T, branch: impl FnMut(T, T) -> T) -> T {
-        self.cata_ref(leaf, branch)
     }
 
     /// Calculate BSP tree depth

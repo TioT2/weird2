@@ -5,7 +5,7 @@ pub type Key = sdl2::keyboard::Scancode;
 
 /// State of the keyboard key
 #[repr(transparent)]
-#[derive(Copy, Clone, PartialEq, Eq)]
+#[derive(Copy, Clone, PartialEq, Eq, Default)]
 pub struct KeyState(u8);
 
 impl KeyState {

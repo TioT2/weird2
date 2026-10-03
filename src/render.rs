@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::{bsp, camera, frame_slice::{FrameSlice, FrameSliceMut}, geom, math::{Mat4f, Vec2, Vec2f, Vec3f, Vec4f}, rand, res, u64_from_u16, u64_into_u16};
+use crate::{bsp, frame_slice::{FrameSlice, FrameSliceMut}, geom, math::{Mat4f, Vec2, Vec2f, Vec3f, Vec4f}, rand, res, u64_from_u16, u64_into_u16};
 
 /// Different rasterization modes
 #[derive(Copy, Clone, PartialEq, Eq)]
@@ -140,7 +140,6 @@ fn clip_polygon_oct(
     fn le(l: f32, r: f32) -> bool { l <= r }
 
     // Utilize '&&' hands calculation rules to stop clipping if there's <= 3 points
-    
            geom::clip_polygon(vertices, temp, clip_oct.min.x(), ge, norm_x)
         && geom::clip_polygon(vertices, temp, clip_oct.max.x(), le, norm_x)
         && geom::clip_polygon(vertices, temp, clip_oct.min.y(), ge, norm_y)
@@ -152,7 +151,7 @@ fn clip_polygon_oct(
 }
 
 /// Camera that (additionally) holds info about projection and frame size
-pub struct RenderCamera {
+pub struct Camera {
     /// Projection * View matrix
     pub view_projection: Mat4f,
 
@@ -166,7 +165,7 @@ pub struct RenderCamera {
     pub half_fh: f32,
 }
 
-impl RenderCamera {
+impl Camera {
     /// Simplified function for vertex without portals
     pub fn get_screenspace_projected_portal_polygon(
         &self,
@@ -260,12 +259,12 @@ impl RenderCamera {
 }
 
 /// Render context
-pub struct RenderContext<'t, 'ref_table> {
+pub struct Context<'t, 'ref_table> {
     /// Projection info holder
-    pub camera: RenderCamera,
+    pub camera: Camera,
 
     /// Camera used for calculation of clipping
-    pub shadow_camera: Option<RenderCamera>,
+    pub shadow_camera: Option<Camera>,
 
     /// Offset of background from foreground
     pub sky_background_uv_offset: Vec2f,
@@ -286,7 +285,7 @@ pub struct RenderContext<'t, 'ref_table> {
     pub rasterization_mode: RasterizationMode,
 }
 
-impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
+impl<'t, 'ref_table> Context<'t, 'ref_table> {
     /// Call pixel_fn for all polygon pixels
     fn render_clipped_polygon_impl<PixelFn: FnMut(&mut u64, Vec4f)>(
         &mut self,
@@ -628,6 +627,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
             .unwrap();
 
         // Find mip index (sky uses 0 by default)
+
         let mip_index = if surface.is_sky() {
             0
         } else {
@@ -839,7 +839,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
         bsp_root: &bsp::Bsp<Option<bsp::VolumeId>>,
         start_volume_id: bsp::VolumeId,
         start_clip_oct: &geom::BoundOct,
-        camera: &RenderCamera,
+        camera: &Camera,
     ) -> Vec<(bsp::VolumeId, geom::BoundOct)> {
         // Render set itself
         let mut inv_render_set = Vec::new();
@@ -950,6 +950,7 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
         inv_render_set
     }
 
+    /// Run rendering on current context
     pub fn render(&mut self) {
         let world_bsp = self.map.get_world_model().get_bsp();
         let screen_clip_oct = geom::BoundOct::from_clip_rect(self.get_screen_clip_rect());
@@ -1023,32 +1024,6 @@ impl<'t, 'ref_table> RenderContext<'t, 'ref_table> {
                 );
             }
         }
-    }
-}
-
-/// Input to render about world change
-pub enum RenderInputMessage {
-    /// Request for frame rendering
-    NewFrame {
-        /// Frame target buffer
-        frame_buffer: Vec<u64>,
-        width: u32,
-        height: u32,
-        shadow_camera: Option<camera::Camera>,
-        camera: camera::Camera,
-        projection_matrix: Mat4f,
-        rasterization_mode: RasterizationMode,
-    }
-}
-
-/// Render output message
-pub enum RenderOutputMessage {
-    /// Response containing rendered frame
-    RenderedFrame {
-        frame_buffer: Vec<u64>,
-        width: u32,
-        height: u32,
-        stride: u32,
     }
 }
 
@@ -1163,7 +1138,7 @@ fn build_surface_texture(
 }
 
 /// Convert HDR frame buffer to LDR
-pub fn hdr_to_ldr(hdr: &[u64], ldr: &mut [u32], enable_tonemapping: bool) {
+pub fn hdr_to_ldr(hdr: &[u64], ldr: &mut [u32], enable_tonemapping: bool, swap_bytes: bool) {
 
     /// Just clamp color, no tonemapping at all
     fn clamp(hdr: &u64, ldr: &mut u32) {
@@ -1233,23 +1208,28 @@ pub fn hdr_to_ldr(hdr: &[u64], ldr: &mut [u32], enable_tonemapping: bool) {
     }
 
     /// Tonemapping implementation
-    fn impl_<const ENABLE: bool>(hdr: &[u64], ldr: &mut [u32]) {
+    fn impl_<const ENABLE: bool, const SWAP: bool>(hdr: &[u64], ldr: &mut [u32]) {
         for (src, dst) in Iterator::zip(hdr.iter(), ldr.iter_mut()) {
             if ENABLE {
-                #[cfg(target_feature = "sse2")]
-                reinhard_sse2(src, dst);
-
-                #[cfg(not(target_feature = "sse2"))]
-                reinhard(src, dst);
+                cfg_select!(
+                    target_feature = "sse2" => reinhard_sse2,
+                    _ => renihard,
+                )(src, dst);
             } else {
                 clamp(src, dst);
+            }
+            if SWAP {
+                *dst = dst.swap_bytes() >> 8;
             }
         }
     }
 
-    if enable_tonemapping {
-        impl_::<true>(hdr, ldr);
-    } else {
-        impl_::<false>(hdr, ldr);
-    }
+    let f = match (enable_tonemapping, swap_bytes) {
+        (false, false) => impl_::<false, false>,
+        (false,  true) => impl_::<false,  true>,
+        ( true, false) => impl_::< true, false>,
+        ( true,  true) => impl_::< true,  true>,
+    };
+
+    f(hdr, ldr);
 }

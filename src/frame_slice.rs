@@ -1,4 +1,4 @@
-//! 2D image slice implementation
+//! Specialized structure featuring image slices
 
 use std::{marker::PhantomData, ptr::NonNull};
 

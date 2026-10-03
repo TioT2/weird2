@@ -8,7 +8,7 @@
 // WRES - Resource format, contains textures/sounds/models/etc.
 // WDAT - Data format, contains 'final' project with BSP's.
 
-use std::{io::{Read, Write}, sync::{Arc, mpsc}};
+use std::io::{Read, Write};
 use zerocopy::IntoBytes;
 
 use crate::{
@@ -16,6 +16,7 @@ use crate::{
     math::{Mat4f, Vec2f, Vec3f}
 };
 
+// Engine modules
 pub mod math;
 pub mod system_font;
 pub mod frame_slice;
@@ -48,75 +49,6 @@ pub const fn u64_into_u16(value: u64) -> [u16; 4] {
     ]
 }
 
-/// Input to render about world change
-pub enum RenderInputMessage {
-    /// Request for frame rendering
-    NewFrame {
-        /// Frame target buffer
-        frame_buffer: Vec<u64>,
-        width: u32,
-        height: u32,
-        shadow_camera: Option<camera::Camera>,
-        camera: camera::Camera,
-        projection_matrix: Mat4f,
-        rasterization_mode: render::RasterizationMode,
-    }
-}
-
-/// Render output message
-pub enum RenderOutputMessage {
-    /// Response containing rendered frame
-    RenderedFrame {
-        frame_buffer: Vec<u64>,
-        width: u32,
-        height: u32,
-        stride: u32,
-    }
-}
-
-/// Present frame from slice to window surface
-fn present_frame(
-    mut frame: FrameSliceMut<'_, u32>,
-    window_surface: &mut sdl2::video::WindowSurfaceRef,
-) {
-    let width = frame.width() as u32;
-    let height = frame.height() as u32;
-    let stride = frame.stride() as u32 * 4;
-    let surface_bytes = frame.as_flat().unwrap().as_mut_bytes();
-
-    let mut render_surface = match sdl2::surface::Surface::from_data(
-        surface_bytes,
-        width,
-        height,
-        stride,
-        sdl2::pixels::PixelFormatEnum::ABGR8888
-    ) {
-        Ok(surface) => surface,
-        Err(err) => {
-            eprintln!("Source surface create error: {}", err);
-            return;
-        }
-    };
-
-    // Disable alpha blending
-    if let Err(err) = render_surface.set_blend_mode(sdl2::render::BlendMode::None) {
-        eprintln!("Cannot disable render surface blending: {}", err);
-    };
-
-    // Perform render surface blit
-    let (window_w, window_h) = window_surface.size();
-    let src_rect = sdl2::rect::Rect::new(0, 0, width, height);
-    let dst_rect = sdl2::rect::Rect::new(0, 0, window_w, window_h);
-
-    if let Err(err) = render_surface.blit_scaled(src_rect, window_surface, dst_rect) {
-        eprintln!("Surface blit failed: {}", err);
-    }
-
-    if let Err(err) = window_surface.update_window() {
-        eprintln!("Window update failed: {}", err);
-    }
-}
-
 /// Wrap function call with time calculation
 fn with_time_ms<T>(f: impl FnOnce() -> T) -> (T, f64) {
     let start = std::time::Instant::now();
@@ -124,111 +56,6 @@ fn with_time_ms<T>(f: impl FnOnce() -> T) -> (T, f64) {
     let end = std::time::Instant::now();
 
     (value, end.duration_since(start).as_nanos() as f64 / 1_000_000f64)
-}
-
-/// Initialize rendering thread
-fn init_render_thread(
-    map: Arc<bsp::Map>,
-    material_table: Arc<res::MaterialTable>
-) -> (mpsc::Sender<RenderInputMessage>, mpsc::Receiver<RenderOutputMessage>) {
-    let (render_in_sender, render_in_reciever) = mpsc::channel::<RenderInputMessage>();
-    let (render_out_sender, render_out_reciever) = mpsc::channel::<RenderOutputMessage>();
-
-    // Spawn render thread
-    _ = std::thread::spawn(move || {
-        // Create new local timer
-        let mut timer = timer::Timer::default();
-
-        let msg_reciever = render_in_reciever;
-        let msg_sender = render_out_sender;
-
-        // Map reference
-        let map_arc = map.clone();
-        let material_table_arc = material_table;
-
-        let map = map_arc.as_ref();
-        let material_table = material_table_arc.as_ref();
-
-        let material_reference_table = material_table
-            .build_reference_table(map);
-
-        // Send empty frame to match sending order
-        _ = msg_sender.send(RenderOutputMessage::RenderedFrame {
-            frame_buffer: Vec::new(),
-            width: 0,
-            height: 0,
-            stride: 0
-        });
-
-        'frame_render_loop: loop {
-            let Ok(message) = msg_reciever.recv() else {
-                break 'frame_render_loop;
-            };
-
-            match message {
-                RenderInputMessage::NewFrame {
-                    mut frame_buffer,
-                    width,
-                    height,
-                    shadow_camera,
-                    camera,
-                    projection_matrix,
-                    rasterization_mode
-                } => {
-                    timer.response();
-
-                    let time = timer.get_time();
-
-                    // Clear framebuffer
-                    frame_buffer.fill(0);
-
-                    // Very long function call, actually
-                    let mut render_context = render::RenderContext {
-                        camera: render::RenderCamera {
-                            view_projection: camera.view() * projection_matrix,
-                            location: camera.location(),
-                            half_fw: width as f32 * 0.5,
-                            half_fh: height as f32 * 0.5,
-                        },
-
-                        shadow_camera: shadow_camera.map(|shadow_camera| render::RenderCamera {
-                            view_projection: shadow_camera.view() * projection_matrix,
-                            location: shadow_camera.location(),
-                            half_fw: width as f32 * 0.5,
-                            half_fh: height as f32 * 0.5,
-                        }),
-
-                        // Construct target frame slice
-                        frame: FrameSliceMut::<u64>::new(
-                            width as usize,
-                            height as usize,
-                            width as usize,
-                            frame_buffer.as_mut_slice()
-                        ),
-
-                        map,
-                        material_table: &material_reference_table,
-                        rasterization_mode,
-
-                        sky_background_uv_offset: Vec2f::broadcast(time * -12.0),
-                        sky_uv_offset: Vec2f::broadcast(time * 16.0),
-                    };
-
-                    render_context.render();
-
-                    // Send output message
-                    _ = msg_sender.send(RenderOutputMessage::RenderedFrame {
-                        frame_buffer,
-                        width,
-                        height,
-                        stride: width,
-                    });
-                }
-            }
-        }
-    });
-
-    (render_in_sender, render_out_reciever)
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -240,6 +67,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Enable rendering with synchronization after some portion of frame pixels renderend
     let mut rasterization_mode = render::RasterizationMode::Full;
+
+    let mut frame_scale = 1usize;
 
     let data_path = ".local/";
     let (map_name, map_src_format, wad_name) =
@@ -307,8 +136,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    let map = Arc::new(map);
-
     // Display BSP statistics
     {
         pub struct BspStat {
@@ -351,7 +178,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         res::MaterialTable::load_wad2(&std::fs::read(&wp).unwrap()).unwrap()
     };
-    let material_table = Arc::new(material_table);
+    let material_table = material_table;
+
+    let material_reference_table = material_table
+        .build_reference_table(&map);
 
     // Setup window
     let sdl = sdl2::init().unwrap();
@@ -394,8 +224,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // LDR framebuffer
     let mut ldr_frame_buffer = Vec::<u32>::new();
 
+    // Change paradigm of rendering loop
+
     // Render thread IO channels
-    let (render_in, render_out) = init_render_thread(map.clone(), material_table.clone());
+    // let (render_in, render_out) = init_render_thread(map.clone(), material_table.clone());
 
     'main_loop: loop {
         input.release_changed();
@@ -431,6 +263,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             rasterization_mode = rasterization_mode.next();
         }
 
+        if input.is_key_clicked(input::Key::Equals) {
+            frame_scale += 1;
+        }
+        if input.is_key_clicked(input::Key::Minus) {
+            frame_scale -= 1;
+        }
+        frame_scale = frame_scale.clamp(1, 8);
+
         // Acquire window extent
         let (window_width, window_height) = {
             let (w, h) = window.size();
@@ -438,12 +278,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             (w as usize, h as usize)
         };
 
-        /// Rendering resolution scale
-        const FRAME_SCALE: usize = 2;
-
         let (frame_width, frame_height) = (
-            window_width / FRAME_SCALE,
-            window_height / FRAME_SCALE,
+            window_width / frame_scale,
+            window_height / frame_scale,
         );
 
         // Calculate aspect ratio
@@ -463,64 +300,134 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Resize frame buffer to fit window's size
         hdr_frame_buffer.resize(frame_width * frame_height, 0);
 
-        let send_res = render_in.send(RenderInputMessage::NewFrame {
-            frame_buffer: hdr_frame_buffer,
-            width: frame_width as u32,
-            height: frame_height as u32,
-            shadow_camera,
-            camera,
-            projection_matrix,
+        let mut hdr_frame = FrameSliceMut::<u64>::new(
+            frame_width as usize,
+            frame_height as usize,
+            frame_width as usize,
+            hdr_frame_buffer.as_mut_slice()
+        );
+
+        // Render hdr fb
+        // Very long function call, actually
+        let mut render_context = render::Context {
+            camera: render::Camera {
+                view_projection: camera.view() * projection_matrix,
+                location: camera.location(),
+                half_fw: frame_width as f32 * 0.5,
+                half_fh: frame_height as f32 * 0.5,
+            },
+
+            shadow_camera: shadow_camera.map(|shadow_camera| render::Camera {
+                view_projection: shadow_camera.view() * projection_matrix,
+                location: shadow_camera.location(),
+                half_fw: frame_width as f32 * 0.5,
+                half_fh: frame_height as f32 * 0.5,
+            }),
+
+            // Construct target frame slice
+            frame: hdr_frame.reborrow_mut(),
+
+            map: &map,
+            material_table: &material_reference_table,
             rasterization_mode,
-        });
 
-        if let Err(e) = send_res {
-            println!("Sending error: {}", e);
-            break 'main_loop;
-        }
-
-        let Ok(render_result) = render_out.recv() else {
-            eprintln!("Render thread dropped");
-            break 'main_loop;
+            sky_background_uv_offset: Vec2f::broadcast(timer.get_time() * -12.0),
+            sky_uv_offset: Vec2f::broadcast(timer.get_time() * 16.0),
         };
 
-        // Previous frame contents
-        let prev_hdr_frame_buffer = match render_result {
-            RenderOutputMessage::RenderedFrame {
-                frame_buffer: rendered_hdr_buffer,
-                width,
-                height,
-                stride
-            } => {
-                // Resize ldr buffer to match hdr buffer's size
-                ldr_frame_buffer.resize(stride as usize * height as usize, 0);
+        render_context.render();
 
-                // Map from hdr to ldr
-                let tm_time = with_time_ms(
-                    || render::hdr_to_ldr(&rendered_hdr_buffer, &mut ldr_frame_buffer, true)
-                ).1;
-
-                let mut ldr_frame = FrameSliceMut::new(width as usize, height as usize, stride as usize, &mut ldr_frame_buffer);
-
-                // Display frame statistics
-                let mut fw = system_font::writer(ldr_frame.reborrow_mut());
-                writeln!(fw)?;
-                writeln!(fw, " FPS: {} ({}ms)", timer.get_fps(), 1000.0 / timer.get_fps())?;
-                writeln!(fw, " SC={}, RM={}", shadow_camera.is_some() as u32, rasterization_mode as u32)?;
-                writeln!(fw, " TM: {}ms", tm_time)?;
-                writeln!(fw, " RES: {}x{}", width, height)?;
-
-                // Present rendered frame
-                match window.surface(&event_pump) {
-                    Ok(mut window_surface) => present_frame(ldr_frame.reborrow_mut(), &mut window_surface),
-                    Err(err) => eprintln!("Cannot get window surface: {}", err),
-                };
-
-                /* Set previous buffer memory */
-                Some(rendered_hdr_buffer)
+        // Access LDR frame buffer
+        let mut window_surface = match window.surface(&event_pump) {
+            Ok(v) => v,
+            Err(err) => {
+                println!("Failed to acquire window surface: {}", err);
+                continue 'main_loop;
             }
         };
 
-        hdr_frame_buffer = prev_hdr_frame_buffer.unwrap_or(Vec::new());
+        let (ws_width, ws_height) = window_surface.size();
+        let ws_pitch = window_surface.pitch();
+        let ws_bpp = window_surface.pixel_format_enum().byte_size_per_pixel();
+        let ws_pfe = window_surface.pixel_format_enum();
+        let do_swap = matches!(ws_pfe, sdl2::pixels::PixelFormatEnum::ARGB8888);
+
+        // Present to certain ldr frame buffer
+        let present_to = |direct: bool, mut ldr_fb: FrameSliceMut<u32>| -> Result<(), Box<dyn std::error::Error>> {
+            let tm_time = with_time_ms(|| {
+                for (src, dst) in hdr_frame.iter().zip(ldr_fb.iter_mut()) {
+                    render::hdr_to_ldr(src, dst, true, direct && do_swap);
+                }
+            }).1;
+
+            let mut fw = system_font::writer(ldr_fb.reborrow_mut());
+            writeln!(fw)?;
+            writeln!(fw, " FPS: {} ({}ms)", timer.get_fps(), 1000.0 / timer.get_fps())?;
+            writeln!(fw, " SC={}, RM={}, FS={}, DFB={}", shadow_camera.is_some() as u32, rasterization_mode as u32, frame_scale, direct as u32)?;
+            writeln!(fw, " TM: {}ms", tm_time)?;
+            writeln!(fw, " RES: {}x{} -> {}x{}", hdr_frame.width(), hdr_frame.height(), ws_width, ws_height)?;
+            writeln!(fw, " PF: {:?}", ws_pfe)?;
+            Ok(())
+        };
+
+        if ws_width as usize == frame_width && ws_height as usize == frame_height && ws_pitch % 4 == 0 && ws_bpp == 4 {
+            window_surface.with_lock_mut(|bytes| {
+                let data: &mut [u32] = match zerocopy::FromBytes::mut_from_prefix_with_elems(
+                    bytes, ws_pitch as usize / 4 * ws_height as usize
+                ) {
+                    Ok((pixels, _)) => pixels,
+                    Err(_) => panic!(),
+                };
+
+                present_to(true, FrameSliceMut::new(
+                    ws_width as usize,
+                    ws_height as usize,
+                    ws_pitch as usize / 4,
+                    data
+                ))
+            })?;
+        } else {
+            // Resize ldr buffer to match hdr buffer's size
+            ldr_frame_buffer.resize(hdr_frame.stride() * hdr_frame.height(), 0);
+
+            present_to(false, FrameSliceMut::new(
+                hdr_frame.width(),
+                hdr_frame.height(),
+                hdr_frame.stride(),
+                &mut ldr_frame_buffer
+            ))?;
+
+            // Make sdl2 frame and perform blit
+            let ldr_surface = sdl2::surface::Surface::from_data(
+                ldr_frame_buffer.as_mut_bytes(),
+                hdr_frame.width() as u32,
+                hdr_frame.height() as u32,
+                hdr_frame.stride() as u32 * 4,
+                sdl2::pixels::PixelFormatEnum::ABGR8888
+            );
+            let mut ldr_surface = match ldr_surface {
+                Ok(s) => s,
+                Err(err) => {
+                    eprintln!("Cannot construct LDR surface from pixels: {}", err);
+                    continue 'main_loop;
+                }
+            };
+            if let Err(err) = ldr_surface.set_blend_mode(sdl2::render::BlendMode::None) {
+                eprintln!("Failed to set surface blend mode: {}", err);
+            }
+
+            let src_rect = sdl2::rect::Rect::new(0, 0, hdr_frame.width() as u32, hdr_frame.height() as u32);
+            let dst_rect = sdl2::rect::Rect::new(0, 0, window_surface.width(), window_surface.height());
+
+            if let Err(err) = ldr_surface.blit_scaled(src_rect, &mut window_surface, dst_rect) {
+                eprintln!("Surface blit failed: {}", err);
+            }
+        }
+
+        // Update window
+        if let Err(err) = window_surface.update_window() {
+            eprintln!("Window update error: {}", err);
+        }
     }
 
     Ok(())

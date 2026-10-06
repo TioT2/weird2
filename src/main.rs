@@ -49,15 +49,6 @@ pub const fn u64_into_u16(value: u64) -> [u16; 4] {
     ]
 }
 
-/// Wrap function call with time calculation
-fn with_time_ms<T>(f: impl FnOnce() -> T) -> (T, f64) {
-    let start = std::time::Instant::now();
-    let value = f();
-    let end = std::time::Instant::now();
-
-    (value, end.duration_since(start).as_nanos() as f64 / 1_000_000f64)
-}
-
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Enable/disable map caching
     let do_enable_map_caching = true;
@@ -178,10 +169,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         res::MaterialTable::load_wad2(&std::fs::read(&wp).unwrap()).unwrap()
     };
-    let material_table = material_table;
 
-    let material_reference_table = material_table
-        .build_reference_table(&map);
+    let material_reference_table = material_table.build_reference_table(&map);
 
     // Setup window
     let sdl = sdl2::init().unwrap();
@@ -196,8 +185,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap();
 
     // Setup systems
-    let mut timer = timer::Timer::default();
-    let mut input = input::Input::default();
+    let mut timer = timer::Timer::new();
+    let mut input = input::Input::new();
+
+    // Per-frame value averager
+    let mut averager = timer::Averager::new();
 
     // camera.location = Vec3f::new(-174.0, 2114.6, -64.5); // -200, 2000, -50
     // camera.direction = Vec3f::new(-0.4, 0.9, 0.1);
@@ -216,20 +208,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // camera.location = Vec3f::new(30.0, 40.0, 50.0);
 
-    // Camera used for visible set building
-
-    // Buffer that contains rendered pixels
+    // Buffer containing rendered pixels
     let mut hdr_frame_buffer = Vec::<u64>::new();
 
-    // LDR framebuffer
+    // Ldr frame buffer (used then rendering to window requires blitting)
     let mut ldr_frame_buffer = Vec::<u32>::new();
 
-    // Change paradigm of rendering loop
-
-    // Render thread IO channels
-    // let (render_in, render_out) = init_render_thread(map.clone(), material_table.clone());
-
     'main_loop: loop {
+        let _tpfa = averager.start_measure("spf");
+
         input.release_changed();
 
         while let Some(event) = event_pump.poll_event() {
@@ -263,6 +250,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             rasterization_mode = rasterization_mode.next();
         }
 
+        // Control frame scale
         if input.is_key_clicked(input::Key::Equals) {
             frame_scale += 1;
         }
@@ -297,18 +285,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             2.0 / 3.0
         );
 
-        // Resize frame buffer to fit window's size
         hdr_frame_buffer.resize(frame_width * frame_height, 0);
+        // hdr_frame_buffer.fill(0x00FF_0000_00FF);
+        hdr_frame_buffer.fill(0); // it's faster!
 
-        let mut hdr_frame = FrameSliceMut::<u64>::new(
-            frame_width as usize,
-            frame_height as usize,
-            frame_width as usize,
-            hdr_frame_buffer.as_mut_slice()
+        // Resize frame buffer to fit window's size
+        let mut hdr_frame = FrameSliceMut::new(
+            frame_width,
+            frame_height,
+            frame_width,
+            &mut hdr_frame_buffer
         );
 
-        // Render hdr fb
-        // Very long function call, actually
+        let render_measure = averager.start_measure("rendering");
+
+        // Rendering context
         let mut render_context = render::Context {
             camera: render::Camera {
                 view_projection: camera.view() * projection_matrix,
@@ -337,34 +328,43 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         render_context.render();
 
+        render_measure.finish();
+
         // Access LDR frame buffer
         let mut window_surface = match window.surface(&event_pump) {
             Ok(v) => v,
             Err(err) => {
-                println!("Failed to acquire window surface: {}", err);
+                eprintln!("Failed to acquire window surface: {}", err);
                 continue 'main_loop;
             }
         };
 
+        // Window surface parameters
         let (ws_width, ws_height) = window_surface.size();
         let ws_pitch = window_surface.pitch();
         let ws_bpp = window_surface.pixel_format_enum().byte_size_per_pixel();
         let ws_pfe = window_surface.pixel_format_enum();
+
+        // Pixel swap flag
         let do_swap = matches!(ws_pfe, sdl2::pixels::PixelFormatEnum::ARGB8888);
 
         // Present to certain ldr frame buffer
         let present_to = |direct: bool, mut ldr_fb: FrameSliceMut<u32>| -> Result<(), Box<dyn std::error::Error>> {
-            let tm_time = with_time_ms(|| {
+            averager.measure("tonemapping", || {
                 for (src, dst) in hdr_frame.iter().zip(ldr_fb.iter_mut()) {
                     render::hdr_to_ldr(src, dst, true, direct && do_swap);
                 }
-            }).1;
+            });
+
+            let tm_time = averager.get("tonemapping").unwrap() as f32;
+            let rnd_time = averager.get("rendering").unwrap() as f32;
+            let spf = averager.get("spf").unwrap() as f32;
 
             let mut fw = system_font::writer(ldr_fb.reborrow_mut());
             writeln!(fw)?;
-            writeln!(fw, " FPS: {} ({}ms)", timer.get_fps(), 1000.0 / timer.get_fps())?;
+            writeln!(fw, " FPS: {} ({} ms)", 1.0 / spf, spf * 1000.0)?;
             writeln!(fw, " SC={}, RM={}, FS={}, DFB={}", shadow_camera.is_some() as u32, rasterization_mode as u32, frame_scale, direct as u32)?;
-            writeln!(fw, " TM: {}ms", tm_time)?;
+            writeln!(fw, " RND: {}ms, TM: {}ms", rnd_time * 1000.0, tm_time * 1000.0)?;
             writeln!(fw, " RES: {}x{} -> {}x{}", hdr_frame.width(), hdr_frame.height(), ws_width, ws_height)?;
             writeln!(fw, " PF: {:?}", ws_pfe)?;
             Ok(())
@@ -376,7 +376,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     bytes, ws_pitch as usize / 4 * ws_height as usize
                 ) {
                     Ok((pixels, _)) => pixels,
-                    Err(_) => panic!(),
+                    Err(err) => {
+                        eprintln!("Cannot acquire raw FB: {}", err);
+                        return Ok(());
+                    }
                 };
 
                 present_to(true, FrameSliceMut::new(
@@ -428,6 +431,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Err(err) = window_surface.update_window() {
             eprintln!("Window update error: {}", err);
         }
+
+        averager.update();
     }
 
     Ok(())

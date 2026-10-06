@@ -41,13 +41,11 @@ pub struct Input {
     states: Box<[KeyState; KEY_NUMBER]>,
 }
 
-impl Default for Input {
-    fn default() -> Self {
-        Self { states: Box::new([KeyState::new(false, false); _]) }
-    }
-}
-
 impl Input {
+    pub fn new() -> Self {
+        Self { states: Box::new([KeyState::default(); _]) }
+    }
+
     /// Get state of some key
     pub const fn get_key_state(&self, key: Key) -> KeyState {
         self.states[key as usize]

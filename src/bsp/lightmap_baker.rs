@@ -49,6 +49,8 @@ fn bake_volume(
 ) {
     let volume = bsp.volume_set.get_mut(volume_id.into_index()).unwrap();
 
+    const TX_SUBDIV: usize = 8;
+
     for surface in volume.surfaces.iter_mut() {
         // Lightmapping for transparent surface and liquids is not required (at least now)
         if surface.is_sky() || surface.is_transparent() || surface.is_liquid() {
@@ -64,9 +66,9 @@ fn bake_volume(
         )).collect::<Vec<_>>();
 
         let uv_bounds = geom::BoundRect::for_points(uvs.iter().copied());
-        let uv_int_min = uv_bounds.min.map(|x| ((x / 8.0).floor() * 8.0) as isize);
-        let uv_int_max = uv_bounds.max.map(|x| ((x / 8.0).ceil() * 8.0) as isize);
-        let lightmap_res = (uv_int_max - uv_int_min).map(|x| x.cast_unsigned() / 8 + 1);
+        let uv_int_min = uv_bounds.min.map(|x| ((x / TX_SUBDIV as f32).floor() * TX_SUBDIV as f32) as isize);
+        let uv_int_max = uv_bounds.max.map(|x| ((x / TX_SUBDIV as f32).ceil() * TX_SUBDIV as f32) as isize);
+        let lightmap_res = (uv_int_max - uv_int_min).map(|x| x as usize / TX_SUBDIV + 1);
 
         // Lightmap data
         let mut data = Vec::<u64>::with_capacity(lightmap_res.y() * lightmap_res.x());
@@ -80,12 +82,12 @@ fn bake_volume(
                 let mut light_sum = Vec3f::zero();
 
                 // Average by 64 subpixels
-                for sy in 0..8 {
-                    let ty = y * 8 + sy;
+                for sy in 0..TX_SUBDIV {
+                    let ty = y * TX_SUBDIV + sy;
                     let vaxis = surface.v.point_at(uv_int_min.y() as f32 + ty as f32 + 0.5);
 
-                    for sx in 0..8 {
-                        let tx = x * 8 + sx;
+                    for sx in 0..TX_SUBDIV {
+                        let tx = x * TX_SUBDIV + sx;
                         let uaxis = surface.u.point_at(uv_int_min.x() as f32 + tx as f32 + 0.5);
                         let point = polygon.plane.project_along(uaxis + vaxis, uvd);
 
@@ -98,7 +100,7 @@ fn bake_volume(
                 }
 
                 // Divide for subpixel count
-                light_sum /= 64.0.into();
+                light_sum /= ((TX_SUBDIV * TX_SUBDIV) as f32).into();
 
                 // 3 is just constant to made it look a bit better
                 let [r, g, b] = light_sum.map(|x| (x * 256.0 * 3.0).clamp(0.0, 65535.0) as u16).into_array();
@@ -152,8 +154,7 @@ fn bake_bsp(
             bake_bsp(bsp, front, lights, idx);
         }
         bsp::Bsp::Space(Some(id)) => bake_volume(bsp, lights, idx, *id),
-        bsp::Bsp::Space(None) => {
-        }
+        bsp::Bsp::Space(None) => {}
     }
 }
 

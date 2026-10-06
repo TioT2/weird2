@@ -586,12 +586,12 @@ impl Map {
     }
 
     /// Get iterator on ids of all volumes
-    pub fn all_volume_ids(&self) -> impl Iterator<Item = VolumeId> + use<> {
+    pub fn all_volume_ids(&self) -> impl Iterator<Item = VolumeId> {
         (0..self.volume_set.len()).map(VolumeId::from_index)
     }
 
     /// Iterate though dynamic model IDs
-    pub fn all_dynamic_model_ids(&self) -> impl Iterator<Item = DynamicModelId> + use<> {
+    pub fn all_dynamic_model_ids(&self) -> impl Iterator<Item = DynamicModelId> {
         (0..self.dynamic_models.len()).map(DynamicModelId::from_index)
     }
 

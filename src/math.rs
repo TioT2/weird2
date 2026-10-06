@@ -1,4 +1,4 @@
-//! Math primitive implementations
+//! Basic linear math primitive implementation
 
 use std::{iter::Sum, ops::{Add, BitXor, Div, Mul, Neg, Rem, RemAssign, Sub, AddAssign, SubAssign, MulAssign, DivAssign}};
 
@@ -95,6 +95,7 @@ macro_rules! impl_matn_vecn {
 
             $(
                 #[doc = concat!("Extract ", stringify!($x), " component from vector")]
+                #[inline]
                 pub fn $x(self) -> T {
                     self.$x
                 }

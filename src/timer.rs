@@ -1,5 +1,7 @@
 //! Time counter structure
 
+use std::{cell::{Cell, RefCell}, collections::HashMap, rc::Rc};
+
 /// Time measure utility
 #[derive(Clone)]
 pub struct Timer {
@@ -28,15 +30,9 @@ pub struct Timer {
     fps: Option<f32>,
 }
 
-impl Default for Timer {
-    fn default() -> Self {
-        Self::new_now()
-    }
-}
-
 impl Timer {
     /// Create new timer starting from moment of creation
-    pub fn new_now() -> Self {
+    pub fn new() -> Self {
         let now = std::time::Instant::now();
         Self {
             start: now,
@@ -97,5 +93,111 @@ impl Timer {
     /// Get count of frames elapsed from start
     pub fn get_frame_count(&self) -> u64 {
         self.total_frame_count
+    }
+}
+
+/// Average value state
+#[derive(Copy, Clone, Default)]
+struct AvgState {
+    /// Duration sum
+    sum: std::time::Duration,
+
+    /// Average value
+    avg: f64,
+
+    /// Amount of cells
+    n: u32,
+}
+
+/// Some value averager
+pub struct Averager {
+    /// Duration between two measures
+    measure_duration: std::time::Duration,
+
+    /// Last measure time
+    last_measure: std::time::Instant,
+
+    /// Averaged value set
+    keys: RefCell<HashMap<String, Rc<Cell<AvgState>>>>,
+}
+
+impl Averager {
+    /// Create new value averager
+    pub fn new() -> Self {
+        Self {
+            measure_duration: std::time::Duration::from_secs(1),
+            last_measure: std::time::Instant::now(),
+            keys: RefCell::new(HashMap::new()),
+        }
+    }
+
+    /// Try to update frame average values
+    pub fn update(&mut self) {
+        let keys = self.keys.borrow_mut();
+
+        let now = std::time::Instant::now();
+        if now.duration_since(self.last_measure) >= self.measure_duration {
+            self.last_measure = now;
+            for value in keys.values() {
+                value.update(|state| AvgState {
+                    sum: std::time::Duration::default(),
+                    avg: if state.n != 0 {
+                        state.sum.as_secs_f64() / state.n as f64
+                    } else {
+                        state.avg
+                    },
+                    n: 0
+                });
+            }
+        }
+    }
+
+    /// Get an average value
+    pub fn get(&self, key: &str) -> Option<f64> {
+        Some(self.keys.borrow().get(key)?.get().avg)
+    }
+
+    /// Start a measure
+    pub fn start_measure(&self, key: &str) -> Measure {
+        let mut keys = self.keys.borrow_mut();
+
+        Measure {
+            start: std::time::Instant::now(),
+            state: match keys.get(key) {
+                Some(state) => state.clone(),
+                None => keys.entry(key.to_owned()).or_default().clone()
+            }
+        }
+    }
+
+    /// Run measuring function
+    pub fn measure<T>(&self, key: &str, f: impl FnOnce() -> T) -> T {
+        let _m = self.start_measure(key);
+        f()
+    }
+}
+
+/// Measure handle. Should be obtained right before operation start and destroyed right after operation end.
+pub struct Measure {
+    /// Measure start
+    start: std::time::Instant,
+
+    /// Measured value state reference
+    state: Rc<Cell<AvgState>>,
+}
+
+impl Measure {
+    /// Finish a measure
+    pub fn finish(self) {}
+}
+
+impl Drop for Measure {
+    fn drop(&mut self) {
+        let now = std::time::Instant::now();
+        self.state.update(|mut state| {
+            state.sum += now.duration_since(self.start);
+            state.n += 1;
+            state
+        })
     }
 }

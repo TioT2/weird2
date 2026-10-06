@@ -335,7 +335,7 @@ impl<'t, T> FrameSliceMut<'t, T> {
     }
 
     /// Mutably reborrow frame slice contents
-    pub fn reborrow_mut<'r>(&'r mut self) -> FrameSliceMut<'r, T> {
+    pub const fn reborrow_mut<'r>(&'r mut self) -> FrameSliceMut<'r, T> {
         FrameSliceMut::<'r> {
             width: self.width,
             height: self.height,
@@ -345,8 +345,15 @@ impl<'t, T> FrameSliceMut<'t, T> {
         }
     }
 
+    /// Try to interpret self as a flat slice
+    pub fn as_flat(&self) -> Option<&[T]> {
+        (self.width == self.stride).then(|| unsafe {
+            std::slice::from_raw_parts(self.data.as_ptr(), self.stride * self.height)
+        })
+    }
+
     /// Try to interpret self as a flat mutable slice
-    pub fn as_flat(&mut self) -> Option<&mut [T]> {
+    pub fn as_flat_mut(&mut self) -> Option<&mut [T]> {
         (self.width == self.stride).then(|| unsafe {
             std::slice::from_raw_parts_mut(self.data.as_ptr(), self.stride * self.height)
         })
@@ -469,6 +476,17 @@ impl<'t, T> FrameSliceMut<'t, T> {
     /// Create frame slice mutable iterator
     pub fn iter_mut<'i>(&'i mut self) -> IterMut<'i, T> {
         unsafe { IterMut(self.iter_unsafe()) }
+    }
+
+    /// Fill self with certain value
+    pub fn fill(&mut self, value: T) where T: Clone {
+        if let Some(flat) = self.as_flat_mut() {
+            flat.fill(value);
+        } else {
+            for line in self.iter_mut() {
+                line.fill(value.clone());
+            }
+        }
     }
 }
 

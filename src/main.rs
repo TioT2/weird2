@@ -30,6 +30,7 @@ pub mod timer;
 pub mod input;
 pub mod flags;
 pub mod render;
+pub mod bump;
 
 /// Make u64 from [u16; 4]
 pub const fn u64_from_u16(value: [u16; 4]) -> u64 {
@@ -271,20 +272,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             window_height / frame_scale,
         );
 
-        // Calculate aspect ratio
-        let (aspect_x, aspect_y) = if window_width > window_height {
-            (window_width as f32 / window_height as f32, 1.0)
-        } else {
-            (1.0, window_height as f32 / window_width as f32)
-        };
-
-        // Build projection matrix
-        let projection_matrix = Mat4f::projection_frustum_inf_far(
-            -0.5 * aspect_x, 0.5 * aspect_x,
-            -0.5 * aspect_y, 0.5 * aspect_y,
-            2.0 / 3.0
-        );
-
         hdr_frame_buffer.resize(frame_width * frame_height, 0);
         // hdr_frame_buffer.fill(0x00FF_0000_00FF);
         hdr_frame_buffer.fill(0); // it's faster!
@@ -299,23 +286,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let render_measure = averager.start_measure("rendering");
 
-        // Rendering context
+        // Construct frame rendering context and run
         let mut render_context = render::Context {
-            camera: render::Camera {
-                view_projection: camera.view() * projection_matrix,
-                location: camera.location(),
-                half_fw: frame_width as f32 * 0.5,
-                half_fh: frame_height as f32 * 0.5,
-            },
+            camera: render::Camera::new(
+                &camera, frame_width as f32, frame_height as f32),
+            shadow_camera: shadow_camera.map(|shadow_camera| render::Camera::new(
+                &shadow_camera, frame_width as f32, frame_height as f32)),
 
-            shadow_camera: shadow_camera.map(|shadow_camera| render::Camera {
-                view_projection: shadow_camera.view() * projection_matrix,
-                location: shadow_camera.location(),
-                half_fw: frame_width as f32 * 0.5,
-                half_fh: frame_height as f32 * 0.5,
-            }),
-
-            // Construct target frame slice
             frame: hdr_frame.reborrow_mut(),
 
             map: &map,
@@ -356,9 +333,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             });
 
-            let tm_time = averager.get("tonemapping").unwrap() as f32;
-            let rnd_time = averager.get("rendering").unwrap() as f32;
-            let spf = averager.get("spf").unwrap() as f32;
+            let tm_time = averager.get("tonemapping").unwrap_or(f64::NAN) as f32;
+            let rnd_time = averager.get("rendering").unwrap_or(f64::NAN) as f32;
+            let spf = averager.get("spf").unwrap_or(f64::NAN) as f32;
 
             let mut fw = system_font::writer(ldr_fb.reborrow_mut());
             writeln!(fw)?;
@@ -366,7 +343,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             writeln!(fw, " SC={}, RM={}, FS={}, DFB={}", shadow_camera.is_some() as u32, rasterization_mode as u32, frame_scale, direct as u32)?;
             writeln!(fw, " RND: {}ms, TM: {}ms", rnd_time * 1000.0, tm_time * 1000.0)?;
             writeln!(fw, " RES: {}x{} -> {}x{}", hdr_frame.width(), hdr_frame.height(), ws_width, ws_height)?;
-            writeln!(fw, " PF: {:?}", ws_pfe)?;
+            writeln!(fw, " FMT: {:?}", ws_pfe)?;
             Ok(())
         };
 

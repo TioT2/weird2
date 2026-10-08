@@ -55,6 +55,21 @@ impl RasterizationMode {
     pub const fn next(self) -> RasterizationMode {
         Self::from_u32((self as u32 + 1) % Self::COUNT).unwrap()
     }
+
+    /// Check if rendering mode just fills polygon with solid color
+    pub const fn is_monochrome(self) -> bool {
+        matches!(self, Self::MonochromeMaterial | Self::MonochromePolygon)
+    }
+
+    /// Check if rendering mode requires texturing
+    pub const fn is_textured(self) -> bool {
+        matches!(self, Self::Full | Self::Textures)
+    }
+
+    /// Check if rendering mode requires lighting
+    pub const fn is_lit(self) -> bool {
+        matches!(self, Self::Full | Self::Lightmaps)
+    }
 }
 
 /// In-render vertex structure
@@ -88,38 +103,23 @@ impl From<f32> for Vertex {
     }
 }
 
-impl std::ops::Add<Self> for Vertex {
-    type Output = Self;
+macro_rules! impl_vertex_ops {
+    ($Op: ident, $op: ident) => {
+        impl std::ops::$Op<Self> for Vertex {
+            type Output = Self;
 
-    fn add(self, rhs: Self) -> Self::Output {
-        Self {
-            position: self.position + rhs.position,
-            tex_coord: self.tex_coord + rhs.tex_coord
+            fn $op(self, rhs: Self) -> Self::Output {
+                Self {
+                    position: std::ops::$Op::$op(self.position, rhs.position),
+                    tex_coord: std::ops::$Op::$op(self.tex_coord, rhs.tex_coord),
+                }
+            }
         }
-    }
+    };
 }
-
-impl std::ops::Sub<Self> for Vertex {
-    type Output = Self;
-
-    fn sub(self, rhs: Self) -> Self::Output {
-        Self {
-            position: self.position - rhs.position,
-            tex_coord: self.tex_coord - rhs.tex_coord
-        }
-    }
-}
-
-impl std::ops::Mul<Self> for Vertex {
-    type Output = Self;
-
-    fn mul(self, rhs: Self) -> Self::Output {
-        Self {
-            position: self.position * rhs.position,
-            tex_coord: self.tex_coord * rhs.tex_coord,
-        }
-    }
-}
+impl_vertex_ops!(Add, add);
+impl_vertex_ops!(Sub, sub);
+impl_vertex_ops!(Mul, mul);
 
 /// Clip polygon by octagon
 /// # Return
@@ -166,6 +166,32 @@ pub struct Camera {
 }
 
 impl Camera {
+    /// Construct a render-specific camera structure from frame parameters
+    pub fn new(cam: &crate::camera::Camera, fw: f32, fh: f32) -> Self {
+        let view = cam.view();
+
+        // Calculate aspect ratio
+        let (aspect_x, aspect_y) = if fw > fh {
+            (fw / fh, 1.0)
+        } else {
+            (1.0, fh / fw)
+        };
+
+        // Build projection matrix
+        let proj = Mat4f::projection_frustum_inf_far(
+            -0.5 * aspect_x, 0.5 * aspect_x,
+            -0.5 * aspect_y, 0.5 * aspect_y,
+            2.0 / 3.0
+        );
+
+        Self {
+            view_projection: view * proj,
+            location: cam.location(),
+            half_fw: fw * 0.5,
+            half_fh: fh * 0.5,
+        }
+    }
+
     /// Simplified function for vertex without portals
     pub fn get_screenspace_projected_portal_polygon(
         &self,
@@ -258,7 +284,7 @@ impl Camera {
     }
 }
 
-/// Render context
+/// Frame rendering context
 pub struct Context<'t, 'ref_table> {
     /// Projection info holder
     pub camera: Camera,
@@ -287,10 +313,10 @@ pub struct Context<'t, 'ref_table> {
 
 impl<'t, 'ref_table> Context<'t, 'ref_table> {
     /// Call pixel_fn for all polygon pixels
-    fn render_clipped_polygon_impl<PixelFn: FnMut(&mut u64, Vec4f)>(
+    fn render_clipped_polygon_impl<PixelFn: Fn(&mut u64, Vec4f)>(
         &mut self,
         vertices: &[Vertex],
-        mut pixel_fn: PixelFn
+        pixel_fn: PixelFn
     ) {
         // Find polygon min/max (e.g. split into left and right parts)
         let (min_y_index, min_y_value, max_y_index, max_y_value) = {
@@ -405,6 +431,7 @@ impl<'t, 'ref_table> Context<'t, 'ref_table> {
 
             let dx = right_x - left_x;
 
+            // d(xzuv)/dx
             let d_xzuv = if dx <= DY_EPSILON {
                 Vec4f::zero()
             } else {
@@ -418,9 +445,9 @@ impl<'t, 'ref_table> Context<'t, 'ref_table> {
 
                 self.frame
                     .get_mut(pixel_y)
-                    .unwrap()
+                    .unwrap() // no panic because `last_line < self.frame.height()`
                     .get_mut(start..end)
-                    .unwrap()
+                    .unwrap() // no panic because `end < self.frame.width()`
             };
 
             // Calculate pixel position 'remainder'
@@ -437,14 +464,12 @@ impl<'t, 'ref_table> Context<'t, 'ref_table> {
     }
 
     /// Wrap pixel function with transparency
-    fn pixelfn_wrap_transparent(mut f: impl FnMut(&mut u64, Vec4f)) -> impl FnMut(&mut u64, Vec4f) {
-        move |pixel_ptr: &mut u64, xzuv: Vec4f| {
-            // uugh transparency performance...
-            let mut src_color = *pixel_ptr;
-            f(&mut src_color, xzuv);
+    fn pixelfn_wrap_transparent(f: impl Fn(&mut u64, Vec4f)) -> impl Fn(&mut u64, Vec4f) {
 
-            // SIMD-based transparency
-            #[cfg(target_feature = "sse")]
+        /// SSE transparency implementation
+        #[cfg(target_feature = "sse")]
+        #[allow(unused)]
+        fn impl_sse(src_color: u64, pixel_ptr: &mut u64) {
             unsafe {
                 use std::arch::x86_64 as arch;
 
@@ -472,21 +497,31 @@ impl<'t, 'ref_table> Context<'t, 'ref_table> {
                     std::mem::transmute::<arch::__m128i, arch::__m128d>(cvt)
                 );
             }
+        }
 
-            // Fallback (slow) transparency
-            #[cfg(not(target_feature = "sse"))]
-            {
-                let dst_color = *pixel_ptr;
-                let [dr, dg, db, _] = u64_into_u16(dst_color);
-                let [sr, sg, sb, _] = u64_into_u16(src_color);
+        /// Transparency function
+        #[allow(unused)]
+        fn impl_default(src_color: u64, pixel_ptr: &mut u64) {
+            let dst_color = *pixel_ptr;
+            let [dr, dg, db, _] = u64_into_u16(dst_color);
+            let [sr, sg, sb, _] = u64_into_u16(src_color);
 
-                *pixel_ptr = u64_from_u16([
-                    (sr as f32 * 0.6 + dr as f32 * 0.4) as u16,
-                    (sg as f32 * 0.6 + dg as f32 * 0.4) as u16,
-                    (sb as f32 * 0.6 + db as f32 * 0.4) as u16,
-                    0
-                ]);
-            }
+            *pixel_ptr = u64_from_u16([
+                (sr as f32 * 0.6 + dr as f32 * 0.4) as u16,
+                (sg as f32 * 0.6 + dg as f32 * 0.4) as u16,
+                (sb as f32 * 0.6 + db as f32 * 0.4) as u16,
+                0
+            ]);
+        }
+
+        move |pixel_ptr: &mut u64, xzuv: Vec4f| {
+            let mut src_color = *pixel_ptr;
+            f(&mut src_color, xzuv);
+
+            cfg_select!(
+                target_feature = "sse" => impl_sse,
+                _ => impl_default
+            )(src_color, pixel_ptr);
         }
     }
 
@@ -659,8 +694,12 @@ impl<'t, 'ref_table> Context<'t, 'ref_table> {
         if surface.is_sky() {
             self.camera.project_sky_polygon(polygon, vertices, self.sky_uv_offset);
         } else {
-            self.camera.project_polygon(polygon, surface.u / image_uv_scale, surface.v / image_uv_scale, vertices);
-            // self.camera.project_polygon(polygon, surface.u, surface.v, vertices);
+            self.camera.project_polygon(
+                polygon,
+                surface.u / image_uv_scale,
+                surface.v / image_uv_scale,
+                vertices
+            );
         }
 
         // Clip polygon by Z=1
@@ -757,19 +796,20 @@ impl<'t, 'ref_table> Context<'t, 'ref_table> {
                 surface_texture_data.as_mut_slice()
             );
 
-            let rm_is_lit = matches!(self.rasterization_mode, RasterizationMode::Full | RasterizationMode::Lightmaps);
-            let lighting = if rm_is_lit && let Some(lightmap) = surface.lightmap.as_ref() {
+            let lighting = if self.rasterization_mode.is_lit()
+                && let Some(lightmap) = surface.lightmap.as_ref()
+            {
                 Some(SurfaceLightmap {
                     img: FrameSlice::new(lightmap.width, lightmap.height, lightmap.width, &lightmap.data),
-                    uv_off: (uv_int_min.map(|i| i << mip_index) - lightmap.uv_min.map(|i| i)).map(|i| i.max(0).cast_unsigned() >> mip_index),
+                    uv_off: (uv_int_min.map(|i| i << mip_index) - lightmap.uv_min.map(|i| i))
+                        .map(|i| i.max(0).cast_unsigned() >> mip_index),
                     scale_log2: 3 - mip_index,
                 })
             } else {
                 None
             };
 
-            let rm_is_textured = matches!(self.rasterization_mode, RasterizationMode::Full | RasterizationMode::Textures);
-            let color = if rm_is_textured {
+            let color = if self.rasterization_mode.is_textured() {
                 Some(SurfaceColormap {
                     img: image,
                     uv_off: image_uv_off,
@@ -950,60 +990,56 @@ impl<'t, 'ref_table> Context<'t, 'ref_table> {
         inv_render_set
     }
 
-    /// Run rendering on current context
+    /// Run rendering in current context
     pub fn render(&mut self) {
         let world_bsp = self.map.get_world_model().get_bsp();
         let screen_clip_oct = geom::BoundOct::from_clip_rect(self.get_screen_clip_rect());
 
-        let partial_render_set_opt = if let Some(shadow_camera) = self.shadow_camera.as_ref() {
-            world_bsp
-                .find(shadow_camera.location)
-                .map(|start_volume_id| {
-                    let mut render_set = self.build_render_set(
-                        world_bsp,
-                        start_volume_id,
-                        &geom::BoundOct::from_clip_rect(self.get_screen_clip_rect()),
-                        shadow_camera
-                    );
-
-                    // Unorder render set
-                    let mut unordered_render_set = render_set
-                        .drain(..)
-                        .map(|(id, _)| id)
-                        .collect::<HashSet<bsp::VolumeId>>();
-
-                    for volume_id in world_bsp.traverse_around_pt(self.camera.location).filter_map(|x| *x) {
-                        if unordered_render_set.remove(&volume_id) {
-                            render_set.push((volume_id, screen_clip_oct));
-                        }
-                    }
-
-                    render_set
-                })
-        } else {
-            world_bsp
-                .find(self.camera.location)
-                .map(|start_volume_id| {
-                    self.build_render_set(
-                        world_bsp,
-                        start_volume_id,
-                        &screen_clip_oct,
-                        &self.camera
-                    )
-                })
+        // Acquire current camera
+        let (camera, req_reordering) = match self.shadow_camera.as_ref() {
+            Some(cam) => (cam, true),
+            None => (&self.camera, false)
         };
 
-        let inv_render_set = partial_render_set_opt
-            .unwrap_or_else(|| {
-                let mut render_set = Vec::new();
-                let render_set_ref = &mut render_set;
+        let inv_rset = if let Some(start_volume_id) = world_bsp.find(camera.location) {
+            let mut render_set = self.build_render_set(
+                world_bsp,
+                *start_volume_id,
+                &screen_clip_oct,
+                camera
+            );
 
-                for volume_id in world_bsp.traverse_around_pt(self.camera.location).filter_map(|x| *x) {
-                    render_set_ref.push((volume_id, screen_clip_oct));
+            if req_reordering {
+                // Unorder render set
+                let mut unordered_render_set = render_set
+                    .drain(..)
+                    .map(|(id, _)| id)
+                    .collect::<HashSet<bsp::VolumeId>>();
+
+                let iter = world_bsp
+                    .traverse_around_pt(self.camera.location)
+                    .filter_map(|v| *v);
+
+                for volume_id in iter {
+                    if unordered_render_set.remove(&volume_id) {
+                        render_set.push(
+                            (volume_id, screen_clip_oct.clone())
+                        );
+                    }
                 }
+            }
 
-                render_set
-            });
+            render_set
+        } else {
+            let mut render_set = Vec::new();
+            let render_set_ref = &mut render_set;
+
+            for volume_id in world_bsp.traverse_around_pt(self.camera.location).filter_map(|x| *x) {
+                render_set_ref.push((volume_id, screen_clip_oct));
+            }
+
+            render_set
+        };
 
         // Pre-allocate memory to reduce total transient allocation number.
         let mut points = Vec::with_capacity(32);
@@ -1011,7 +1047,7 @@ impl<'t, 'ref_table> Context<'t, 'ref_table> {
         let mut surface_texture = Vec::new();
 
         // Render volumes
-        for (volume_id, volume_clip_oct) in inv_render_set.iter().rev() {
+        for (volume_id, volume_clip_oct) in inv_rset.iter().rev() {
             let volume = self.map.get_volume(*volume_id).unwrap();
 
             for surface in volume.surfaces.iter() {

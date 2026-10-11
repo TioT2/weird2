@@ -13,7 +13,7 @@ use zerocopy::IntoBytes;
 
 use crate::{
     frame_slice::FrameSliceMut,
-    math::{Mat4f, Vec2f, Vec3f}
+    math::{Vec2f, Vec3f}
 };
 
 // Engine modules
@@ -365,7 +365,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     ws_pitch as usize / 4,
                     data
                 ))
-            })?;
+            }).unwrap();
         } else {
             // Resize ldr buffer to match hdr buffer's size
             ldr_frame_buffer.resize(hdr_frame.stride() * hdr_frame.height(), 0);
@@ -375,7 +375,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 hdr_frame.height(),
                 hdr_frame.stride(),
                 &mut ldr_frame_buffer
-            ))?;
+            )).unwrap();
 
             // Make sdl2 frame and perform blit
             let ldr_surface = sdl2::surface::Surface::from_data(

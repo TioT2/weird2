@@ -311,13 +311,63 @@ pub struct Context<'t, 'ref_table> {
     pub rasterization_mode: RasterizationMode,
 }
 
-impl<'t, 'ref_table> Context<'t, 'ref_table> {
-    /// Call pixel_fn for all polygon pixels
-    fn render_clipped_polygon_impl<PixelFn: Fn(&mut u64, Vec4f)>(
-        &mut self,
-        vertices: &[Vertex],
-        pixel_fn: PixelFn
-    ) {
+/// Line vertical traversal context
+#[derive(Copy, Clone, Default)]
+pub struct LineContext {
+    index: usize,
+    prev_xzuv: Vec4f,
+    curr_xzuv: Vec4f,
+    prev_y: f32,
+    curr_y: f32,
+    d_xzuv: Vec4f,
+}
+
+impl LineContext {
+    /// Step to the next point
+    fn next_point<const IND_NEXT: bool>(&mut self, points: &[Vertex]) {
+
+        self.index += if IND_NEXT { 1 } else { points.len() - 1 };
+        self.index %= points.len();
+
+        self.prev_y = self.curr_y;
+        self.prev_xzuv = self.curr_xzuv;
+
+        let vt = &points[self.index];
+        self.curr_y = vt.position.y();
+        self.curr_xzuv = vt.xzuv();
+
+        let dy = self.curr_y - self.prev_y;
+
+        // Check if edge is flat
+        self.d_xzuv = if dy <= PolygonRasterizer::DY_EPSILON {
+            Vec4f::zero()
+        } else {
+            (self.curr_xzuv - self.prev_xzuv) / dy.into()
+        };
+    }
+}
+
+/// Polygon rasterization context
+pub struct PolygonRasterizer<'t> {
+    frame: FrameSliceMut<'t, u64>,
+    vertices: &'t [Vertex],
+
+    max_y_index: usize,
+
+    line: usize,
+    last_line: usize,
+
+    left: LineContext,
+    right: LineContext,
+}
+
+impl<'t> PolygonRasterizer<'t> {
+
+    /// Epsilon for dy value
+    const DY_EPSILON: f32 = 0.01;
+
+    /// Initialize a rasterizer
+    pub fn new(frame: FrameSliceMut<'t, u64>, vertices: &'t [Vertex]) -> Self {
         // Find polygon min/max (e.g. split into left and right parts)
         let (min_y_index, min_y_value, max_y_index, max_y_value) = {
             let mut min_y_index = 0;
@@ -341,48 +391,9 @@ impl<'t, 'ref_table> Context<'t, 'ref_table> {
             (min_y_index, min_y, max_y_index, max_y)
         };
 
-        /// Epsilon for dy value
-        const DY_EPSILON: f32 = 0.01;
-
         // Calculate polygon bounds
-        let last_line = usize::min(max_y_value.ceil() as usize, self.frame.height());
+        let last_line = usize::min(max_y_value.ceil() as usize, frame.height());
         let first_line = usize::min(min_y_value.floor() as usize, last_line);
-
-        /// Line vertical traversal context
-        #[derive(Copy, Clone, Default)]
-        struct LineContext {
-            index: usize,
-            prev_xzuv: Vec4f,
-            curr_xzuv: Vec4f,
-            prev_y: f32,
-            curr_y: f32,
-            d_xzuv: Vec4f,
-        }
-
-        impl LineContext {
-            /// Step to the next point
-            fn next_point<const IND_NEXT: bool>(&mut self, points: &[Vertex]) {
-
-                self.index += if IND_NEXT { 1 } else { points.len() - 1 };
-                self.index %= points.len();
-
-                self.prev_y = self.curr_y;
-                self.prev_xzuv = self.curr_xzuv;
-
-                let vt = &points[self.index];
-                self.curr_y = vt.position.y();
-                self.curr_xzuv = vt.xzuv();
-
-                let dy = self.curr_y - self.prev_y;
-
-                // Check if edge is flat
-                self.d_xzuv = if dy <= DY_EPSILON {
-                    Vec4f::zero()
-                } else {
-                    (self.curr_xzuv - self.prev_xzuv) / dy.into()
-                };
-            }
-        }
 
         let mut left = LineContext {
             index: min_y_index,
@@ -395,69 +406,101 @@ impl<'t, 'ref_table> Context<'t, 'ref_table> {
         left.next_point::<true>(vertices);
         right.next_point::<false>(vertices);
 
-        // Scan for lines
-        'line_loop: for pixel_y in first_line..last_line {
-            // Get current pixel y
-            let y = pixel_y as f32 + 0.5;
+        Self {
+            frame,
+            vertices,
+            max_y_index,
+            line: first_line,
+            last_line,
 
-            while y > left.curr_y {
-                if left.index == max_y_index {
-                    break 'line_loop;
-                }
-                left.next_point::<true>(vertices);
+            left,
+            right,
+        }
+    }
+
+    /// Get a next rendering line
+    pub fn next_line<'l>(&'l mut self) -> Option<(&'l mut [u64], f32, Vec4f, Vec4f)> {
+        let pixel_y = self.line;
+        if self.line > self.last_line {
+            return None;
+        }
+        self.line += 1;
+
+        // Get current pixel y
+        let y = pixel_y as f32 + 0.5;
+
+        while y > self.left.curr_y {
+            if self.left.index == self.max_y_index {
+                return None;
             }
+            self.left.next_point::<true>(self.vertices);
+        }
 
-            while y > right.curr_y {
-                if right.index == max_y_index {
-                    break 'line_loop;
-                }
-                right.next_point::<false>(vertices);
+        while y > self.right.curr_y {
+            if self.right.index == self.max_y_index {
+                return None;
             }
+            self.right.next_point::<false>(self.vertices);
+        }
 
-            let left_xzuv = Vec4f::mul_add(
-                left.d_xzuv,
-                Vec4f::broadcast(y - left.prev_y),
-                left.prev_xzuv,
-            );
+        let left_xzuv = Vec4f::mul_add(
+            self.left.d_xzuv,
+            Vec4f::broadcast(y - self.left.prev_y),
+            self.left.prev_xzuv,
+        );
 
-            let right_xzuv = Vec4f::mul_add(
-                right.d_xzuv,
-                Vec4f::broadcast(y - right.prev_y),
-                right.prev_xzuv,
-            );
+        let right_xzuv = Vec4f::mul_add(
+            self.right.d_xzuv,
+            Vec4f::broadcast(y - self.right.prev_y),
+            self.right.prev_xzuv,
+        );
 
-            let left_x = left_xzuv.x();
-            let right_x = right_xzuv.x();
+        let left_x = left_xzuv.x();
+        let right_x = right_xzuv.x();
 
-            let dx = right_x - left_x;
+        let dx = right_x - left_x;
 
-            // d(xzuv)/dx
-            let d_xzuv = if dx <= DY_EPSILON {
-                Vec4f::zero()
-            } else {
-                (right_xzuv - left_xzuv) / dx.into()
-            };
+        // d(xzuv)/dx
+        let d_xzuv = if dx <= Self::DY_EPSILON {
+            Vec4f::zero()
+        } else {
+            (right_xzuv - left_xzuv) / dx.into()
+        };
 
-            // Destination hline part
-            let pixel_row_slice = {
-                let end = usize::min(right_x.floor() as usize, self.frame.width());
-                let start = usize::min(left_x.floor() as usize, end);
+        // Destination hline part
+        let pixel_row_slice = {
+            let end = usize::min(right_x.floor() as usize, self.frame.width());
+            let start = usize::min(left_x.floor() as usize, end);
 
-                self.frame
-                    .get_mut(pixel_y)
-                    .unwrap() // no panic because `last_line < self.frame.height()`
-                    .get_mut(start..end)
-                    .unwrap() // no panic because `end < self.frame.width()`
-            };
+            self.frame
+                .get_mut(pixel_y)?
+                // .unwrap() // no panic because `last_line < self.frame.height()`
+                .get_mut(start..end)?
+                // .unwrap() // no panic because `end < self.frame.width()`
+        };
 
-            // Calculate pixel position 'remainder'
-            let pixel_off = left_x.fract() - 0.5;
+        // Calculate pixel position 'remainder'
+        let pixel_off = left_x.fract() - 0.5;
 
-            for (x, p) in pixel_row_slice.iter_mut().enumerate() {
+        Some((pixel_row_slice, pixel_off, left_xzuv, d_xzuv))
+    }
+}
+
+impl<'t, 'ref_table> Context<'t, 'ref_table> {
+    /// Polygon rendering function
+    fn render_clipped_polygon_impl(
+        &mut self,
+        vertices: &[Vertex],
+        pixel_fn: impl Fn(&mut u64, Vec4f)
+    ) {
+        let mut pr = PolygonRasterizer::new(self.frame.reborrow_mut(), vertices);
+
+        while let Some((line, x0, xzuv0, dxzuv)) = pr.next_line() {
+            for (x, p) in line.iter_mut().enumerate() {
                 pixel_fn(p, Vec4f::mul_add(
-                    d_xzuv,
-                    Vec4f::broadcast(x as f32 - pixel_off),
-                    left_xzuv
+                    dxzuv,
+                    Vec4f::broadcast(x as f32 - x0),
+                    xzuv0
                 ));
             }
         }
@@ -525,7 +568,7 @@ impl<'t, 'ref_table> Context<'t, 'ref_table> {
         }
     }
 
-    /// Render polygon
+    /// Clipped polygon rendering dispatch function
     unsafe fn render_clipped_polygon(
         &mut self,
         is_transparent: bool,

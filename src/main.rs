@@ -30,6 +30,7 @@ pub mod timer;
 pub mod input;
 pub mod flags;
 pub mod render;
+pub mod tonemap;
 pub mod bump;
 
 /// Make u64 from [u16; 4]
@@ -338,24 +339,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let present_to = |direct: bool, mut ldr_fb: FrameSliceMut<u32>| -> Result<(), Box<dyn std::error::Error>> {
             {
                 let _m = avg_tonemap.start();
+
+                let f = tonemap::get_function(
+                    tonemap::Operator::Reinhard { allow_simd: true },
+                    direct && do_swap
+                );
+
                 for (src, dst) in hdr_frame.iter().zip(ldr_fb.iter_mut()) {
-                    render::hdr_to_ldr(src, dst, true, direct && do_swap);
+                    f(src, dst);
                 }
             }
 
-            // let tm_time = avg_tonemap.get() as f32;
-            // let rnd_time = avg_rendering.get() as f32;
             let spf = avg_spf.get() as f32;
 
             let mut fw = system_font::writer(ldr_fb.reborrow_mut());
             writeln!(fw)?;
-            writeln!(fw, " FPS: {} ({} ms)", 1.0 / spf, spf * 1000.0)?;
-            writeln!(fw, " SC={}, RM={}, FS={}, DFB={}", shadow_camera.is_some() as u32, rasterization_mode as u32, frame_scale, direct as u32)?;
             writeln!(fw, " RES: {}x{} -> {}x{}", hdr_frame.width(), hdr_frame.height(), ws_width, ws_height)?;
-            writeln!(fw, " FRAME STATISTICS: ")?;
+            writeln!(fw, " FPS: {} ({} ms)", 1.0 / spf, spf * 1000.0)?;
+            writeln!(fw, " SC={}, RM={}, FS={}, DFB={}",
+                shadow_camera.is_some() as u32,
+                rasterization_mode.into_index(),
+                frame_scale,
+                direct as u32
+            )?;
+            writeln!(fw)?;
 
             for (par, avg) in averager.iter() {
-                writeln!(fw, "  {}: {}ms", par, avg as f32 * 1000.0)?;
+                writeln!(fw, " {}: {}ms", par, avg as f32 * 1000.0)?;
             }
 
             Ok(())

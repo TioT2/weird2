@@ -1,6 +1,8 @@
-//! Custom bitflag type implementation.
+//! Enumeration utility macro collection
 
 use std::ops::{BitAnd, BitOr, BitXor, Not};
+
+/* Bitflags */
 
 /// Trait for type capable for being flag internal representation.
 pub trait FlagBits: 'static
@@ -207,6 +209,63 @@ macro_rules! flags {
                 }
 
                 write!(f, ")")
+            }
+        }
+    };
+}
+
+/* Indexing */
+
+/// Slice constant maximum function
+pub const fn __const_slice_max(slice: &[usize]) -> usize {
+    let mut max = 0;
+    let mut i = 0;
+
+    while i < slice.len() {
+        let v = slice[i];
+        if v > max {
+            max = v;
+        }
+
+        i += 1;
+    }
+
+    max
+}
+
+/// Implement bijections between values of given type and subrange of numbers.
+#[macro_export]
+macro_rules! index_enum {
+    ($Enum: ident $($index: literal {$($ct:tt)*})*) => {
+        impl $Enum {
+            /// Index maximum
+            pub const INDEX_MAX: usize = 1 + $crate::flags::__const_slice_max(&[ $($index),* ]);
+
+            /// Convert value into it's index
+            pub const fn into_index(self) -> usize {
+                match self {
+                    $( $($ct)* => $index, )*
+                }
+            }
+
+            /// Get value from it's index
+            pub const fn from_index(index: usize) -> Option<Self> {
+                Some(match index {
+                    $( $index => $($ct)*, )*
+                    _ => return None,
+                })
+            }
+
+            /// Get next by index
+            pub const fn next(self) -> Self {
+                let i = (self.into_index() + 1) % Self::INDEX_MAX;
+                Self::from_index(i).unwrap()
+            }
+
+            /// Get previous by index
+            pub const fn prev(self) -> Self {
+                let i = (self.into_index() + Self::INDEX_MAX - 1) % Self::INDEX_MAX;
+                Self::from_index(i).unwrap()
             }
         }
     };

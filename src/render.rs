@@ -8,54 +8,44 @@ use crate::{bsp, frame_slice::{FrameSlice, FrameSliceMut}, geom, math::{Mat4f, V
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub enum RasterizationMode {
     /// Full rendering
-    Full = 0,
+    Full,
 
     /// Material-id-defined monochrome
-    MonochromeMaterial = 1,
+    MonochromeMaterial,
 
     /// Polygon-id-defined monochrome
-    MonochromePolygon = 2,
+    MonochromePolygon,
 
     /// Overdraw (brighter => more overdraw)
-    Overdraw = 3,
+    Overdraw,
 
     /// Inverse depth value
-    Depth = 4,
+    Depth,
 
     /// Rasterize with UV checker
-    UV = 5,
+    UV,
 
     /// Unlit textures
-    Textures = 6,
+    Textures,
 
     /// Lightmaps only
-    Lightmaps = 7,
+    Lightmaps,
 }
 
+// Add enum indexing functions
+crate::index_enum!(
+    RasterizationMode
+    0 { Self::Full               }
+    1 { Self::MonochromeMaterial }
+    2 { Self::MonochromePolygon  }
+    3 { Self::Overdraw           }
+    4 { Self::Depth              }
+    5 { Self::UV                 }
+    6 { Self::Textures           }
+    7 { Self::Lightmaps          }
+);
+
 impl RasterizationMode {
-    // Rasterization mode count
-    const COUNT: u32 = 8;
-
-    /// Build rasterization mode from u32
-    const fn from_u32(n: u32) -> Option<RasterizationMode> {
-        Some(match n {
-            0 => Self::Full,
-            1 => Self::MonochromeMaterial,
-            2 => Self::MonochromePolygon,
-            3 => Self::Overdraw,
-            4 => Self::Depth,
-            5 => Self::UV,
-            6 => Self::Textures,
-            7 => Self::Lightmaps,
-            _ => return None,
-        })
-    }
-
-    /// Get next rasterization mode
-    pub const fn next(self) -> RasterizationMode {
-        Self::from_u32((self as u32 + 1) % Self::COUNT).unwrap()
-    }
-
     /// Check if rendering mode just fills polygon with solid color
     pub const fn is_monochrome(self) -> bool {
         matches!(self, Self::MonochromeMaterial | Self::MonochromePolygon)
@@ -1262,101 +1252,4 @@ fn build_surface_texture(
     };
 
     build_fn(target, colormap.unwrap_or_default(), lightmap.unwrap_or_default());
-}
-
-/// Convert HDR frame buffer to LDR
-pub fn hdr_to_ldr(hdr: &[u64], ldr: &mut [u32], enable_tonemapping: bool, swap_bytes: bool) {
-
-    /// Just clamp color, no tonemapping at all
-    fn clamp(hdr: &u64, ldr: &mut u32) {
-        let [r, g, b, _] = u64_into_u16(*hdr);
-        *ldr = u32::from_le_bytes([
-            u16::min(r, 0xFF) as u8,
-            u16::min(g, 0xFF) as u8,
-            u16::min(b, 0xFF) as u8,
-            0
-        ]);
-    }
-
-
-    /// Reinhard exposure parameter
-    const REINHARD_EXPOSURE: f32 = 0.5;
-
-    /// Simple Reinhard tonemapping
-    #[allow(unused)]
-    fn reinhard(src: &u64, dst: &mut u32) {
-        let [r, g, b, _] = u64_into_u16(*src);
-        let [r, g, b] = [r as f32, g as f32, b as f32];
-
-        /// 256 inverse value
-        const INV256: f32 = 256.0f32.recip();
-
-        *dst = u32::from_ne_bytes([
-            (r / (r * INV256 + REINHARD_EXPOSURE)) as u8,
-            (g / (g * INV256 + REINHARD_EXPOSURE)) as u8,
-            (b / (b * INV256 + REINHARD_EXPOSURE)) as u8,
-            0,
-        ]);
-    }
-
-    /// SSE2-based reinhard tonemapping
-    #[cfg(target_feature = "sse2")]
-    #[allow(unused)]
-    fn reinhard_sse2(src_ptr: &u64, dst_ptr: &mut u32) {
-
-        use std::arch::x86_64 as arch;
-
-        unsafe {
-            let src16 = std::mem::transmute::<arch::__m128d, arch::__m128i>(
-                arch::_mm_load_sd(src_ptr as *const u64 as *const f64)
-            );
-            let src32 = arch::_mm_cvtepi16_epi32(src16);
-            let src = arch::_mm_cvtepi32_ps(src32);
-
-            // rgba / 256.0 + exposure
-            let rgba_norm_aexp = arch::_mm_fmadd_ps(
-                src,
-                arch::_mm_set1_ps(1.0 / 256.0),
-                arch::_mm_set1_ps(REINHARD_EXPOSURE)
-            );
-
-            // rgba / (rgba / 256.0 + exposure)
-            let mapped = arch::_mm_div_ps(src, rgba_norm_aexp);
-
-            let mapped32 = arch::_mm_cvtps_epi32(mapped);
-            let mapped16 = arch::_mm_packus_epi32(mapped32, mapped32);
-            let mapped8 = arch::_mm_packus_epi16(mapped16, mapped16);
-
-            arch::_mm_store_ss(
-                dst_ptr as *mut u32 as *mut f32,
-                std::mem::transmute::<arch::__m128i, arch::__m128>(mapped8)
-            );
-        }
-    }
-
-    /// Tonemapping implementation
-    fn impl_<const ENABLE: bool, const SWAP: bool>(hdr: &[u64], ldr: &mut [u32]) {
-        for (src, dst) in Iterator::zip(hdr.iter(), ldr.iter_mut()) {
-            if ENABLE {
-                cfg_select!(
-                    target_feature = "sse2" => reinhard_sse2,
-                    _ => renihard,
-                )(src, dst);
-            } else {
-                clamp(src, dst);
-            }
-            if SWAP {
-                *dst = dst.swap_bytes() >> 8;
-            }
-        }
-    }
-
-    let f = match (enable_tonemapping, swap_bytes) {
-        (false, false) => impl_::<false, false>,
-        (false,  true) => impl_::<false,  true>,
-        ( true, false) => impl_::< true, false>,
-        ( true,  true) => impl_::< true,  true>,
-    };
-
-    f(hdr, ldr);
 }

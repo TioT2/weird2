@@ -1,12 +1,15 @@
 //! Bump allocator (for frame buffers)
 
-use std::{alloc::Layout, cell::Cell, marker::PhantomData, mem::MaybeUninit, ptr::NonNull};
+use std::{alloc::Layout, cell::RefCell, marker::PhantomData, mem::MaybeUninit, ptr::NonNull};
 
-/// Single allocation chunk
+/// Chunk alignment
+const CHUNK_ALIGN: usize = std::mem::align_of::<ChunkData>();
+
+/// Allocatino chunk contents
 #[repr(align(16))]
-struct Chunk {
+struct ChunkData {
     /// Next chunk pointer
-    next: Option<NonNull<Chunk>>,
+    next: Option<NonNull<ChunkData>>,
 
     /// Current pointer
     ptr: NonNull<u8>,
@@ -15,19 +18,31 @@ struct Chunk {
     layout: Layout,
 }
 
-/// Initial chunk length
-const DEFAULT_INIT_LENGTH: usize = 32768;
-
-/// Chunk alignment
-const CHUNK_ALIGN: usize = std::mem::align_of::<Chunk>();
+/// Fallible bump allocator
+pub struct Chunk {
+    /// Underlying data pointer
+    data: NonNull<ChunkData>,
+}
 
 impl Chunk {
-    /// Allocate new chunk of given content length
-    unsafe fn alloc_new(len: usize, next: Option<NonNull<Chunk>>) -> NonNull<Self> {
+    /// Take underlying chunk data
+    unsafe fn take_data(self) -> NonNull<ChunkData> {
+        let result = self.data;
+        std::mem::forget(self);
+        result
+    }
+
+    /// Align length by
+    fn align_length(length: usize) -> usize {
+        (length + CHUNK_ALIGN - 1) / CHUNK_ALIGN * CHUNK_ALIGN
+    }
+
+    /// Create new chunk
+    pub fn new(len: usize, next: Option<Chunk>) -> Self {
         // Align content length by chunk type alignment
-        let len = (len + CHUNK_ALIGN - 1) / CHUNK_ALIGN * CHUNK_ALIGN;
+        let len = Self::align_length(len);
         let layout = Layout::from_size_align(
-            len + std::mem::size_of::<Self>(),
+            len + std::mem::size_of::<ChunkData>(),
             CHUNK_ALIGN
         ).unwrap();
 
@@ -35,61 +50,99 @@ impl Chunk {
             std::alloc::handle_alloc_error(layout);
         };
 
-        let v = unsafe { ptr.add(len).cast::<MaybeUninit<Self>>().as_mut() };
-        v.write(Chunk { next, ptr, layout });
+        let v = unsafe { ptr.add(len).cast::<MaybeUninit<ChunkData>>().as_mut() };
+        v.write(ChunkData {
+            next: next.map(|v| unsafe { v.take_data() }),
+            ptr,
+            layout
+        });
 
-        unsafe { ptr.add(len).cast() }
+        Self { data: unsafe { ptr.add(len).cast() } }
     }
 
-    /// Allocate memory by layout
-    unsafe fn alloc(&mut self, layout: Layout) -> Option<NonNull<u8>> {
-        let begin = unsafe { self.ptr.add(self.ptr.align_offset(layout.align())) };
+    /// Allocate a pointer range by layout
+    pub unsafe fn alloc_ptr(&mut self, layout: Layout) -> Option<NonNull<u8>> {
+        let data = unsafe { self.data.as_mut() };
+
+        let begin = unsafe { data.ptr.add(data.ptr.align_offset(layout.align())) };
         let end = unsafe { begin.add(layout.size()) };
 
-        if end > NonNull::from_ref(self).cast::<u8>() {
+        if end > self.data.cast() {
             return None;
         }
 
-        self.ptr = end;
+        data.ptr = end;
 
         Some(begin)
     }
+
+    /// Get amount of useful chunk data
+    pub fn length(&self) -> usize {
+        unsafe { self.data.as_ref() }.layout.size() - std::mem::size_of::<ChunkData>()
+    }
 }
+
+impl Drop for Chunk {
+    fn drop(&mut self) {
+        let mut chunk_ptr_opt = Some(self.data);
+
+        while let Some(chunk_ptr) = chunk_ptr_opt {
+            let chunk = unsafe { chunk_ptr.as_ref() };
+            chunk_ptr_opt = chunk.next;
+            let layout = chunk.layout;
+
+            // Drop chunk structure
+            unsafe { std::ptr::drop_in_place(chunk_ptr.as_ptr()) };
+
+            // Calculate pointer to allocation
+            let allocation = unsafe { chunk_ptr.add(1).byte_sub(layout.size()).cast::<u8>() };
+
+            // Deallocate allocation
+            unsafe { std::alloc::dealloc(allocation.as_ptr(), layout) };
+        }
+    }
+}
+
+/// Initial chunk length
+const DEFAULT_INIT_LENGTH: usize = 32768;
 
 // I think bump allocator really does not need a flush mechanism.
 /// Bump allocator
 pub struct Bump {
     /// Top chunk pointer
-    chunk: Cell<NonNull<Chunk>>,
+    chunk: RefCell<Option<Chunk>>,
 }
 
 impl Bump {
     /// Create new bump
-    pub fn new(length: Option<usize>) -> Self {
-        let length = length.unwrap_or(DEFAULT_INIT_LENGTH);
-        let chk = unsafe { Chunk::alloc_new(length, None) };
-
-        Self {
-            chunk: Cell::new(chk),
-        }
+    pub fn new() -> Self {
+        Self { chunk: RefCell::new(None) }
     }
 
     /// Allocate new memory portion from layout
     pub unsafe fn alloc_ptr(&self, layout: Layout) -> NonNull<u8> {
         // Yes, I know that this tactic is kind of... interesting.
         loop {
-            let chk = unsafe { self.chunk.get().as_mut() };
+            let mut chunk_opt = self.chunk.borrow_mut();
 
-            if let Some(ptr) = unsafe { chk.alloc(layout) } {
-                return ptr;
+            // Create a chunk then not present
+            let Some(chunk) = chunk_opt.as_mut() else {
+                *chunk_opt = Some(Chunk::new(DEFAULT_INIT_LENGTH, None));
+                continue;
+            };
+
+            // Try to allocate
+            if let Some(data) = unsafe { chunk.alloc_ptr(layout) } {
+                return data;
             }
 
-            // Calculate length of the next chunk
-            self.chunk.set(unsafe {
-                Chunk::alloc_new(
-                    (chk.layout.size() - std::mem::size_of::<Chunk>()) * 2,
-                    Some(self.chunk.get()))
-            });
+            // Chain a larger chunk on failure
+            *chunk_opt = chunk_opt
+                .take()
+                .map(|prev| Chunk::new(
+                    prev.length() * 2,
+                    Some(prev)
+                ));
         }
     }
 
@@ -143,29 +196,9 @@ impl Bump {
     }
 }
 
-impl Drop for Bump {
-    fn drop(&mut self) {
-        let mut chunk_ptr_opt = Some(self.chunk.get());
-
-        while let Some(chunk_ptr) = chunk_ptr_opt {
-            let chunk = unsafe { chunk_ptr.as_ref() };
-            chunk_ptr_opt = chunk.next;
-            let layout = chunk.layout;
-
-            // Drop chunk structure
-            unsafe { std::ptr::drop_in_place(chunk_ptr.as_ptr()) };
-
-            // Calculate pointer to allocation
-            let allocation = unsafe { chunk_ptr.add(1).byte_sub(layout.size()).cast::<u8>() };
-
-            // Deallocate allocation
-            unsafe { std::alloc::dealloc(allocation.as_ptr(), layout) };
-        }
-    }
-}
-
 /// Bump-allocated value box
 pub struct BBox<'t, T: ?Sized> {
+    /// Underlying value pointer
     ptr: NonNull<T>,
     phantom: PhantomData<&'t T>,
 }

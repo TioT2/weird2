@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::{bsp, frame_slice::{FrameSlice, FrameSliceMut}, geom, math::{Mat4f, Vec2, Vec2f, Vec3f, Vec4f}, rand, res, u64_from_u16, u64_into_u16};
+use crate::{bsp, frame_slice::{FrameSlice, FrameSliceMut}, geom, math::{Mat4f, Vec2, Vec2f, Vec3f, Vec4f}, rand, res, timer, u64_from_u16, u64_into_u16};
 
 /// Different rasterization modes
 #[derive(Copy, Clone, PartialEq, Eq)]
@@ -103,6 +103,7 @@ impl From<f32> for Vertex {
     }
 }
 
+// Implement vertex operations
 macro_rules! impl_vertex_ops {
     ($Op: ident, $op: ident) => {
         impl std::ops::$Op<Self> for Vertex {
@@ -150,6 +151,7 @@ fn clip_polygon_oct(
         && geom::clip_polygon(vertices, temp, clip_oct.max.w(), le, norm_y_a_x)
 }
 
+/// Check if measure is paused
 /// Camera that (additionally) holds info about projection and frame size
 pub struct Camera {
     /// Projection * View matrix
@@ -284,6 +286,29 @@ impl Camera {
     }
 }
 
+/// Profiler state
+pub struct Profile {
+    /// Surface rendering time
+    pub surface_textures: timer::Measure,
+
+    /// Rasterization time
+    pub rasterization: timer::Measure,
+
+    /// Render set building time
+    pub set_building: timer::Measure,
+}
+
+impl Profile {
+    /// Create a new frame
+    pub fn new(avg: &mut timer::Profiler) -> Self {
+        Self {
+            surface_textures: avg.value("rnd/surface_textures").start_paused(),
+            rasterization: avg.value("rnd/rasterization").start_paused(),
+            set_building: avg.value("rnd/set-building").start_paused(),
+        }
+    }
+}
+
 /// Frame rendering context
 pub struct Context<'t, 'ref_table> {
     /// Projection info holder
@@ -309,6 +334,9 @@ pub struct Context<'t, 'ref_table> {
 
     /// Rasterization mode
     pub rasterization_mode: RasterizationMode,
+
+    /// Profiler
+    pub profile: Option<Profile>,
 }
 
 /// Line vertical traversal context
@@ -861,16 +889,23 @@ impl<'t, 'ref_table> Context<'t, 'ref_table> {
                 None
             };
 
+
+            self.profiled(|p| p.surface_textures.resume());
+
             build_surface_texture(
                 texture.reborrow_mut(),
                 lighting,
                 color
             );
 
+            self.profiled(|p| p.surface_textures.pause());
+
             texture.into()
         } else {
             FrameSlice::empty()
         };
+
+        self.profiled(|p| p.rasterization.resume());
 
         // Rasterize polygon
         unsafe {
@@ -883,6 +918,8 @@ impl<'t, 'ref_table> Context<'t, 'ref_table> {
                 sky_texture,
             );
         }
+
+        self.profiled(|p| p.rasterization.pause());
     }
 
     /// Get main clipping rectangle
@@ -1033,10 +1070,19 @@ impl<'t, 'ref_table> Context<'t, 'ref_table> {
         inv_render_set
     }
 
+    /// Perform profiled action
+    pub fn profiled(&mut self, f: impl FnOnce(&mut Profile)) {
+        if let Some(prof) = self.profile.as_mut() {
+            f(prof);
+        }
+    }
+
     /// Run rendering in current context
     pub fn render(&mut self) {
         let world_bsp = self.map.get_world_model().get_bsp();
         let screen_clip_oct = geom::BoundOct::from_clip_rect(self.get_screen_clip_rect());
+
+        self.profiled(|p| p.set_building.resume());
 
         // Acquire current camera
         let (camera, req_reordering) = match self.shadow_camera.as_ref() {
@@ -1083,6 +1129,8 @@ impl<'t, 'ref_table> Context<'t, 'ref_table> {
 
             render_set
         };
+
+        self.profiled(|p| p.set_building.pause());
 
         // Pre-allocate memory to reduce total transient allocation number.
         let mut points = Vec::with_capacity(32);

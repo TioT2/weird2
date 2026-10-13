@@ -1,6 +1,6 @@
 //! Time counter structure
 
-use std::{cell::{Cell, RefCell}, collections::HashMap, rc::Rc};
+use std::{cell::Cell, collections::BTreeMap, rc::Rc};
 
 /// Time measure utility
 #[derive(Clone)]
@@ -109,8 +109,8 @@ struct AvgState {
     n: u32,
 }
 
-/// Some value averager
-pub struct Averager {
+/// Simple profiler
+pub struct Profiler {
     /// Duration between two measures
     measure_duration: std::time::Duration,
 
@@ -118,27 +118,59 @@ pub struct Averager {
     last_measure: std::time::Instant,
 
     /// Averaged value set
-    keys: RefCell<HashMap<String, Rc<Cell<AvgState>>>>,
+    keys: BTreeMap<String, Rc<Cell<AvgState>>>,
 }
 
-impl Averager {
+/// Averaged value reference
+pub struct ValueRef {
+    state: Rc<Cell<AvgState>>,
+}
+
+impl ValueRef {
+    /// Dereference value
+    pub fn get(&self) -> f64 {
+        self.state.get().avg
+    }
+
+    /// Start next measure of referenced value
+    pub fn start(&self) -> Measure {
+        Measure {
+            start: Some(std::time::Instant::now()),
+            state: self.state.clone(),
+        }
+    }
+
+    /// Create a new measure but not start it
+    pub fn start_paused(&self) -> Measure {
+        Measure {
+            start: None,
+            state: self.state.clone(),
+        }
+    }
+}
+
+impl Profiler {
     /// Create new value averager
     pub fn new() -> Self {
         Self {
             measure_duration: std::time::Duration::from_secs(1),
             last_measure: std::time::Instant::now(),
-            keys: RefCell::new(HashMap::new()),
+            keys: BTreeMap::new(),
         }
+    }
+
+    /// Iterate through all values
+    pub fn iter<'t>(&'t self) -> impl Iterator<Item = (&'t str, f64)> {
+        self.keys.iter().map(|(k, v)| (k.as_str(), v.get().avg))
     }
 
     /// Try to update frame average values
     pub fn update(&mut self) {
-        let keys = self.keys.borrow_mut();
-
         let now = std::time::Instant::now();
         if now.duration_since(self.last_measure) >= self.measure_duration {
             self.last_measure = now;
-            for value in keys.values() {
+
+            for value in self.keys.values() {
                 value.update(|state| AvgState {
                     sum: std::time::Duration::default(),
                     avg: if state.n != 0 {
@@ -152,52 +184,71 @@ impl Averager {
         }
     }
 
+    /// Get value by key
+    pub fn value(&mut self, key: &str) -> ValueRef {
+        let state = match self.keys.get(key) {
+            Some(state) => state.clone(),
+            None => self.keys.entry(key.to_owned()).or_default().clone(),
+        };
+
+        ValueRef { state }
+    }
+
     /// Get an average value
     pub fn get(&self, key: &str) -> Option<f64> {
-        Some(self.keys.borrow().get(key)?.get().avg)
-    }
-
-    /// Start a measure
-    pub fn start_measure(&self, key: &str) -> Measure {
-        let mut keys = self.keys.borrow_mut();
-
-        Measure {
-            start: std::time::Instant::now(),
-            state: match keys.get(key) {
-                Some(state) => state.clone(),
-                None => keys.entry(key.to_owned()).or_default().clone()
-            }
-        }
-    }
-
-    /// Run measuring function
-    pub fn measure<T>(&self, key: &str, f: impl FnOnce() -> T) -> T {
-        let _m = self.start_measure(key);
-        f()
+        Some(self.keys.get(key)?.get().avg)
     }
 }
 
 /// Measure handle. Should be obtained right before operation start and destroyed right after operation end.
 pub struct Measure {
     /// Measure start
-    start: std::time::Instant,
+    start: Option<std::time::Instant>,
 
     /// Measured value state reference
     state: Rc<Cell<AvgState>>,
 }
 
 impl Measure {
+    /// Pause a measure
+    pub fn pause(&mut self) {
+        let now = std::time::Instant::now();
+
+        let Some(start) = self.start.take() else {
+            return;
+        };
+
+        self.state.update(|mut state| {
+            state.sum += now.duration_since(start);
+            state
+        });
+    }
+
+    /// Resume a measure
+    pub fn resume(&mut self) {
+        if self.start.is_some() {
+            return;
+        }
+        self.start = Some(std::time::Instant::now());
+    }
+
+    /// Check if measure is paused
+    pub const fn is_paused(&self) -> bool {
+        self.start.is_none()
+    }
+
     /// Finish a measure
     pub fn finish(self) {}
 }
 
 impl Drop for Measure {
     fn drop(&mut self) {
-        let now = std::time::Instant::now();
+        self.pause();
+
         self.state.update(|mut state| {
-            state.sum += now.duration_since(self.start);
             state.n += 1;
             state
         })
+
     }
 }

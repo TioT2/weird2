@@ -190,7 +190,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut input = input::Input::new();
 
     // Per-frame value averager
-    let mut averager = timer::Averager::new();
+    let mut averager = timer::Profiler::new();
+
+    // Averaged values
+    let avg_spf = averager.value("tpf");
+    let avg_tonemap = averager.value("tonemapping");
+    let avg_present = averager.value("present");
+    let avg_rendering = averager.value("rnd/total");
 
     // camera.location = Vec3f::new(-174.0, 2114.6, -64.5); // -200, 2000, -50
     // camera.direction = Vec3f::new(-0.4, 0.9, 0.1);
@@ -216,7 +222,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut ldr_frame_buffer = Vec::<u32>::new();
 
     'main_loop: loop {
-        let _tpfa = averager.start_measure("spf");
+        let _spf_ms = avg_spf.start();
 
         input.release_changed();
 
@@ -284,7 +290,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             &mut hdr_frame_buffer
         );
 
-        let render_measure = averager.start_measure("rendering");
+        let render_ms = avg_rendering.start();
 
         // Construct frame rendering context and run
         let mut render_context = render::Context {
@@ -301,11 +307,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             sky_background_uv_offset: Vec2f::broadcast(timer.get_time() * -12.0),
             sky_uv_offset: Vec2f::broadcast(timer.get_time() * 16.0),
+            profile: Some(render::Profile::new(&mut averager)),
         };
 
         render_context.render();
 
-        render_measure.finish();
+        render_ms.finish();
+
+        let present_ms = avg_present.start();
 
         // Access LDR frame buffer
         let mut window_surface = match window.surface(&event_pump) {
@@ -327,23 +336,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // Present to certain ldr frame buffer
         let present_to = |direct: bool, mut ldr_fb: FrameSliceMut<u32>| -> Result<(), Box<dyn std::error::Error>> {
-            averager.measure("tonemapping", || {
+            {
+                let _m = avg_tonemap.start();
                 for (src, dst) in hdr_frame.iter().zip(ldr_fb.iter_mut()) {
                     render::hdr_to_ldr(src, dst, true, direct && do_swap);
                 }
-            });
+            }
 
-            let tm_time = averager.get("tonemapping").unwrap_or(f64::NAN) as f32;
-            let rnd_time = averager.get("rendering").unwrap_or(f64::NAN) as f32;
-            let spf = averager.get("spf").unwrap_or(f64::NAN) as f32;
+            // let tm_time = avg_tonemap.get() as f32;
+            // let rnd_time = avg_rendering.get() as f32;
+            let spf = avg_spf.get() as f32;
 
             let mut fw = system_font::writer(ldr_fb.reborrow_mut());
             writeln!(fw)?;
             writeln!(fw, " FPS: {} ({} ms)", 1.0 / spf, spf * 1000.0)?;
             writeln!(fw, " SC={}, RM={}, FS={}, DFB={}", shadow_camera.is_some() as u32, rasterization_mode as u32, frame_scale, direct as u32)?;
-            writeln!(fw, " RND: {}ms, TM: {}ms", rnd_time * 1000.0, tm_time * 1000.0)?;
             writeln!(fw, " RES: {}x{} -> {}x{}", hdr_frame.width(), hdr_frame.height(), ws_width, ws_height)?;
-            writeln!(fw, " FMT: {:?}", ws_pfe)?;
+            writeln!(fw, " FRAME STATISTICS: ")?;
+
+            for (par, avg) in averager.iter() {
+                writeln!(fw, "  {}: {}ms", par, avg as f32 * 1000.0)?;
+            }
+
             Ok(())
         };
 
@@ -408,6 +422,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Err(err) = window_surface.update_window() {
             eprintln!("Window update error: {}", err);
         }
+
+        present_ms.finish();
 
         averager.update();
     }
